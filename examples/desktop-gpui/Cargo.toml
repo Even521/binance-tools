@@ -1,0 +1,23 @@
+﻿[package]
+name = "desktop-gpui"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[build-dependencies]
+winresource = "0.1"
+
+[package.metadata.packager]
+product-name = "Binance Tools"
+identifier = "com.binance-tools.desktop"
+icons = ["assets/app.ico"]
+
+[dependencies]
+anyhow = "1.0"
+binance_tools = { path = "../.." }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+gpui = "0.2.2"
+gpui-component = { git = "https://github.com/longbridge/gpui-component", tag = "v0.5.1" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", tag = "v0.5.1" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

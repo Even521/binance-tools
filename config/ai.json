@@ -1,0 +1,343 @@
+{
+  "agent": {
+    "enabled": true,
+    "version": 2,
+    "default_model": {
+      "provider": "z-ai",
+      "model": "z-ai/glm-5.1"
+    },
+    "inline_assistant_model": null,
+    "commit_message_model": null,
+    "thread_summary_model": null,
+    "subagent_model": null,
+    "inline_alternatives": [],
+    "model_parameters": [
+      {
+        "provider": null,
+        "model": null,
+        "temperature": 0.2,
+        "max_output_tokens": 2048
+      }
+    ],
+    "tool_permissions": {
+      "default": "confirm",
+      "tools": {}
+    },
+    "message_editor_min_lines": 4,
+    "use_modifier_to_send": false,
+    "expand_edit_card": true,
+    "expand_terminal_card": true,
+    "enable_feedback": true
+  },
+  "language_models": {
+    "openai": {
+      "version": 1,
+      "api_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "api_format": "open_ai_chat",
+      "available_models": [
+        {
+          "name": "gpt-4o",
+          "display_name": "GPT-4o",
+          "max_tokens": 128000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        },
+        {
+          "name": "gpt-4o-mini",
+          "display_name": "GPT-4o Mini",
+          "max_tokens": 128000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "deepseek": {
+      "version": 1,
+      "api_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "api_format": "open_ai_chat",
+      "available_models": [
+        {
+          "name": "deepseek-chat",
+          "display_name": "DeepSeek Chat",
+          "max_tokens": 64000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        },
+        {
+          "name": "deepseek-reasoner",
+          "display_name": "DeepSeek Reasoner",
+          "max_tokens": 64000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "open_router": {
+      "version": 1,
+      "api_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "api_format": "open_ai_chat",
+      "available_models": [
+        {
+          "name": "openai/gpt-4o-mini",
+          "display_name": "OpenRouter GPT-4o Mini",
+          "max_tokens": 128000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "ollama": {
+      "version": 1,
+      "api_url": "http://localhost:11434/v1",
+      "api_key_env": "OLLAMA_API_KEY",
+      "api_format": "open_ai_chat",
+      "available_models": [
+        {
+          "name": "qwen2.5-coder",
+          "display_name": "qwen2.5-coder",
+          "max_tokens": 32768,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": true,
+      "context_window": null
+    },
+    "lmstudio": {
+      "version": 1,
+      "api_url": "http://localhost:1234/v1",
+      "api_key_env": null,
+      "api_format": "open_ai_chat",
+      "available_models": [
+        {
+          "name": "local-model",
+          "display_name": "LM Studio",
+          "max_tokens": 32768,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "anthropic": {
+      "version": 1,
+      "api_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "api_format": "anthropic",
+      "available_models": [
+        {
+          "name": "claude-3-5-sonnet-20240620",
+          "display_name": "Claude 3.5 Sonnet",
+          "max_tokens": 200000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "google": {
+      "version": 1,
+      "api_url": "https://generativelanguage.googleapis.com",
+      "api_key_env": "GEMINI_API_KEY",
+      "api_format": "google",
+      "available_models": [
+        {
+          "name": "gemini-2.0-flash",
+          "display_name": "Gemini 2.0 Flash",
+          "max_tokens": 1000000,
+          "max_output_tokens": null,
+          "max_completion_tokens": null,
+          "supports_tools": true,
+          "supports_images": false,
+          "supports_thinking": false,
+          "supports_prompt_cache_key": false,
+          "capabilities": {
+            "chat_completions": true,
+            "tools": true,
+            "images": false,
+            "parallel_tool_calls": false
+          }
+        }
+      ],
+      "auto_discover": false,
+      "context_window": null
+    },
+    "openai_compatible": {
+      "deepseek-ai": {
+        "version": 1,
+        "api_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "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",
+        "api_key_env": null,
+        "api_format": "open_ai_chat",
+        "available_models": [
+          {
+            "name": "deepseek-ai/deepseek-v4-pro",
+            "display_name": "deepseek-ai/deepseek-v4-pro",
+            "max_tokens": 200000,
+            "max_output_tokens": 32000,
+            "max_completion_tokens": 200000,
+            "supports_tools": true,
+            "supports_images": false,
+            "supports_thinking": false,
+            "supports_prompt_cache_key": false,
+            "capabilities": {
+              "chat_completions": true,
+              "tools": true,
+              "images": false,
+              "parallel_tool_calls": false
+            }
+          }
+        ],
+        "auto_discover": false,
+        "context_window": null
+      },
+      "sensenova": {
+        "version": 1,
+        "api_url": "https://token.sensenova.cn/v1",
+        "api_key": "sk-tfhbUZYCK9eTJMoQ4XEd5QodlB6kQa9X",
+        "api_key_env": null,
+        "api_format": "open_ai_chat",
+        "available_models": [
+          {
+            "name": "sensenova-6.7-flash-lite",
+            "display_name": "sensenova-6.7-flash-lite",
+            "max_tokens": 200000,
+            "max_output_tokens": 32000,
+            "max_completion_tokens": 200000,
+            "supports_tools": true,
+            "supports_images": false,
+            "supports_thinking": false,
+            "supports_prompt_cache_key": false,
+            "capabilities": {
+              "chat_completions": true,
+              "tools": true,
+              "images": false,
+              "parallel_tool_calls": false
+            }
+          }
+        ],
+        "auto_discover": false,
+        "context_window": null
+      },
+      "z-ai": {
+        "version": 1,
+        "api_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "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",
+        "api_key_env": null,
+        "api_format": "open_ai_chat",
+        "available_models": [
+          {
+            "name": "z-ai/glm-5.1",
+            "display_name": "z-ai/glm-5.1",
+            "max_tokens": 200000,
+            "max_output_tokens": 32000,
+            "max_completion_tokens": 200000,
+            "supports_tools": true,
+            "supports_images": false,
+            "supports_thinking": false,
+            "supports_prompt_cache_key": false,
+            "capabilities": {
+              "chat_completions": true,
+              "tools": true,
+              "images": false,
+              "parallel_tool_calls": false
+            }
+          }
+        ],
+        "auto_discover": false,
+        "context_window": null
+      }
+    }
+  }
+}

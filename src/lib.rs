@@ -2,7 +2,13 @@
 //!
 //! 仓库根目录下的 `examples/` 规划为**若干独立 Rust 子工程**（各含自有 `Cargo.toml`，说明见该目录内 `README.md`），与 Cargo 默认的 `examples/*.rs` 单文件示例不同。
 
-/// 占位 API，后续替换为真实公共能力。
+pub mod ai;
+pub mod app;
+pub mod binance;
+pub mod db;
+pub mod square;
+
+/// 默认应用名称。
 pub fn greeting() -> &'static str {
-    "binance_tools"
+    app::APP_NAME
 }

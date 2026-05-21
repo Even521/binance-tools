@@ -1,4 +1,4 @@
-# `examples/` — 示例 Rust 工程目录
+﻿# `examples/` — 示例 Rust 工程目录
 
 本目录用于存放**独立的 Rust 子项目**（每个示例子目录内自有 `Cargo.toml`），用于演示如何依赖上级 crate `binance_tools`，而不是 Cargo 包自带的「单文件示例」（即不使用根目录 `cargo run --example <name>` 那种 `examples/*.rs` 形态）。
 
@@ -16,6 +16,6 @@ binance_tools = { path = "../.." }
 
 ## 当前状态
 
-**尚未初始化任何示例子工程**；需要时用 `cargo new examples/<名称>`（或等价方式）在本目录下创建即可。
+- [`desktop-gpui/`](./desktop-gpui/README.md)：GPUI Component 桌面示例，展示如何通过路径依赖复用根 crate 的 Binance 配置与业务模块。
 
 上级说明见 [`../docs/项目执行/01-项目框架.md`](../docs/项目执行/01-项目框架.md)。
