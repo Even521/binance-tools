@@ -30,6 +30,8 @@ src/db/
 | `binance_square_send_logs` | [`binance_square_send_logs.md`](./binance_square_send_logs.md) | 币安广场发送日志 |
 | `binance_square_ai_settings` | [`binance_square_ai_settings.md`](./binance_square_ai_settings.md) | 币安广场 AI 分析开关 |
 | `binance_square_ai_logs` | [`binance_square_ai_logs.md`](./binance_square_ai_logs.md) | AI 生成任务日志 |
+| `ai_provider_keys` | [`ai_provider_keys.md`](./ai_provider_keys.md) | AI Provider 本地 API Key |
+| `ai_chat_threads` | [`ai_chat_threads.md`](./ai_chat_threads.md) | AI Chat 历史会话，内容使用 zstd 压缩保存 |
 
 ## 维护约定
 

@@ -15,11 +15,12 @@
 
 ## 当前主功能
 
-- Dashboard 首页展示 Binance Web product 市场榜单，数据缓存到 SQLite 5 分钟。
-- 现货菜单包含市场榜单、币种列表和日均线信号；日均线信号可进入 K 线图。
-- 币安广场菜单包含 Key 设置、任务页面和发送消息日志。
-- 右侧 AI Agent 面板支持 OpenAI-compatible provider 配置、模型选择、流式输出、重试、继续和复制。
-- 市场榜单可点击 `AI 分析`，把当前筛选市场前 50 条精简数据发送到右侧 AI 面板分析。
+- [x] Dashboard 首页展示 Binance Web product 市场榜单，数据缓存到 SQLite 5 分钟。
+- [x] 现货菜单包含市场榜单、币种列表和日均线信号；日均线信号可进入 K 线图。
+- [x] 币安广场菜单包含 Key 设置、任务页面和发送消息日志。
+- [x] 右侧 AI Agent 面板支持 OpenAI-compatible provider 配置、模型选择、流式输出、重试、继续和复制。
+- [x] 右侧 AI Agent 面板支持 Zed 风格历史会话列表和会话恢复。
+- [x] 市场榜单可点击 `AI 分析`，把当前筛选市场前 50 条精简数据发送到右侧 AI 面板分析。
 
 ## 维护约定
 

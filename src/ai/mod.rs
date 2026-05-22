@@ -44,7 +44,12 @@ impl AiSettings {
     }
 
     pub fn load_default() -> anyhow::Result<Self> {
-        Self::load(Self::default_config_path())
+        let path = Self::default_config_path();
+        let mut settings = Self::load(&path)?;
+        if settings.migrate_inline_api_keys_to_default_db()? {
+            settings.save(path)?;
+        }
+        Ok(settings)
     }
 
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -70,6 +75,31 @@ impl AiSettings {
         let text = serde_json::to_string_pretty(self).context("serialize AI config failed")?;
         fs::write(path, format!("{text}\n"))
             .with_context(|| format!("write AI config failed: {}", path.display()))
+    }
+
+    fn migrate_inline_api_keys_to_default_db(&mut self) -> anyhow::Result<bool> {
+        let mut migrated = false;
+
+        for (provider_id, provider_name, settings) in self.language_models.providers_mut() {
+            let Some(api_key) = settings
+                .api_key
+                .as_deref()
+                .map(strip_default_zero_padding)
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+
+            crate::db::ai::save_ai_provider_api_key_blocking(
+                &provider_id,
+                &provider_name,
+                &api_key,
+            )?;
+            settings.api_key = None;
+            migrated = true;
+        }
+
+        Ok(migrated)
     }
 
     pub fn selected_model(&self) -> &ModelSelection {
@@ -360,6 +390,40 @@ impl LanguageModelsSettings {
         );
         providers
     }
+
+    fn providers_mut(&mut self) -> Vec<(String, String, &mut ProviderSettings)> {
+        let mut providers = vec![
+            (
+                "deepseek".to_string(),
+                "DeepSeek".to_string(),
+                &mut self.deepseek,
+            ),
+            ("openai".to_string(), "OpenAI".to_string(), &mut self.openai),
+            (
+                "open_router".to_string(),
+                "OpenRouter".to_string(),
+                &mut self.open_router,
+            ),
+            ("ollama".to_string(), "Ollama".to_string(), &mut self.ollama),
+            (
+                "lmstudio".to_string(),
+                "LM Studio".to_string(),
+                &mut self.lmstudio,
+            ),
+            (
+                "anthropic".to_string(),
+                "Anthropic".to_string(),
+                &mut self.anthropic,
+            ),
+            ("google".to_string(), "Google".to_string(), &mut self.google),
+        ];
+        providers.extend(
+            self.openai_compatible
+                .iter_mut()
+                .map(|(name, settings)| (name.clone(), name.clone(), settings)),
+        );
+        providers
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -643,16 +707,17 @@ pub fn send_chat_with_model_timeout_blocking(
     let provider = settings
         .provider_for_model(&selection)
         .with_context(|| format!("AI provider is not configured: {}", selection.provider))?;
+    let provider = provider_with_stored_key(&selection.provider, provider)?;
 
     match provider.api_format {
         ApiFormat::OpenAiChat => {
-            send_openai_compatible_chat(settings, provider, &selection, messages, request_timeout)
+            send_openai_compatible_chat(settings, &provider, &selection, messages, request_timeout)
         }
         ApiFormat::Anthropic => {
-            send_anthropic_chat(settings, provider, &selection, messages, request_timeout)
+            send_anthropic_chat(settings, &provider, &selection, messages, request_timeout)
         }
         ApiFormat::Google => {
-            send_google_chat(settings, provider, &selection, messages, request_timeout)
+            send_google_chat(settings, &provider, &selection, messages, request_timeout)
         }
     }
 }
@@ -673,10 +738,11 @@ where
     let provider = settings
         .provider_for_model(&selection)
         .ok_or_else(|| anyhow!("AI provider '{}' is not configured", selection.provider))?;
+    let provider = provider_with_stored_key(&selection.provider, provider)?;
 
     match provider.api_format {
         ApiFormat::OpenAiChat => send_openai_compatible_chat_streaming(
-            settings, provider, &selection, messages, on_delta,
+            settings, &provider, &selection, messages, on_delta,
         ),
         ApiFormat::Anthropic | ApiFormat::Google => {
             let response = send_chat_with_model_blocking(settings, selection, messages)?;
@@ -1158,6 +1224,38 @@ impl ProviderSettings {
                     .filter(|value| !value.trim().is_empty())
             })
     }
+}
+
+fn provider_with_stored_key(
+    provider_id: &str,
+    provider: &ProviderSettings,
+) -> anyhow::Result<ProviderSettings> {
+    let mut provider = provider.clone();
+
+    let Some(key) = crate::db::ai::load_ai_provider_key_blocking(provider_id)? else {
+        return Ok(provider);
+    };
+    if !key.enabled {
+        return Ok(provider);
+    }
+
+    match key.key_source {
+        crate::db::ai::AiProviderKeySource::Db => {
+            provider.api_key = key.api_key;
+            provider.api_key_env = None;
+            let _ = crate::db::ai::touch_ai_provider_key_last_used_blocking(provider_id);
+        }
+        crate::db::ai::AiProviderKeySource::Env => {
+            provider.api_key = None;
+            provider.api_key_env = key.api_key_env;
+        }
+        crate::db::ai::AiProviderKeySource::None => {
+            provider.api_key = None;
+            provider.api_key_env = None;
+        }
+    }
+
+    Ok(provider)
 }
 
 fn strip_default_zero_padding(value: &str) -> String {

@@ -12,7 +12,7 @@ pub fn run() {
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(1024.0), px(768.0)),
+                size(px(1290.0), px(840.0)),
                 cx,
             ))),
             titlebar: Some(TitleBar::title_bar_options()),

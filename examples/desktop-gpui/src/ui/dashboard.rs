@@ -1,6 +1,6 @@
 use crate::ui::{
     ai::{
-        chat::{AiChatEvent, AiChatPanel, OpenAiProviders, ToggleAiChat},
+        chat::{AiChatEvent, AiChatPanel, OpenAiProviders, THREADS_SIDEBAR_WIDTH, ToggleAiChat},
         providers::{
             AiProvidersEvent, AiProvidersPage, CloseAiProviders, ToggleAiProvidersMaximized,
         },
@@ -422,6 +422,19 @@ impl Dashboard {
         self.clamp_panel_width(viewport_width, viewport_width * ratio)
     }
 
+    fn dock_width_for_viewport(&self, viewport_width: Pixels, cx: &App) -> Pixels {
+        if self.ai_providers_page.is_none() && self.ai_chat_panel.read(cx).threads_sidebar_visible()
+        {
+            let sidebar_width = px(THREADS_SIDEBAR_WIDTH);
+            let viewport_without_sidebar = (viewport_width - sidebar_width).max(px(0.));
+            let base_width =
+                self.panel_width_for_viewport(viewport_without_sidebar, self.chat_panel_ratio);
+            self.clamp_panel_width(viewport_width, base_width + px(THREADS_SIDEBAR_WIDTH))
+        } else {
+            self.panel_width_for_viewport(viewport_width, self.chat_panel_ratio)
+        }
+    }
+
     fn render_content(&self, _cx: &mut Context<Self>) -> AnyElement {
         match self.active_page {
             ActivePage::MarketProducts => self
@@ -534,8 +547,7 @@ impl Render for Dashboard {
             self.ai_chat_panel.read(cx).is_visible() || self.ai_providers_page.is_some();
         let bg = app_theme.background;
         let fg = palette::text(app_theme);
-        let panel_width =
-            self.panel_width_for_viewport(window.viewport_size().width, self.chat_panel_ratio);
+        let panel_width = self.dock_width_for_viewport(window.viewport_size().width, cx);
 
         v_flex()
             .size_full()

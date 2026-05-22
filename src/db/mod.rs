@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod ai;
+pub mod ai_threads;
 pub mod market;
 pub mod spot;
 pub mod square;
@@ -158,6 +160,43 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
                 created_task_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS ai_provider_keys (
+                provider_id TEXT PRIMARY KEY,
+                provider_name TEXT NOT NULL,
+                key_source TEXT NOT NULL DEFAULT 'db'
+                    CHECK (key_source IN ('db', 'env', 'none')),
+                api_key TEXT,
+                api_key_env TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_used_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (
+                    (key_source = 'db' AND api_key IS NOT NULL AND length(trim(api_key)) > 0)
+                    OR
+                    (key_source = 'env' AND api_key_env IS NOT NULL AND length(trim(api_key_env)) > 0)
+                    OR
+                    (key_source = 'none' AND api_key IS NULL AND api_key_env IS NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_provider_keys_enabled
+                ON ai_provider_keys(enabled);
+
+            CREATE TABLE IF NOT EXISTS ai_chat_threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                selected_model_json TEXT NOT NULL,
+                data_type TEXT NOT NULL
+                    CHECK (data_type IN ('json', 'zstd')),
+                data BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_chat_threads_updated_at
+                ON ai_chat_threads(updated_at DESC);
 
             "#,
         )

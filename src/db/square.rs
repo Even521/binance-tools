@@ -738,7 +738,12 @@ pub fn list_today_ai_titles(connection: &Connection) -> anyhow::Result<Vec<Strin
                 WHERE source_type = 'ai_market_analysis'
                     AND title IS NOT NULL
                     AND title <> ''
-                    AND date(COALESCE(scheduled_at, updated_at), 'localtime') = date('now', 'localtime')
+                    AND date(
+                        CASE
+                            WHEN scheduled_at IS NOT NULL AND scheduled_at <> '' THEN scheduled_at
+                            ELSE datetime(updated_at, 'localtime')
+                        END
+                    ) = date('now', 'localtime')
                 UNION ALL
                 SELECT title
                 FROM binance_square_ai_logs
@@ -767,7 +772,12 @@ pub fn ai_title_exists_today(connection: &Connection, title: &str) -> anyhow::Re
                 FROM binance_square_tasks
                 WHERE source_type = 'ai_market_analysis'
                     AND title = ?1
-                    AND date(COALESCE(scheduled_at, updated_at), 'localtime') = date('now', 'localtime')
+                    AND date(
+                        CASE
+                            WHEN scheduled_at IS NOT NULL AND scheduled_at <> '' THEN scheduled_at
+                            ELSE datetime(updated_at, 'localtime')
+                        END
+                    ) = date('now', 'localtime')
             )
             "#,
             params![title],

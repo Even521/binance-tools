@@ -1,10 +1,11 @@
 use crate::ui::palette;
 use binance_tools::ai::{
-    AiSettings, ApiFormat, ModelCapabilities, ModelDefinition, ProviderSettings,
+    AiSettings, ApiFormat, LanguageModelsSettings, ModelCapabilities, ModelDefinition,
+    ProviderSettings,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, Theme,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
@@ -112,20 +113,6 @@ impl AiProvidersPage {
         }
     }
 
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        match AiSettings::load_default() {
-            Ok(settings) => {
-                self.settings = settings;
-                self.error = None;
-            }
-            Err(err) => {
-                self.settings = AiSettings::default();
-                self.error = Some(err.to_string());
-            }
-        }
-        cx.notify();
-    }
-
     pub fn set_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
         self.maximized = maximized;
         cx.notify();
@@ -143,8 +130,9 @@ impl AiProvidersPage {
     fn open_add_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form_error = None;
         self.editing_provider = None;
-        self.provider_name_input
-            .update(cx, |input, cx| input.set_value("OpenAI", window, cx));
+        self.provider_name_input.update(cx, |input, cx| {
+            input.set_value("Custom Provider", window, cx)
+        });
         self.api_url_input.update(cx, |input, cx| {
             input.set_value("https://api.openai.com/v1", window, cx)
         });
@@ -177,8 +165,7 @@ impl AiProvidersPage {
         let Some(settings) = self
             .settings
             .language_models
-            .openai_compatible
-            .get(&provider_id)
+            .provider(&provider_id)
             .cloned()
         else {
             self.error = Some(format!("Provider '{provider_id}' does not exist"));
@@ -188,7 +175,13 @@ impl AiProvidersPage {
 
         let model = settings.available_models.first();
         let api_url = settings.api_url.clone().unwrap_or_default();
-        let api_key = strip_default_zero_padding(&settings.api_key.clone().unwrap_or_default());
+        let api_key = binance_tools::db::ai::load_ai_provider_key_blocking(&provider_id)
+            .ok()
+            .flatten()
+            .and_then(|key| key.api_key)
+            .or_else(|| settings.api_key.clone())
+            .map(|key| strip_default_zero_padding(&key))
+            .unwrap_or_default();
         let model_name = model.map(|model| model.name.clone()).unwrap_or_default();
         let max_tokens = model
             .map(|model| model.max_tokens)
@@ -233,30 +226,47 @@ impl AiProvidersPage {
 
     fn delete_provider(&mut self, provider_id: String, cx: &mut Context<Self>) {
         let mut settings = self.settings.clone();
-        if settings
-            .language_models
-            .openai_compatible
-            .remove(&provider_id)
-            .is_none()
+        let is_builtin = is_builtin_provider(&provider_id);
+        if !is_builtin
+            && settings
+                .language_models
+                .openai_compatible
+                .remove(&provider_id)
+                .is_none()
         {
             self.error = Some(format!("Provider '{provider_id}' does not exist"));
             cx.notify();
             return;
         }
 
-        if settings
-            .agent
-            .default_model
-            .as_ref()
-            .is_some_and(|selection| {
-                normalized_provider_name(&selection.provider)
-                    == normalized_provider_name(&provider_id)
-            })
+        if !is_builtin
+            && settings
+                .agent
+                .default_model
+                .as_ref()
+                .is_some_and(|selection| {
+                    normalized_provider_name(&selection.provider)
+                        == normalized_provider_name(&provider_id)
+                })
         {
             settings.agent.default_model = None;
         }
 
         if let Err(err) = settings.save(AiSettings::default_config_path()) {
+            self.error = Some(err.to_string());
+            cx.notify();
+            return;
+        }
+
+        let key_result = if is_builtin {
+            binance_tools::db::ai::save_ai_provider_key_none_blocking(
+                &provider_id,
+                provider_display_name(&provider_id),
+            )
+        } else {
+            binance_tools::db::ai::delete_ai_provider_key_blocking(&provider_id)
+        };
+        if let Err(err) = key_result {
             self.error = Some(err.to_string());
             cx.notify();
             return;
@@ -298,6 +308,16 @@ impl AiProvidersPage {
         let is_same_edit = self.editing_provider.as_ref().is_some_and(|editing| {
             normalized_provider_name(editing) == normalized_provider_name(&provider_name)
         });
+        if self
+            .editing_provider
+            .as_ref()
+            .is_some_and(|editing| is_builtin_provider(editing))
+            && !is_same_edit
+        {
+            self.form_error = Some("Built-in Provider Name cannot be changed".to_string());
+            cx.notify();
+            return;
+        }
         if !is_same_edit && self.provider_name_exists(&provider_name) {
             self.form_error = Some(format!("Provider Name '{provider_name}' already exists"));
             cx.notify();
@@ -363,19 +383,42 @@ impl AiProvidersPage {
             },
         }];
 
-        settings.language_models.openai_compatible.insert(
-            provider_name.clone(),
-            ProviderSettings {
-                api_url: Some(api_url),
-                api_key: Some(api_key),
-                api_key_env: None,
-                api_format: ApiFormat::OpenAiChat,
-                available_models,
-                ..ProviderSettings::default()
-            },
-        );
+        let provider_id = self
+            .editing_provider
+            .clone()
+            .filter(|provider| is_builtin_provider(provider))
+            .unwrap_or_else(|| provider_name.clone());
+        let provider_settings = ProviderSettings {
+            api_url: Some(api_url),
+            api_key: None,
+            api_key_env: None,
+            api_format: self
+                .settings
+                .language_models
+                .provider(&provider_id)
+                .map(|settings| settings.api_format)
+                .unwrap_or(ApiFormat::OpenAiChat),
+            available_models,
+            ..ProviderSettings::default()
+        };
+        if !set_builtin_provider_settings(&mut settings, &provider_id, provider_settings.clone()) {
+            settings
+                .language_models
+                .openai_compatible
+                .insert(provider_id.clone(), provider_settings);
+        }
 
         if let Err(err) = settings.save(AiSettings::default_config_path()) {
+            self.form_error = Some(err.to_string());
+            cx.notify();
+            return;
+        }
+
+        if let Err(err) = binance_tools::db::ai::save_ai_provider_api_key_blocking(
+            &provider_id,
+            &provider_name,
+            &api_key,
+        ) {
             self.form_error = Some(err.to_string());
             cx.notify();
             return;
@@ -384,7 +427,7 @@ impl AiProvidersPage {
         self.settings = settings;
         self.form_error = None;
         self.error = None;
-        self.expanded_provider = Some(provider_name);
+        self.expanded_provider = Some(provider_id);
         self.editing_provider = None;
         self.view = AiProvidersView::List;
         cx.emit(AiProvidersEvent::Saved);
@@ -422,9 +465,11 @@ impl AiProvidersPage {
     fn provider_entries(&self) -> Vec<ProviderEntry> {
         self.settings
             .language_models
-            .openai_compatible
-            .iter()
-            .map(|(name, settings)| ProviderEntry::from_settings(name, name, settings))
+            .providers()
+            .into_iter()
+            .map(|(name, settings)| {
+                ProviderEntry::from_settings(name, provider_display_name(name), settings)
+            })
             .collect()
     }
 
@@ -504,11 +549,56 @@ impl AiProvidersPage {
             .as_ref()
             .and_then(|settings| settings.api_url.clone())
             .unwrap_or_else(|| "Managed by provider".to_string());
-        let api_key_env = entry
-            .settings
+        let stored_key = binance_tools::db::ai::load_ai_provider_key_blocking(&entry.id)
+            .ok()
+            .flatten();
+        let credential = stored_key
             .as_ref()
-            .and_then(|settings| settings.api_key_env.clone())
-            .unwrap_or_else(|| "None".to_string());
+            .map(|key| match key.key_source {
+                binance_tools::db::ai::AiProviderKeySource::Db => {
+                    if key
+                        .api_key
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    {
+                        "Configured in local database".to_string()
+                    } else {
+                        "Not configured".to_string()
+                    }
+                }
+                binance_tools::db::ai::AiProviderKeySource::Env => key
+                    .api_key_env
+                    .as_ref()
+                    .map(|env| {
+                        if env::var(env).is_ok_and(|value| !value.trim().is_empty()) {
+                            format!("Configured from {env}")
+                        } else {
+                            format!("Not configured ({env})")
+                        }
+                    })
+                    .unwrap_or_else(|| "Not configured".to_string()),
+                binance_tools::db::ai::AiProviderKeySource::None => "Not configured".to_string(),
+            })
+            .or_else(|| match stored_key {
+                Some(_) => None,
+                None => entry
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.api_key_env.clone())
+                    .map(|env| {
+                        if env::var(&env).is_ok_and(|value| !value.trim().is_empty()) {
+                            format!("Configured from {env}")
+                        } else {
+                            format!("Not configured ({env})")
+                        }
+                    }),
+            })
+            .unwrap_or_else(|| "Not configured".to_string());
+        let key_store = if stored_key.is_some() {
+            binance_tools::db::DEFAULT_DATABASE_PATH.to_string()
+        } else {
+            "Environment variable fallback".to_string()
+        };
         let models = entry
             .settings
             .as_ref()
@@ -529,29 +619,36 @@ impl AiProvidersPage {
             .unwrap_or_else(|| "No local model list".to_string());
         let edit_provider_id = entry.id.clone();
         let delete_provider_id = entry.id.clone();
+        let delete_label = if entry.built_in {
+            "Clear Key"
+        } else {
+            "Delete"
+        };
 
         v_flex()
-            .gap_2()
+            .gap_3()
             .px_6()
-            .pb_3()
+            .py_3()
             .text_size(px(12.))
             .text_color(palette::muted(app_theme))
-            .child(format!("API URL: {api_url}"))
-            .child(format!("API Key Env: {api_key_env}"))
-            .child(format!("Models: {models}"))
-            .child(format!(
-                "Config file: {}",
-                AiSettings::default_config_path().display()
+            .child(provider_detail_row("API URL", api_url, app_theme))
+            .child(provider_detail_row("Credential", credential, app_theme))
+            .child(provider_detail_row("Models", models, app_theme))
+            .child(provider_detail_row(
+                "Config",
+                AiSettings::default_config_path().display().to_string(),
+                app_theme,
             ))
+            .child(provider_detail_row("Key Store", key_store, app_theme))
             .child(
                 h_flex()
                     .gap_2()
-                    .pt_1()
+                    .pt_0()
                     .child(
                         Button::new("edit-ai-provider")
                             .outline()
                             .xsmall()
-                            .label("修改")
+                            .label("Edit")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.edit_provider(edit_provider_id.clone(), window, cx);
                             })),
@@ -560,7 +657,7 @@ impl AiProvidersPage {
                         Button::new("delete-ai-provider")
                             .outline()
                             .xsmall()
-                            .label("删除")
+                            .label(delete_label)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.delete_provider(delete_provider_id.clone(), cx);
                             })),
@@ -604,6 +701,7 @@ impl AiProvidersPage {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Plus).size_4())
+                            .disabled(true)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_add_provider(window, cx);
                             })),
@@ -668,7 +766,8 @@ impl AiProvidersPage {
                                 .outline()
                                 .xsmall()
                                 .icon(IconName::Plus)
-                                .label("Add Agent"),
+                                .label("Add Agent")
+                                .disabled(true),
                         ),
                     ),
             )
@@ -748,7 +847,8 @@ impl AiProvidersPage {
                                 .outline()
                                 .xsmall()
                                 .icon(IconName::Plus)
-                                .label("Add Server"),
+                                .label("Add Server")
+                                .disabled(true),
                         ),
                     ),
             )
@@ -808,14 +908,6 @@ impl AiProvidersPage {
                             .w_full()
                             .justify_end()
                             .gap_2()
-                            .child(
-                                Button::new("reload-ai-providers")
-                                    .outline()
-                                    .xsmall()
-                                    .icon(IconName::Redo2)
-                                    .label("Reload")
-                                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                            )
                             .child(
                                 Button::new("add-provider")
                                     .outline()
@@ -888,10 +980,10 @@ impl AiProvidersPage {
 
         v_flex()
             .absolute()
-            .top(px(18.))
-            .left(px(20.))
-            .w(px(540.))
-            .max_h(px(560.))
+            .top(px(36.))
+            .left(px(12.))
+            .right(px(12.))
+            .max_h(px(600.))
             .rounded(px(6.))
             .bg(background)
             .border_1()
@@ -902,12 +994,12 @@ impl AiProvidersPage {
                 v_flex()
                     .max_h(px(518.))
                     .overflow_y_scrollbar()
-                    .p_4()
-                    .gap_4()
+                    .p_3()
+                    .gap_3()
                     .child(
                         v_flex()
-                            .gap_2()
-                            .child(div().text_size(px(17.)).child(if editing {
+                            .gap_1()
+                            .child(div().text_size(px(16.)).child(if editing {
                                 "Edit LLM Provider"
                             } else {
                                 "Add LLM Provider"
@@ -949,14 +1041,7 @@ impl AiProvidersPage {
                                 h_flex()
                                     .items_center()
                                     .justify_between()
-                                    .child(div().text_size(px(13.)).child("Models"))
-                                    .child(
-                                        Button::new("add-provider-model")
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::Plus)
-                                            .label("Add Model"),
-                                    ),
+                                    .child(div().text_size(px(13.)).child("Models")),
                             )
                             .child(self.render_model_form(cx)),
                     ),
@@ -964,53 +1049,33 @@ impl AiProvidersPage {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_start()
-                    .gap_3()
-                    .h(px(42.))
-                    .px_4()
+                    .justify_end()
+                    .gap_2()
+                    .min_h(px(46.))
+                    .px_3()
                     .border_t_1()
                     .border_color(border.opacity(0.7))
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.close_add_provider(cx);
-                                }),
-                            )
-                            .child(div().text_size(px(13.)).child("Cancel"))
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(muted_foreground)
-                                    .child("Escape"),
-                            ),
+                        Button::new("cancel-ai-provider")
+                            .outline()
+                            .xsmall()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_add_provider(cx);
+                            })),
                     )
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.save_provider(cx);
-                                }),
-                            )
-                            .child(div().text_size(px(13.)).child(if editing {
+                        Button::new("save-ai-provider")
+                            .primary()
+                            .xsmall()
+                            .label(if editing {
                                 "Update Provider"
                             } else {
                                 "Save Provider"
-                            }))
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(muted_foreground)
-                                    .child("Enter"),
-                            ),
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_provider(cx);
+                            })),
                     ),
             )
             .into_any_element()
@@ -1026,10 +1091,12 @@ impl AiProvidersPage {
         let app_theme = cx.theme();
 
         v_flex()
+            .w_full()
             .gap_1()
             .child(div().text_size(px(12.)).child(label))
             .child(
                 h_flex()
+                    .w_full()
                     .items_center()
                     .h(px(32.))
                     .rounded(px(5.))
@@ -1065,22 +1132,18 @@ impl AiProvidersPage {
             .border_color(app_theme.border.opacity(0.8))
             .bg(app_theme.group_box.opacity(0.35))
             .child(self.render_labeled_input("Model Name", &self.model_name_input, false, cx))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().flex_1().child(self.render_labeled_input(
-                        "Max Completion Tokens",
-                        &self.max_completion_tokens_input,
-                        false,
-                        cx,
-                    )))
-                    .child(div().flex_1().child(self.render_labeled_input(
-                        "Max Output Tokens",
-                        &self.max_output_tokens_input,
-                        false,
-                        cx,
-                    ))),
-            )
+            .child(self.render_labeled_input(
+                "Max Completion Tokens",
+                &self.max_completion_tokens_input,
+                false,
+                cx,
+            ))
+            .child(self.render_labeled_input(
+                "Max Output Tokens",
+                &self.max_output_tokens_input,
+                false,
+                cx,
+            ))
             .child(self.render_labeled_input("Max Tokens", &self.max_tokens_input, false, cx))
             .child(self.render_checkbox(
                 "Supports tools",
@@ -1181,6 +1244,7 @@ struct ProviderEntry {
     icon: IconName,
     badge: Option<String>,
     connected: bool,
+    built_in: bool,
     settings: Option<ProviderSettings>,
 }
 
@@ -1198,25 +1262,16 @@ impl ProviderEntry {
             icon: provider_icon(id),
             badge: badge.map(str::to_string),
             connected,
+            built_in: is_builtin_provider(id),
             settings,
         }
     }
 
     fn from_settings(id: &str, name: &str, settings: &ProviderSettings) -> Self {
-        let connected = settings
-            .api_key
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-            || settings
-                .api_key_env
-                .as_deref()
-                .is_some_and(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()))
-            || settings
-                .api_url
-                .as_deref()
-                .is_some_and(|url| url.contains("localhost") || url.contains("127.0.0.1"));
+        let connected = provider_has_configured_key(id, settings);
 
-        Self::new(id, name, Some(settings.clone()), None, connected)
+        let badge = is_builtin_provider(id).then_some("Built-in");
+        Self::new(id, name, Some(settings.clone()), badge, connected)
     }
 }
 
@@ -1228,6 +1283,83 @@ fn provider_icon(id: &str) -> IconName {
         "zed.dev" => IconName::Bot,
         _ => IconName::Bot,
     }
+}
+
+fn provider_has_configured_key(id: &str, _settings: &ProviderSettings) -> bool {
+    let stored_key = binance_tools::db::ai::load_ai_provider_key_blocking(id)
+        .ok()
+        .flatten();
+    stored_key.is_some_and(|key| {
+        key.enabled
+            && matches!(
+                key.key_source,
+                binance_tools::db::ai::AiProviderKeySource::Db
+            )
+            && key
+                .api_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn provider_detail_row(label: &'static str, value: String, app_theme: &Theme) -> AnyElement {
+    h_flex()
+        .w_full()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .w(px(72.))
+                .flex_none()
+                .text_color(palette::muted_soft(app_theme))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_color(palette::muted(app_theme))
+                .child(value),
+        )
+        .into_any_element()
+}
+
+fn provider_display_name(id: &str) -> &str {
+    match id {
+        "deepseek" => "DeepSeek",
+        "openai" => "OpenAI",
+        "open_router" => "OpenRouter",
+        "ollama" => "Ollama",
+        "lmstudio" => "LM Studio",
+        "anthropic" => "Anthropic",
+        "google" => "Google",
+        name => name,
+    }
+}
+
+fn is_builtin_provider(id: &str) -> bool {
+    matches!(
+        id,
+        "deepseek" | "openai" | "open_router" | "ollama" | "lmstudio" | "anthropic" | "google"
+    )
+}
+
+fn set_builtin_provider_settings(
+    settings: &mut AiSettings,
+    provider_id: &str,
+    provider_settings: ProviderSettings,
+) -> bool {
+    let language_models: &mut LanguageModelsSettings = &mut settings.language_models;
+    match provider_id {
+        "deepseek" => language_models.deepseek = provider_settings,
+        "openai" => language_models.openai = provider_settings,
+        "open_router" => language_models.open_router = provider_settings,
+        "ollama" => language_models.ollama = provider_settings,
+        "lmstudio" => language_models.lmstudio = provider_settings,
+        "anthropic" => language_models.anthropic = provider_settings,
+        "google" => language_models.google = provider_settings,
+        _ => return false,
+    }
+    true
 }
 
 fn input_text(input: &Entity<InputState>, cx: &mut Context<AiProvidersPage>) -> String {
