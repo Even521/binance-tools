@@ -8,7 +8,9 @@ use std::{
 };
 
 pub mod ai;
+pub mod ai_rules;
 pub mod ai_threads;
+pub mod alpha;
 pub mod market;
 pub mod spot;
 pub mod square;
@@ -106,6 +108,86 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_binance_market_products_fetched_at
                 ON binance_market_products_cache(fetched_at);
 
+            CREATE TABLE IF NOT EXISTS alpha_tokens (
+                alpha_id TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL,
+                chain_id TEXT NOT NULL,
+                chain_name TEXT NOT NULL,
+                contract_address TEXT NOT NULL,
+                name TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                price TEXT,
+                percent_change_24h TEXT,
+                volume_24h TEXT,
+                market_cap TEXT,
+                liquidity TEXT,
+                listing_cex INTEGER NOT NULL DEFAULT 0,
+                cex_coin_name TEXT NOT NULL DEFAULT '',
+                stock_state INTEGER NOT NULL DEFAULT 0,
+                cex_off_display INTEGER NOT NULL DEFAULT 0,
+                hot_tag INTEGER NOT NULL DEFAULT 0,
+                trade_decimal INTEGER,
+                listing_time INTEGER,
+                score INTEGER,
+                mul_point INTEGER,
+                extra_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_tokens_chain
+                ON alpha_tokens(chain_name, chain_id);
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_tokens_symbol
+                ON alpha_tokens(symbol);
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_tokens_updated_at
+                ON alpha_tokens(updated_at);
+
+            CREATE TABLE IF NOT EXISTS alpha_assets (
+                asset TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS alpha_symbols (
+                symbol TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                base_asset TEXT NOT NULL,
+                quote_asset TEXT NOT NULL,
+                price_precision INTEGER,
+                quantity_precision INTEGER,
+                base_asset_precision INTEGER,
+                quote_precision INTEGER,
+                filters_json TEXT NOT NULL DEFAULT '[]',
+                order_types_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_symbols_base_asset
+                ON alpha_symbols(base_asset);
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_symbols_quote_asset
+                ON alpha_symbols(quote_asset);
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_symbols_updated_at
+                ON alpha_symbols(updated_at);
+
+            CREATE TABLE IF NOT EXISTS alpha_klines (
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                open_time INTEGER NOT NULL,
+                open_price REAL NOT NULL,
+                high_price REAL NOT NULL,
+                low_price REAL NOT NULL,
+                close_price REAL NOT NULL,
+                volume REAL NOT NULL,
+                close_time INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (symbol, interval, open_time)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alpha_klines_symbol_interval_time
+                ON alpha_klines(symbol, interval, open_time);
+
             CREATE TABLE IF NOT EXISTS binance_square_keys (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 api_key TEXT NOT NULL,
@@ -198,6 +280,22 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_ai_chat_threads_updated_at
                 ON ai_chat_threads(updated_at DESC);
 
+            CREATE TABLE IF NOT EXISTS ai_rules (
+                context_key TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                format TEXT NOT NULL DEFAULT 'text'
+                    CHECK (format IN ('text', 'markdown')),
+                data_type TEXT NOT NULL
+                    CHECK (data_type IN ('text', 'zstd')),
+                data BLOB NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_rules_enabled_updated_at
+                ON ai_rules(enabled, updated_at DESC);
+
             "#,
         )
         .context("run SQLite migrations failed")?;
@@ -216,6 +314,12 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
         "binance_square_tasks",
         "source_type",
         "TEXT NOT NULL DEFAULT 'manual'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "ai_rules",
+        "format",
+        "TEXT NOT NULL DEFAULT 'text' CHECK (format IN ('text', 'markdown'))",
     )?;
 
     connection
@@ -241,6 +345,8 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             "#,
         )
         .context("create Binance Square task indexes failed")?;
+
+    ai_rules::seed_default_ai_rules(connection)?;
 
     Ok(())
 }

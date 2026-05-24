@@ -4,7 +4,12 @@ use crate::ui::{
         providers::{
             AiProvidersEvent, AiProvidersPage, CloseAiProviders, ToggleAiProvidersMaximized,
         },
+        rules::{AiRulesEvent, AiRulesPage},
     },
+    alpha::{AlphaExchangeInfoPage, AlphaTokensEvent, AlphaTokensPage},
+    alpha_heatmap::{AlphaHeatmapEvent, AlphaHeatmapPage},
+    alpha_ma_signal::AlphaDailyMaSignalPage,
+    heatmap::{MarketHeatmapEvent, MarketHeatmapPage},
     kline::KlineCandlestickPage,
     ma_signal::{DailyMaSignalEvent, DailyMaSignalPage},
     market::{MarketProductsEvent, MarketProductsPage},
@@ -12,8 +17,9 @@ use crate::ui::{
     spot::SpotPage,
     square::{SquareKeySettingsPage, SquareSendLogsPage, SquareTasksPage},
     title_bar::{
-        DesktopTitleBar, OpenDailyMaSignals, OpenMarketProducts, OpenSpotSymbols,
-        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks,
+        DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
+        OpenAlphaTokens, OpenDailyMaSignals, OpenMarketHeatmap, OpenMarketProducts,
+        OpenSpotSymbols, OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks,
     },
 };
 use gpui::{prelude::FluentBuilder, *};
@@ -28,7 +34,13 @@ pub struct Dashboard {
     title_bar: Entity<DesktopTitleBar>,
     ai_chat_panel: Entity<AiChatPanel>,
     ai_providers_page: Option<Entity<AiProvidersPage>>,
+    ai_rules_page: Option<Entity<AiRulesPage>>,
     market_products_page: Option<Entity<MarketProductsPage>>,
+    market_heatmap_page: Option<Entity<MarketHeatmapPage>>,
+    alpha_tokens_page: Option<Entity<AlphaTokensPage>>,
+    alpha_exchange_info_page: Option<Entity<AlphaExchangeInfoPage>>,
+    alpha_heatmap_page: Option<Entity<AlphaHeatmapPage>>,
+    alpha_daily_ma_signal_page: Option<Entity<AlphaDailyMaSignalPage>>,
     spot_page: Option<Entity<SpotPage>>,
     daily_ma_signal_page: Option<Entity<DailyMaSignalPage>>,
     kline_candlestick_page: Option<Entity<KlineCandlestickPage>>,
@@ -51,6 +63,11 @@ pub struct Dashboard {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActivePage {
     MarketProducts,
+    MarketHeatmap,
+    AlphaTokens,
+    AlphaExchangeInfo,
+    AlphaHeatmap,
+    AlphaDailyMaSignal,
     Spot,
     DailyMaSignal,
     KlineCandlestick,
@@ -80,7 +97,13 @@ impl Dashboard {
             title_bar,
             ai_chat_panel,
             ai_providers_page: None,
+            ai_rules_page: None,
             market_products_page: Some(market_products_page),
+            market_heatmap_page: None,
+            alpha_tokens_page: None,
+            alpha_exchange_info_page: None,
+            alpha_heatmap_page: None,
+            alpha_daily_ma_signal_page: None,
             spot_page: None,
             daily_ma_signal_page: None,
             kline_candlestick_page: None,
@@ -115,6 +138,79 @@ impl Dashboard {
         self.open_market_products_page(window, cx);
     }
 
+    fn on_open_market_heatmap(
+        &mut self,
+        _: &OpenMarketHeatmap,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_market_heatmap_page(window, cx);
+    }
+
+    fn on_open_alpha_tokens(
+        &mut self,
+        _: &OpenAlphaTokens,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_alpha_tokens_page(window, cx);
+    }
+
+    fn on_open_alpha_exchange_info(
+        &mut self,
+        _: &OpenAlphaExchangeInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_alpha_exchange_info_page(window, cx);
+    }
+
+    fn on_open_alpha_daily_ma_signals(
+        &mut self,
+        _: &OpenAlphaDailyMaSignals,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_alpha_daily_ma_signal_page(window, cx);
+    }
+
+    fn on_open_alpha_heatmap(
+        &mut self,
+        _: &OpenAlphaHeatmap,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_alpha_heatmap_page(window, cx);
+    }
+
+    fn on_alpha_tokens_event(
+        &mut self,
+        _: &Entity<AlphaTokensPage>,
+        event: &AlphaTokensEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AlphaTokensEvent::OpenKline(symbol) => {
+                self.open_alpha_kline_candlestick_page(symbol.clone(), window, cx);
+            }
+        }
+    }
+
+    fn on_alpha_heatmap_event(
+        &mut self,
+        _: &Entity<AlphaHeatmapPage>,
+        event: &AlphaHeatmapEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AlphaHeatmapEvent::OpenKline(symbol) => {
+                self.open_alpha_kline_candlestick_page(symbol.clone(), window, cx);
+            }
+        }
+    }
+
     fn on_toggle_ai_chat(&mut self, _: &ToggleAiChat, _: &mut Window, cx: &mut Context<Self>) {
         self.ai_chat_panel.update(cx, |panel, cx| panel.toggle(cx));
         cx.notify();
@@ -129,6 +225,7 @@ impl Dashboard {
     ) {
         match event {
             AiChatEvent::OpenProviders => self.open_ai_providers_page(window, cx),
+            AiChatEvent::OpenRules => self.open_ai_rules_page(window, cx),
         }
     }
 
@@ -143,15 +240,36 @@ impl Dashboard {
             MarketProductsEvent::AnalyzeWithAi {
                 prompt,
                 display_content,
+                rule_context,
             } => {
                 self.ai_providers_page = None;
+                self.ai_rules_page = None;
                 self.ai_providers_maximized = false;
                 self.ai_chat_panel.update(cx, |panel, cx| {
-                    panel.submit_external_prompt(prompt.clone(), display_content.clone(), cx);
+                    panel.submit_external_prompt(
+                        prompt.clone(),
+                        display_content.clone(),
+                        Some((rule_context.key.clone(), rule_context.label.clone())),
+                        cx,
+                    );
                 });
                 cx.notify();
             }
             MarketProductsEvent::OpenKline(symbol) => {
+                self.open_kline_candlestick_page(symbol.clone(), window, cx);
+            }
+        }
+    }
+
+    fn on_market_heatmap_event(
+        &mut self,
+        _: &Entity<MarketHeatmapPage>,
+        event: &MarketHeatmapEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            MarketHeatmapEvent::OpenKline(symbol) => {
                 self.open_kline_candlestick_page(symbol.clone(), window, cx);
             }
         }
@@ -173,6 +291,18 @@ impl Dashboard {
                 cx.notify();
             }
             AiProvidersEvent::ToggleMaximized => self.toggle_ai_providers_maximized(cx),
+        }
+    }
+
+    fn on_ai_rules_event(
+        &mut self,
+        _: &Entity<AiRulesPage>,
+        event: &AiRulesEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            AiRulesEvent::Close => self.close_ai_rules(cx),
         }
     }
 
@@ -209,6 +339,11 @@ impl Dashboard {
         });
         self.ai_providers_page = None;
         self.ai_providers_maximized = false;
+        cx.notify();
+    }
+
+    fn close_ai_rules(&mut self, cx: &mut Context<Self>) {
+        self.ai_rules_page = None;
         cx.notify();
     }
 
@@ -294,6 +429,57 @@ impl Dashboard {
         cx.notify();
     }
 
+    fn open_market_heatmap_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.market_heatmap_page.is_none() {
+            let page = cx.new(|cx| MarketHeatmapPage::new(window, cx));
+            self._subscriptions
+                .push(cx.subscribe_in(&page, window, Self::on_market_heatmap_event));
+            self.market_heatmap_page = Some(page);
+        }
+        self.active_page = ActivePage::MarketHeatmap;
+        cx.notify();
+    }
+
+    fn open_alpha_tokens_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alpha_tokens_page.is_none() {
+            let page = cx.new(|cx| AlphaTokensPage::new(window, cx));
+            self._subscriptions
+                .push(cx.subscribe_in(&page, window, Self::on_alpha_tokens_event));
+            self.alpha_tokens_page = Some(page);
+        }
+        self.active_page = ActivePage::AlphaTokens;
+        cx.notify();
+    }
+
+    fn open_alpha_exchange_info_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alpha_exchange_info_page.is_none() {
+            self.alpha_exchange_info_page =
+                Some(cx.new(|cx| AlphaExchangeInfoPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::AlphaExchangeInfo;
+        cx.notify();
+    }
+
+    fn open_alpha_heatmap_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alpha_heatmap_page.is_none() {
+            let page = cx.new(|cx| AlphaHeatmapPage::new(window, cx));
+            self._subscriptions
+                .push(cx.subscribe_in(&page, window, Self::on_alpha_heatmap_event));
+            self.alpha_heatmap_page = Some(page);
+        }
+        self.active_page = ActivePage::AlphaHeatmap;
+        cx.notify();
+    }
+
+    fn open_alpha_daily_ma_signal_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.alpha_daily_ma_signal_page.is_none() {
+            self.alpha_daily_ma_signal_page =
+                Some(cx.new(|cx| AlphaDailyMaSignalPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::AlphaDailyMaSignal;
+        cx.notify();
+    }
+
     fn open_daily_ma_signal_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.daily_ma_signal_page.is_none() {
             let page = cx.new(|cx| DailyMaSignalPage::new(window, cx));
@@ -318,6 +504,22 @@ impl Dashboard {
             page.update(cx, |page, cx| page.set_symbol(symbol, cx));
         } else {
             self.kline_candlestick_page = Some(cx.new(|cx| KlineCandlestickPage::new(symbol, cx)));
+        }
+        self.active_page = ActivePage::KlineCandlestick;
+        cx.notify();
+    }
+
+    fn open_alpha_kline_candlestick_page(
+        &mut self,
+        symbol: String,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = &self.kline_candlestick_page {
+            page.update(cx, |page, cx| page.set_alpha_symbol(symbol, cx));
+        } else {
+            self.kline_candlestick_page =
+                Some(cx.new(|cx| KlineCandlestickPage::new_alpha(symbol, cx)));
         }
         self.active_page = ActivePage::KlineCandlestick;
         cx.notify();
@@ -361,6 +563,16 @@ impl Dashboard {
             page.update(cx, |page, cx| {
                 page.set_maximized(self.ai_providers_maximized, cx);
             });
+        }
+        cx.notify();
+    }
+
+    fn open_ai_rules_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ai_rules_page.is_none() {
+            let page = cx.new(|cx| AiRulesPage::new(window, cx));
+            self._subscriptions
+                .push(cx.subscribe_in(&page, window, Self::on_ai_rules_event));
+            self.ai_rules_page = Some(page);
         }
         cx.notify();
     }
@@ -449,6 +661,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::MarketHeatmap => self
+                .market_heatmap_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::Spot => self
                 .spot_page
                 .as_ref()
@@ -458,6 +682,54 @@ impl Dashboard {
                         .size_full()
                         .p_6()
                         .child(spot_page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::AlphaTokens => self
+                .alpha_tokens_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::AlphaExchangeInfo => self
+                .alpha_exchange_info_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::AlphaHeatmap => self
+                .alpha_heatmap_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::AlphaDailyMaSignal => self
+                .alpha_daily_ma_signal_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
@@ -551,11 +823,17 @@ impl Render for Dashboard {
 
         v_flex()
             .size_full()
+            .relative()
             .text_size(px(12.))
             .bg(bg)
             .text_color(fg)
             .on_action(cx.listener(Self::on_open_spot_symbols))
             .on_action(cx.listener(Self::on_open_market_products))
+            .on_action(cx.listener(Self::on_open_market_heatmap))
+            .on_action(cx.listener(Self::on_open_alpha_tokens))
+            .on_action(cx.listener(Self::on_open_alpha_exchange_info))
+            .on_action(cx.listener(Self::on_open_alpha_heatmap))
+            .on_action(cx.listener(Self::on_open_alpha_daily_ma_signals))
             .on_action(cx.listener(Self::on_toggle_ai_chat))
             .on_action(cx.listener(Self::on_open_ai_providers))
             .on_action(cx.listener(Self::on_close_ai_providers))
@@ -627,5 +905,8 @@ impl Render for Dashboard {
                         },
                     ),
             )
+            .when_some(self.ai_rules_page.clone(), |parent, page| {
+                parent.child(page)
+            })
     }
 }

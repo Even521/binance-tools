@@ -24,8 +24,10 @@ const SQUARE_CONTENT_ADD_URL: &str =
 const MAX_NETWORK_RETRIES: u32 = 3;
 const SQUARE_AI_MARKET_QUOTE: &str = "USDT";
 const SQUARE_AI_MARKET_LIMIT: usize = 50;
-const SQUARE_AI_DAILY_LIMIT: usize = 12;
+const SQUARE_AI_DAILY_LIMIT: usize = 100;
+const SQUARE_AI_MAX_ATTEMPTS: usize = 3;
 const SQUARE_AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const SQUARE_AI_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SquareSendStatus {
@@ -376,7 +378,7 @@ fn generate_square_ai_task_blocking() -> anyhow::Result<SquareAiGenerationSummar
     let mut last_invalid_message: Option<String> = None;
     let mut last_invalid_title: Option<String> = None;
 
-    for attempt in 0..2 {
+    for attempt in 0..SQUARE_AI_MAX_ATTEMPTS {
         let response = match send_chat_with_model_timeout_blocking(
             &settings,
             selection.clone(),
@@ -385,11 +387,8 @@ fn generate_square_ai_task_blocking() -> anyhow::Result<SquareAiGenerationSummar
         ) {
             Ok(response) => response,
             Err(err) => {
-                last_error = Some(if attempt == 0 {
-                    format!("{err}；已重试一次")
-                } else {
-                    err.to_string()
-                });
+                last_error = Some(square_ai_attempt_error(attempt, &err.to_string()));
+                wait_before_next_square_ai_attempt(attempt);
                 continue;
             }
         };
@@ -400,6 +399,7 @@ fn generate_square_ai_task_blocking() -> anyhow::Result<SquareAiGenerationSummar
             Ok(title) => {
                 if crate::db::square::ai_title_exists_today_blocking(&title)? {
                     last_error = Some(format!("AI 返回了今天已使用的标题：{title}"));
+                    wait_before_next_square_ai_attempt(attempt);
                     continue;
                 }
 
@@ -429,11 +429,8 @@ fn generate_square_ai_task_blocking() -> anyhow::Result<SquareAiGenerationSummar
                     last_invalid_title = extract_square_title(&message);
                     last_invalid_message = Some(message);
                 }
-                last_error = Some(if attempt == 0 {
-                    format!("{err}；已重试一次")
-                } else {
-                    err.to_string()
-                });
+                last_error = Some(square_ai_attempt_error(attempt, &err.to_string()));
+                wait_before_next_square_ai_attempt(attempt);
             }
         }
     }
@@ -469,6 +466,24 @@ fn generate_square_ai_task_blocking() -> anyhow::Result<SquareAiGenerationSummar
     save_fallback_square_ai_task(&products, error_message)
 }
 
+fn square_ai_attempt_error(attempt: usize, error: &str) -> String {
+    let attempt_number = attempt + 1;
+    if attempt_number < SQUARE_AI_MAX_ATTEMPTS {
+        format!(
+            "AI 第 {attempt_number} 次生成失败：{error}；5 分钟后执行第 {} 次",
+            attempt_number + 1
+        )
+    } else {
+        format!("AI 第 {attempt_number} 次生成失败：{error}")
+    }
+}
+
+fn wait_before_next_square_ai_attempt(attempt: usize) {
+    if attempt + 1 < SQUARE_AI_MAX_ATTEMPTS {
+        sleep(SQUARE_AI_RETRY_DELAY);
+    }
+}
+
 fn square_ai_candidate_products(used_titles: &[String]) -> anyhow::Result<Vec<MarketProduct>> {
     let used_assets = used_titles
         .iter()
@@ -499,7 +514,7 @@ fn save_fallback_square_ai_task(
         .first()
         .ok_or_else(|| anyhow!("没有可用于兜底生成的市场数据：{error_message}"))?;
     let title = format!("${}", product.base_asset.to_ascii_uppercase());
-    let message = format!("{title} {}", fallback_square_reason(product));
+    let message = format!("{title} {}", fallback_square_reason(product)?);
     validate_square_ai_message(&message)
         .with_context(|| format!("本地兜底文案不符合币安广场任务规则：{message}"))?;
 
@@ -525,7 +540,11 @@ fn save_fallback_square_ai_task(
     })
 }
 
-fn fallback_square_reason(product: &MarketProduct) -> &'static str {
+fn fallback_square_reason(product: &MarketProduct) -> anyhow::Result<String> {
+    fallback_square_reason_from_rules(product).ok_or_else(|| anyhow!("没有可用的本地兜底文案规则"))
+}
+
+fn fallback_square_reason_from_rules(product: &MarketProduct) -> Option<String> {
     let volume = product.quote_volume.unwrap_or_default();
     let market_cap = product.market_cap.unwrap_or_default();
     let tag_count = product.tags.len();
@@ -534,45 +553,36 @@ fn fallback_square_reason(product: &MarketProduct) -> &'static str {
         .bytes()
         .fold(0usize, |acc, byte| acc.wrapping_add(byte as usize));
 
-    const VOLUME_REASONS: &[&str] = &[
-        "成交额排位比较靠前，资金承接显得更主动，盘面热度不算单薄，后续可以观察换手能否维持",
-        "量能表现明显更醒目，短线关注正在聚集，若换手节奏保持，板块讨论可能继续围绕它展开",
-        "成交活跃度给人印象较深，资金流动没有明显冷清，当前更像是盘面里辨识度较高的标的",
-        "交易额和流动性同时靠前，说明市场参与面不窄，短评角度看更适合放在核心观察池里",
-        "盘口热度主要由成交承接支撑，不只是题材情绪推动，后续强弱要看资金是否继续停留",
-    ];
-    const CAP_REASONS: &[&str] = &[
-        "流通体量相对扎实，成交配合度也能跟上，整体不是单纯情绪带动，后面要看热度延续性",
-        "体量和流动性搭配较均衡，市场承接没有明显断层，短线表现比普通轮动标的更有辨识度",
-        "市值基础不算薄弱，交易节奏也没有掉队，整体观感偏稳，适合用更长一点的周期观察",
-        "流通规模给了盘面一定厚度，成交活跃度又能配合，说明当前关注并非只停留在概念层面",
-        "资金容量和市场热度匹配度不错，波动里仍有承接，后续如果量能不散表现会更清晰",
-    ];
-    const TAG_REASONS: &[&str] = &[
-        "标签覆盖的叙事较清晰，板块辨识度比较高，叠加成交不冷清，容易成为讨论里的焦点",
-        "所属概念有一定记忆点，近期资金参与感增强，若板块情绪延续，热度可能继续停留",
-        "赛道标签比较鲜明，市场容易形成共同认知，配合当前交易活跃度，后续反馈可以多看",
-        "概念标签和资金活跃度形成呼应，不像孤立拉动，短线更需要观察板块内扩散效果",
-        "叙事辨识度比较直接，成交也能支撑关注度，若同赛道继续活跃，它的位置会更突出",
-    ];
-
-    let reasons = if volume >= 10_000_000.0 {
-        VOLUME_REASONS
+    let category = if volume >= 10_000_000.0 {
+        "volume"
     } else if market_cap >= 100_000_000.0 {
-        CAP_REASONS
+        "cap"
     } else if tag_count >= 3 {
-        TAG_REASONS
+        "tag"
     } else {
-        &[
-            "近期市场关注开始升温，成交和流动性都有一定改善，虽然仍需观察，但已经露出一些看点",
-            "短线热度有抬头迹象，资金参与并不算弱，后续重点看盘面反馈是否能继续确认",
-            "当前交易活跃度有改善，市场讨论逐步增加，整体节奏不算沉闷，后面可以多留意变化",
-            "数据层面没有特别突兀，但成交和热度都有修复迹象，更适合用小周期继续观察强弱",
-            "盘面表现不算高调，胜在资金参与逐步改善，若后续承接稳定，关注度可能慢慢打开",
-        ]
+        "default"
     };
 
-    reasons[asset_seed % reasons.len()]
+    let rule = crate::db::ai_rules::load_ai_rule_blocking("square_fallback_reasons")
+        .ok()
+        .flatten()?;
+    if !rule.enabled {
+        return None;
+    }
+
+    let reasons = rule
+        .content
+        .lines()
+        .filter_map(|line| {
+            let (line_category, reason) = line.split_once('|')?;
+            (line_category.trim() == category)
+                .then(|| reason.trim())
+                .filter(|reason| !reason.is_empty())
+        })
+        .collect::<Vec<_>>();
+    reasons
+        .get(asset_seed % reasons.len().max(1))
+        .map(|reason| (*reason).to_string())
 }
 
 fn build_square_ai_market_prompt(products: &[MarketProduct], used_titles: &[String]) -> String {
@@ -586,26 +596,15 @@ fn build_square_ai_market_prompt(products: &[MarketProduct], used_titles: &[Stri
     } else {
         used_titles.join(", ")
     };
+    let rules = load_enabled_ai_rule_content("square_ai_market")
+        .unwrap_or_else(|| "请基于 JSON 数据选择 1 个币种，并输出一行 $币种 理由。".to_string());
 
     format!(
-        r#"你是币安广场内容助手。请只基于下面 JSON 数据筛选，不要编造外部行情、新闻或实时价格。
-当前市场：{SQUARE_AI_MARKET_QUOTE}
+        r#"当前市场：{SQUARE_AI_MARKET_QUOTE}
 今天已经发布过的标题：{used}
 
-输出要求：
-- 只选出最值得关注的 1 个币种，必须从 JSON products 中选择。
-- 禁止选择今天已经发布过的标题。
-- 必须严格使用一行格式：$币种 极短理由
-- 中文汉字数量必须不少于 40 个且不超过 50 个；$币种代码、空格、标点和英文字母不计入这 40 到 50 个汉字。
-- 不要标题，不要 Markdown 表格，不要风险提示，不要解释数据来源。
-- 不要使用买入、梭哈、暴涨、翻倍、稳赚、必涨、带单、喊单、内幕、财富自由、保证收益、合约、杠杆、冲、无脑买、抄底、逃顶、目标价、止盈止损等容易触发币安广场风控或举报的词。
-- 不要承诺收益，不要诱导交易，不要写价格预测。
-- 不要输出涨幅、涨了多少、价格、目标位、百分比或任何具体数字行情。
-- 理由必须围绕 JSON 里的 1 到 2 个重点指标写，例如成交额、换手活跃、流通市值、标签/赛道、流动性或市场热度。
-- 表达要像人工观察后的短评，可以带一点主观判断，例如“承接更主动”“辨识度更高”“热度没有散”，但不要夸张。
-- 每次措辞要自然变化，禁止反复套用“板块关注度持续提升、成交活跃、流动性良好、市场热度持续走高”这类固定模板。
-- 禁止使用“值得跟踪”“值得追踪”“更值得跟踪”“值得留意”“值得关注”作为结尾，结尾要根据指标自然收束。
-- 优先写出一个具体观察角度，例如成交承接、资金容量、赛道扩散、流动性改善、市场讨论焦点，不要只写泛泛热度。
+AI 分析规则：
+{rules}
 
 分析数据 JSON：{{
   "quote_asset": "{SQUARE_AI_MARKET_QUOTE}",
@@ -615,6 +614,13 @@ fn build_square_ai_market_prompt(products: &[MarketProduct], used_titles: &[Stri
   ]
 }}"#
     )
+}
+
+fn load_enabled_ai_rule_content(context_key: &str) -> Option<String> {
+    let rule = crate::db::ai_rules::load_ai_rule_blocking(context_key)
+        .ok()
+        .flatten()?;
+    (rule.enabled && !rule.content.trim().is_empty()).then(|| rule.content)
 }
 
 fn square_ai_product_json(product: &MarketProduct) -> String {
@@ -677,8 +683,8 @@ fn validate_square_ai_message(message: &str) -> anyhow::Result<String> {
     }
 
     let chinese_count = reason.chars().filter(|ch| is_cjk(*ch)).count();
-    if !(40..=50).contains(&chinese_count) {
-        return Err(anyhow!("AI 输出中文汉字数量不在 40 到 50 个之间"));
+    if !(40..=90).contains(&chinese_count) {
+        return Err(anyhow!("AI 输出中文汉字数量不在 40 到 90 个之间"));
     }
 
     let forbidden = [
@@ -951,12 +957,70 @@ mod tests {
 
     #[test]
     fn validates_square_ai_message_rules() {
-        let message = "$RONIN 游戏赛道热度保持较高关注成交表现活跃社区讨论延续流动性相对稳定内容质量较稳适合继续观察";
+        let message = "$RONIN 游戏赛道辨识度清晰，成交承接在榜单里更主动，流通体量也给盘面留出一定厚度，社区讨论没有明显分散，后续反馈可以多看";
         assert_eq!(
             validate_square_ai_message(message).unwrap(),
             "$RONIN".to_string()
         );
         assert!(validate_square_ai_message("$RONIN 涨了10%").is_err());
         assert!(validate_square_ai_message("$RONIN 买入热度很高").is_err());
+    }
+
+    #[test]
+    fn fallback_square_reasons_pass_ai_message_rules() {
+        let mut product = MarketProduct {
+            symbol: "GENIUSUSDT".to_string(),
+            status: "TRADING".to_string(),
+            base_asset: "GENIUS".to_string(),
+            quote_asset: "USDT".to_string(),
+            asset_name: "Genius".to_string(),
+            quote_name: "TetherUS".to_string(),
+            open_price: None,
+            high_price: None,
+            low_price: None,
+            last_price: None,
+            volume: None,
+            quote_volume: Some(20_000_000.0),
+            circulating_supply: None,
+            market_cap: Some(200_000_000.0),
+            price_change_percent: None,
+            partition: "USDT".to_string(),
+            partition_name: "USDT".to_string(),
+            tags: vec!["AI".to_string(), "Infrastructure".to_string()],
+            is_etf: false,
+            is_trading: true,
+        };
+
+        for (quote_volume, market_cap, tags) in [
+            (
+                Some(20_000_000.0),
+                Some(200_000_000.0),
+                vec!["AI".to_string()],
+            ),
+            (
+                Some(1_000_000.0),
+                Some(200_000_000.0),
+                vec!["AI".to_string()],
+            ),
+            (
+                Some(1_000_000.0),
+                Some(10_000_000.0),
+                vec![
+                    "AI".to_string(),
+                    "Infrastructure".to_string(),
+                    "Seed".to_string(),
+                ],
+            ),
+            (Some(1_000_000.0), Some(10_000_000.0), Vec::new()),
+        ] {
+            product.quote_volume = quote_volume;
+            product.market_cap = market_cap;
+            product.tags = tags;
+            let message = format!("$GENIUS {}", fallback_square_reason(&product).unwrap());
+            assert_eq!(
+                validate_square_ai_message(&message).unwrap(),
+                "$GENIUS".to_string()
+            );
+        }
     }
 }

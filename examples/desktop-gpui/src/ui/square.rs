@@ -1377,23 +1377,29 @@ impl Render for SquareTasksPage {
                         .p_3()
                         .rounded(px(8.))
                         .bg(if is_error {
-                            cx.theme().danger.opacity(0.12)
+                            square_error_background()
                         } else {
                             palette::surface_strong(cx.theme())
                         })
                         .border_1()
                         .border_color(if is_error {
-                            cx.theme().danger.opacity(0.38)
+                            square_error_border()
                         } else {
                             palette::border(cx.theme())
                         })
                         .text_size(px(12.))
                         .text_color(if is_error {
-                            cx.theme().danger_foreground.opacity(0.95)
+                            square_error_text()
                         } else {
                             palette::text(cx.theme())
                         })
-                        .child(div().flex_1().child(status))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .line_height(px(18.))
+                                .child(status),
+                        )
                         .child(
                             Button::new("clear-square-status")
                                 .ghost()
@@ -1619,6 +1625,18 @@ fn is_error_status(status: &str) -> bool {
         || status.contains("error")
         || status.contains("forbidden")
         || status.contains("unauthorized")
+}
+
+fn square_error_background() -> Hsla {
+    palette::error_background()
+}
+
+fn square_error_border() -> Hsla {
+    palette::error_border()
+}
+
+fn square_error_text() -> Hsla {
+    palette::error_text()
 }
 
 impl TableDelegate for SquareTasksTableDelegate {

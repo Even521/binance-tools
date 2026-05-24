@@ -34,9 +34,11 @@ const THINKING_MESSAGE: &str = "Thinking...";
 const THREAD_DATA_VERSION: u8 = 1;
 pub const THREADS_SIDEBAR_WIDTH: f32 = 252.0;
 const AI_HEADER_HEIGHT: f32 = 34.0;
+const ASK_MODE_SYSTEM_PROMPT: &str = "Mode: Ask. Answer the user's question or analysis request directly. Do not draft files, edit code, or perform write-oriented actions unless the user explicitly asks.";
 
 pub enum AiChatEvent {
     OpenProviders,
+    OpenRules,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -44,8 +46,18 @@ struct ChatMessage {
     role: MessageRole,
     content: String,
     request_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rule_snapshot: Option<RuleSnapshot>,
     feedback: Option<MessageFeedback>,
     failed: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RuleSnapshot {
+    context_key: String,
+    label: String,
+    content: String,
+    rule_updated_at: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -77,6 +89,16 @@ impl MessageAction {
             Self::Copy => "assistant-copy",
             Self::Retry => "assistant-retry",
             Self::Continue => "assistant-continue",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::Like => "点赞",
+            Self::Dislike => "点踩",
+            Self::Copy => "复制",
+            Self::Retry => "重新生成",
+            Self::Continue => "继续生成",
         }
     }
 }
@@ -221,13 +243,15 @@ impl AiChatPanel {
         &mut self,
         prompt: String,
         display_content: String,
+        rule_context: Option<(String, String)>,
         cx: &mut Context<Self>,
     ) {
         if self.loading {
             return;
         }
 
-        let prompt = prompt.trim().to_string();
+        let (prompt, rule_snapshot) =
+            prompt_with_rule_context(prompt.trim(), rule_context.as_ref());
         if prompt.is_empty() {
             return;
         }
@@ -241,12 +265,14 @@ impl AiChatPanel {
         }
 
         self.visible = true;
+        self.load_latest_thread_if_empty(cx);
         self.ensure_active_thread();
         self.clear_error_state();
         self.messages.push(ChatMessage {
             role: MessageRole::User,
             content: display_content,
             request_content: Some(prompt),
+            rule_snapshot,
             feedback: None,
             failed: false,
         });
@@ -254,6 +280,7 @@ impl AiChatPanel {
             role: MessageRole::Assistant,
             content: THINKING_MESSAGE.to_string(),
             request_content: None,
+            rule_snapshot: None,
             feedback: None,
             failed: false,
         });
@@ -318,6 +345,7 @@ impl AiChatPanel {
             role: MessageRole::User,
             content: text,
             request_content: None,
+            rule_snapshot: None,
             feedback: None,
             failed: false,
         });
@@ -325,6 +353,7 @@ impl AiChatPanel {
             role: MessageRole::Assistant,
             content: THINKING_MESSAGE.to_string(),
             request_content: None,
+            rule_snapshot: None,
             feedback: None,
             failed: false,
         });
@@ -527,6 +556,7 @@ impl AiChatPanel {
             role: MessageRole::Assistant,
             content: THINKING_MESSAGE.to_string(),
             request_content: None,
+            rule_snapshot: None,
             feedback: None,
             failed: false,
         });
@@ -551,6 +581,7 @@ impl AiChatPanel {
             role: MessageRole::Assistant,
             content: THINKING_MESSAGE.to_string(),
             request_content: None,
+            rule_snapshot: None,
             feedback: None,
             failed: false,
         });
@@ -668,6 +699,19 @@ impl AiChatPanel {
         }
     }
 
+    fn load_latest_thread_if_empty(&mut self, cx: &mut Context<Self>) {
+        if self.active_thread_id.is_some() || !self.messages.is_empty() || self.loading {
+            return;
+        }
+
+        self.reload_threads();
+        let Some(thread_id) = self.threads.first().map(|thread| thread.id.clone()) else {
+            return;
+        };
+
+        self.load_thread(thread_id, cx);
+    }
+
     fn load_thread(&mut self, thread_id: String, cx: &mut Context<Self>) {
         if self.loading {
             return;
@@ -733,9 +777,9 @@ impl AiChatPanel {
     }
 
     fn core_history(&self) -> Vec<CoreChatMessage> {
-        self.messages
-            .iter()
-            .filter_map(|message| match message.role {
+        let mut history = vec![CoreChatMessage::system(ASK_MODE_SYSTEM_PROMPT)];
+        history.extend(self.messages.iter().filter_map(|message| {
+            match message.role {
                 MessageRole::User => Some(CoreChatMessage::user(
                     message
                         .request_content
@@ -749,8 +793,9 @@ impl AiChatPanel {
                     Some(CoreChatMessage::assistant(message.content.clone()))
                 }
                 MessageRole::Assistant => None,
-            })
-            .collect()
+            }
+        }));
+        history
     }
 
     fn context_usage(&self, cx: &mut Context<Self>) -> ContextUsage {
@@ -1157,6 +1202,7 @@ impl AiChatPanel {
 
     fn render_more_menu_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.entity().downgrade();
+        let panel_for_rules = panel.clone();
         let panel_for_settings = panel.clone();
         Button::new("more-thread")
             .ghost()
@@ -1175,29 +1221,37 @@ impl AiChatPanel {
                     .child(Icon::new(IconName::Ellipsis).size_4()),
             )
             .dropdown_menu(move |menu, _, _| {
-                menu.item(Self::menu_label_item("Rules"))
-                    .item(Self::menu_label_item("Profiles"))
-                    .item(Self::menu_label_item("Settings").on_click({
-                        let panel = panel_for_settings.clone();
-                        move |_, window, cx| {
-                            _ = panel.update(cx, |this, cx| {
-                                this.model_picker_open = false;
-                                cx.emit(AiChatEvent::OpenProviders);
-                            });
-                            window.dispatch_action(Box::new(OpenAiProviders), cx);
-                        }
-                    }))
-                    .separator()
-                    .item(Self::menu_label_item("Toggle Threads Sidebar").on_click({
-                        let panel = panel.clone();
-                        move |_, window, cx| {
-                            _ = panel.update(cx, |this, cx| {
-                                this.toggle_threads_sidebar(window, cx);
-                            });
-                        }
-                    }))
-                    .item(Self::menu_label_item("Reauthenticate"))
-                    .min_w(px(220.))
+                menu.item(Self::menu_label_item("Rules").on_click({
+                    let panel = panel_for_rules.clone();
+                    move |_, _, cx| {
+                        _ = panel.update(cx, |this, cx| {
+                            this.model_picker_open = false;
+                            cx.emit(AiChatEvent::OpenRules);
+                        });
+                    }
+                }))
+                .item(Self::menu_label_item("Profiles"))
+                .item(Self::menu_label_item("Settings").on_click({
+                    let panel = panel_for_settings.clone();
+                    move |_, window, cx| {
+                        _ = panel.update(cx, |this, cx| {
+                            this.model_picker_open = false;
+                            cx.emit(AiChatEvent::OpenProviders);
+                        });
+                        window.dispatch_action(Box::new(OpenAiProviders), cx);
+                    }
+                }))
+                .separator()
+                .item(Self::menu_label_item("Toggle Threads Sidebar").on_click({
+                    let panel = panel.clone();
+                    move |_, window, cx| {
+                        _ = panel.update(cx, |this, cx| {
+                            this.toggle_threads_sidebar(window, cx);
+                        });
+                    }
+                }))
+                .item(Self::menu_label_item("Reauthenticate"))
+                .min_w(px(220.))
             })
     }
 
@@ -1461,6 +1515,7 @@ impl AiChatPanel {
         Button::new((action.id(), index))
             .ghost()
             .xsmall()
+            .tooltip(action.tooltip())
             .on_click(cx.listener(move |this, _, _, cx| match action {
                 MessageAction::Like => this.set_message_feedback(index, MessageFeedback::Like, cx),
                 MessageAction::Dislike => {
@@ -1546,7 +1601,7 @@ impl AiChatPanel {
             .child(self.render_toolbar_button("web-context", IconName::Globe, cx))
             .child(div().flex_1())
             .child(self.render_context_indicator(cx))
-            .child(self.render_mode_button("Write", true, cx))
+            .child(self.render_mode_button("Ask", true, cx))
             .child(self.render_model_button(cx))
             .child(
                 Button::new("send-message")
@@ -1983,6 +2038,46 @@ fn custom_model_exists(settings: &AiSettings, selection: &ModelSelection) -> boo
         })
 }
 
+fn prompt_with_rule_context(
+    prompt: &str,
+    rule_context: Option<&(String, String)>,
+) -> (String, Option<RuleSnapshot>) {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return (String::new(), None);
+    }
+
+    let Some((context_key, label)) = rule_context else {
+        return (prompt.to_string(), None);
+    };
+
+    match binance_tools::db::ai_rules::load_ai_rule_blocking(context_key) {
+        Ok(Some(rule)) if rule.enabled && !rule.content.trim().is_empty() => {
+            let content = rule.content.trim().to_string();
+            let label = if rule.label.trim().is_empty() {
+                label.clone()
+            } else {
+                rule.label.clone()
+            };
+            let prompt =
+                format!("{prompt}\n\nCurrent page custom AI analysis rules ({label}):\n{content}");
+            let snapshot = RuleSnapshot {
+                context_key: rule.context_key,
+                label,
+                content,
+                rule_updated_at: Some(rule.updated_at),
+            };
+            (prompt, Some(snapshot))
+        }
+        Ok(_) => (prompt.to_string(), None),
+        Err(err) => (
+            format!(
+                "{prompt}\n\nCurrent page custom AI analysis rules ({label}) failed to load. Ignore custom rules and continue analysis: {err}"
+            ),
+            None,
+        ),
+    }
+}
 fn estimate_tokens(text: &str) -> usize {
     let mut cjk_chars = 0usize;
     let mut ascii_chars = 0usize;

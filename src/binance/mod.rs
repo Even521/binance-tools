@@ -6,6 +6,7 @@
 /// 对外暴露官方 Binance SDK，便于业务模块在统一入口下引用。
 pub use binance_sdk as sdk;
 
+pub mod alpha;
 pub mod market;
 pub mod spot;
 

@@ -19,8 +19,15 @@ pub enum MarketProductsEvent {
     AnalyzeWithAi {
         prompt: String,
         display_content: String,
+        rule_context: AiRuleContext,
     },
     OpenKline(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct AiRuleContext {
+    pub key: String,
+    pub label: String,
 }
 
 pub struct MarketProductsPage {
@@ -163,6 +170,10 @@ impl MarketProductsPage {
         cx.emit(MarketProductsEvent::AnalyzeWithAi {
             prompt,
             display_content,
+            rule_context: AiRuleContext {
+                key: "market_products".to_string(),
+                label: "市场榜单".to_string(),
+            },
         });
         cx.notify();
     }
@@ -309,8 +320,6 @@ impl Render for MarketProductsPage {
         let surface = palette::surface_strong(cx.theme());
         let border = palette::border(cx.theme());
         let muted = palette::muted(cx.theme());
-        let danger_bg = cx.theme().danger.opacity(0.12);
-        let danger_fg = cx.theme().danger_foreground.opacity(0.9);
         let syncing = self.loading_mode == Some(MarketLoadMode::Sync);
         let refreshing = self.loading_mode == Some(MarketLoadMode::Refresh);
         let loading = self.loading_mode.is_some();
@@ -445,8 +454,11 @@ impl Render for MarketProductsPage {
                     div()
                         .p_3()
                         .rounded(px(8.))
-                        .bg(danger_bg)
-                        .text_color(danger_fg)
+                        .bg(palette::error_background())
+                        .border_1()
+                        .border_color(palette::error_border())
+                        .text_color(palette::error_text())
+                        .line_height(px(18.))
                         .child(error),
                 )
             })
@@ -776,22 +788,10 @@ fn build_market_analysis_prompt(
         .join(",\n");
 
     format!(
-        r#"你是加密货币短线筛选助手。请只基于下面 JSON 数据筛选，不要编造外部行情、新闻或实时价格。
-当前市场：{quote_asset}
+        r#"当前市场：{quote_asset}
 数据来源：本地 SQLite 缓存的 Binance Web product 数据
 缓存规则：数据 5 分钟内有效
 数据范围：当前市场按 24h 涨跌幅排序后的前 {sample_count} 条；缓存总数：{total_cached_count} 条
-
-输出要求：
-- 只选出最值得关注的 1 个币种。
-- 必须严格使用一行格式：$币种 极短理由
-- 中文汉字数量必须不少于 40 个且不超过 50 个；$币种代码、空格、标点和英文字母不计入这 40 到 50 个汉字。
-- 不要标题，不要 Markdown 表格，不要风险提示，不要解释数据来源。
-- 不要使用买入、梭哈、暴涨、翻倍、稳赚、必涨、带单、喊单、内幕、财富自由、保证收益、合约、杠杆、冲、无脑买、抄底、逃顶、目标价、止盈止损等容易触发币安广场风控或举报的词。
-- 不要承诺收益，不要诱导交易，不要写价格预测。
-- 不要输出涨幅、涨了多少、价格、目标位、百分比或任何具体数字行情。
-- 理由只能使用定性描述，例如热度、成交活跃、板块关注度、流动性。
-- 如果数据不足，也必须从已有数据中选 1 个。
 
 分析数据 JSON：{{
   "quote_asset": {quote_json},

@@ -28,15 +28,16 @@ CREATE INDEX IF NOT EXISTS idx_ai_chat_threads_updated_at
 | `title` | `TEXT` | 会话标题，默认从第一条用户消息生成 |
 | `selected_model_json` | `TEXT` | 当前会话选中的模型 JSON，例如 `{"provider":"deepseek","model":"deepseek-chat"}` |
 | `data_type` | `TEXT` | `zstd` 表示压缩 JSON，`json` 为兼容旧数据 |
-| `data` | `BLOB` | 会话数据，包含消息、反馈和失败状态 |
+| `data` | `BLOB` | 会话数据，包含消息、反馈、失败状态和外部 AI 分析使用的规则快照 |
 | `created_at` | `TEXT` | 创建时间 |
 | `updated_at` | `TEXT` | 最近更新时间，用于历史列表倒序排序 |
 
 ## 功能清单
 
-- [x] 保存当前会话消息和选中模型。
-- [x] 历史列表按 `updated_at DESC` 排序。
-- [x] 读取历史会话时恢复消息和模型。
-- [x] 删除历史会话时从 SQLite 移除对应记录。
-- [x] 新数据默认使用 `zstd` 压缩。
-- [x] 兼容读取旧 `json` 数据。
+- ✓ 保存当前会话消息和选中模型。
+- ✓ 历史列表按 `updated_at DESC` 排序。
+- ✓ 读取历史会话时恢复消息和模型。
+- ✓ 删除历史会话时从 SQLite 移除对应记录。
+- ✓ 新数据默认使用 `zstd` 压缩。
+- ✓ 兼容读取旧 `json` 数据。
+- ✓ 页面触发的 AI 分析会保存当次使用的规则快照，规则后续修改不会覆盖历史会话。

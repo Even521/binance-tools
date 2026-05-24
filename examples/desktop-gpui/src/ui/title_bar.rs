@@ -13,6 +13,11 @@ actions!(
     desktop_gpui,
     [
         OpenDailyMaSignals,
+        OpenAlphaDailyMaSignals,
+        OpenAlphaExchangeInfo,
+        OpenAlphaHeatmap,
+        OpenAlphaTokens,
+        OpenMarketHeatmap,
         OpenKlineCandlestick,
         OpenMarketProducts,
         OpenSpotSymbols,
@@ -113,6 +118,17 @@ impl Render for DesktopTitleBar {
                                 )
                                 .item(
                                     PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("热力图")
+                                    })
+                                    .on_click(
+                                        |_, window, cx| {
+                                            window
+                                                .dispatch_action(Box::new(OpenMarketHeatmap), cx);
+                                        },
+                                    ),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
                                         div().text_size(px(11.)).child("日均线信号")
                                     })
                                     .on_click(
@@ -123,6 +139,47 @@ impl Render for DesktopTitleBar {
                                     ),
                                 )
                                 .min_w(px(110.))
+                            }),
+                    )
+                    .child(
+                        Button::new("alpha-menu")
+                            .label("Alpha")
+                            .ghost()
+                            .xsmall()
+                            .dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("Token列表")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenAlphaTokens), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("交易对信息")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenAlphaExchangeInfo), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("热力图")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenAlphaHeatmap), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("日均线信号")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenAlphaDailyMaSignals), cx);
+                                    }),
+                                )
+                                .min_w(px(120.))
                             }),
                     ),
             )

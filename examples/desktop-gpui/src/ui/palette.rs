@@ -36,3 +36,15 @@ pub fn surface_strong(theme: &Theme) -> Hsla {
 pub fn hover(theme: &Theme) -> Hsla {
     theme.muted.opacity(0.18)
 }
+
+pub fn error_background() -> Hsla {
+    gpui::hsla(0.0, 0.72, 0.94, 1.0)
+}
+
+pub fn error_border() -> Hsla {
+    gpui::hsla(0.0, 0.62, 0.76, 1.0)
+}
+
+pub fn error_text() -> Hsla {
+    gpui::hsla(0.0, 0.18, 0.18, 1.0)
+}

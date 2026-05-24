@@ -1,5 +1,9 @@
 pub mod ai;
+pub mod alpha;
+pub mod alpha_heatmap;
+pub mod alpha_ma_signal;
 pub mod dashboard;
+pub mod heatmap;
 pub mod kline;
 pub mod ma_signal;
 pub mod market;

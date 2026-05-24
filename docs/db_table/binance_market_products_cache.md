@@ -1,6 +1,6 @@
 # binance_market_products_cache
 
-`binance_market_products_cache` 缓存 Binance Web product 接口返回的市场榜单数据，用于 Dashboard 首页市场榜单和右侧 AI 分析。
+`binance_market_products_cache` 缓存 Binance Web product 接口返回的市场榜单数据，用于 Dashboard 首页市场榜单、市场热力图和右侧 AI 分析。
 
 数据来源：
 
@@ -14,6 +14,7 @@ https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products
 src/binance/market.rs
 src/db/market.rs
 examples/desktop-gpui/src/ui/market.rs
+examples/desktop-gpui/src/ui/heatmap.rs
 ```
 
 ## 缓存策略
@@ -23,6 +24,13 @@ examples/desktop-gpui/src/ui/market.rs
 - 如果最新数据在 5 分钟内，直接读取 SQLite。
 - 如果缓存为空或超过 5 分钟，重新请求 Binance Web product 接口。
 - 写入新数据时，在同一个事务中先清空旧数据，再批量插入新数据。
+
+## 热力图使用
+
+- `price_change_percent` 用于决定方块颜色：上涨绿色，下跌红色，持平灰色。
+- `market_cap` 和 `quote_volume` 用于热力图方块权重，页面可在市值和成交额之间切换。
+- `quote_asset` 用于热力图计价资产筛选。
+- 点击热力图方块会进入对应现货交易对的 1 日 K 线图。
 
 ## 建表 SQL
 

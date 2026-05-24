@@ -1,5 +1,5 @@
 use crate::ui::palette;
-use binance_tools::binance::spot::SpotDailyKline;
+use binance_tools::binance::{BinanceSettings, alpha::AlphaDailyKline, spot::SpotDailyKline};
 use gpui::{InteractiveElement as _, prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, PixelsExt, Sizable, StyledExt,
@@ -15,7 +15,8 @@ const ZOOM_STEP: usize = 20;
 
 pub struct KlineCandlestickPage {
     symbol: String,
-    klines: Vec<SpotDailyKline>,
+    source: KlineSource,
+    klines: Vec<KlineData>,
     visible_start: usize,
     visible_count: usize,
     hover_index: Option<usize>,
@@ -25,6 +26,64 @@ pub struct KlineCandlestickPage {
     drag_start_visible_start: usize,
     error: Option<String>,
     _load_task: Task<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KlineSource {
+    Spot,
+    Alpha,
+}
+
+impl KlineSource {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Spot => "现货",
+            Self::Alpha => "Alpha",
+        }
+    }
+
+    fn table_name(self) -> &'static str {
+        match self {
+            Self::Spot => "spot_klines",
+            Self::Alpha => "alpha_klines",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct KlineData {
+    open_time: i64,
+    open_price: f64,
+    high_price: f64,
+    low_price: f64,
+    close_price: f64,
+    volume: f64,
+}
+
+impl From<SpotDailyKline> for KlineData {
+    fn from(kline: SpotDailyKline) -> Self {
+        Self {
+            open_time: kline.open_time,
+            open_price: kline.open_price,
+            high_price: kline.high_price,
+            low_price: kline.low_price,
+            close_price: kline.close_price,
+            volume: kline.volume,
+        }
+    }
+}
+
+impl From<AlphaDailyKline> for KlineData {
+    fn from(kline: AlphaDailyKline) -> Self {
+        Self {
+            open_time: kline.open_time,
+            open_price: kline.open_price,
+            high_price: kline.high_price,
+            low_price: kline.low_price,
+            close_price: kline.close_price,
+            volume: kline.volume,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,8 +101,17 @@ struct VolumeRange {
 
 impl KlineCandlestickPage {
     pub fn new(symbol: String, cx: &mut Context<Self>) -> Self {
+        Self::new_with_source(symbol, KlineSource::Spot, cx)
+    }
+
+    pub fn new_alpha(symbol: String, cx: &mut Context<Self>) -> Self {
+        Self::new_with_source(symbol, KlineSource::Alpha, cx)
+    }
+
+    fn new_with_source(symbol: String, source: KlineSource, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             symbol,
+            source,
             klines: Vec::new(),
             visible_start: 0,
             visible_count: 120,
@@ -60,9 +128,21 @@ impl KlineCandlestickPage {
     }
 
     pub fn set_symbol(&mut self, symbol: String, cx: &mut Context<Self>) {
-        if self.symbol != symbol {
-            self.symbol = symbol;
-        }
+        self.set_symbol_with_source(symbol, KlineSource::Spot, cx);
+    }
+
+    pub fn set_alpha_symbol(&mut self, symbol: String, cx: &mut Context<Self>) {
+        self.set_symbol_with_source(symbol, KlineSource::Alpha, cx);
+    }
+
+    fn set_symbol_with_source(
+        &mut self,
+        symbol: String,
+        source: KlineSource,
+        cx: &mut Context<Self>,
+    ) {
+        self.symbol = symbol;
+        self.source = source;
         self.hover_index = None;
         self.hover_point = None;
         self.reload(cx);
@@ -70,11 +150,27 @@ impl KlineCandlestickPage {
 
     fn reload(&mut self, cx: &mut Context<Self>) {
         let symbol = self.symbol.clone();
+        let source = self.source;
         self.error = None;
         self._load_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    binance_tools::db::spot::list_spot_daily_klines_blocking(symbol, 120)
+                    match source {
+                        KlineSource::Spot => {
+                            binance_tools::db::spot::load_or_fetch_spot_daily_klines_blocking(
+                                BinanceSettings::production(),
+                                symbol,
+                                120,
+                            )
+                            .map(|klines| klines.into_iter().map(KlineData::from).collect())
+                        }
+                        KlineSource::Alpha => {
+                            binance_tools::db::alpha::load_or_fetch_alpha_daily_klines_blocking(
+                                symbol, 120,
+                            )
+                            .map(|klines| klines.into_iter().map(KlineData::from).collect())
+                        }
+                    }
                 })
                 .await;
 
@@ -108,7 +204,7 @@ impl KlineCandlestickPage {
         });
     }
 
-    fn visible_klines(&self) -> Vec<SpotDailyKline> {
+    fn visible_klines(&self) -> Vec<KlineData> {
         let count = self.visible_count.min(self.klines.len());
         let max_start = self.klines.len().saturating_sub(count);
         let start = self.visible_start.min(max_start);
@@ -120,10 +216,7 @@ impl KlineCandlestickPage {
             .collect()
     }
 
-    fn selected_kline<'a>(
-        &'a self,
-        visible: &'a [SpotDailyKline],
-    ) -> Option<(usize, &'a SpotDailyKline)> {
+    fn selected_kline<'a>(&'a self, visible: &'a [KlineData]) -> Option<(usize, &'a KlineData)> {
         let index = self
             .hover_index
             .filter(|index| *index < visible.len())
@@ -159,7 +252,7 @@ impl KlineCandlestickPage {
         })
     }
 
-    fn kline_change(&self, visible: &[SpotDailyKline], index: usize) -> Option<(f64, f64)> {
+    fn kline_change(&self, visible: &[KlineData], index: usize) -> Option<(f64, f64)> {
         let current = visible.get(index)?;
         let previous_close = index
             .checked_sub(1)
@@ -295,7 +388,10 @@ impl KlineCandlestickPage {
             .items_center()
             .justify_center()
             .text_color(palette::muted(cx.theme()))
-            .child("暂无 K 线数据，请先在日均线信号页面查询并缓存 spot_klines")
+            .child(format!(
+                "暂无 K 线数据，请先查询并缓存 {}",
+                self.source.table_name()
+            ))
             .into_any_element()
     }
 
@@ -669,18 +765,18 @@ impl Render for KlineCandlestickPage {
                 h_flex().justify_between().items_center().gap_3().child(
                     v_flex()
                         .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_semibold()
-                                .child(format!("{} 现货 1日K线", self.symbol)),
-                        )
+                        .child(div().text_size(px(16.)).font_semibold().child(format!(
+                            "{} {} 1日K线",
+                            self.symbol,
+                            self.source.title()
+                        )))
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(palette::muted(cx.theme()))
                                 .child(format!(
-                                    "SQLite spot_klines，最近 {} 根日线",
+                                    "SQLite {}，最近 {} 根日线",
+                                    self.source.table_name(),
                                     self.klines.len()
                                 )),
                         ),
@@ -720,8 +816,11 @@ impl Render for KlineCandlestickPage {
                     div()
                         .p_3()
                         .rounded(px(8.))
-                        .bg(cx.theme().danger.opacity(0.12))
-                        .text_color(cx.theme().danger_foreground.opacity(0.9))
+                        .bg(palette::error_background())
+                        .border_1()
+                        .border_color(palette::error_border())
+                        .text_color(palette::error_text())
+                        .line_height(px(18.))
                         .child(error),
                 )
             })
@@ -867,7 +966,7 @@ fn ma99_color() -> Hsla {
     hsla(0.72, 0.74, 0.70, 1.0)
 }
 
-fn moving_average(data: &[SpotDailyKline], index: usize, period: usize) -> Option<f64> {
+fn moving_average(data: &[KlineData], index: usize, period: usize) -> Option<f64> {
     if index + 1 < period {
         return None;
     }
@@ -881,7 +980,7 @@ fn moving_average(data: &[SpotDailyKline], index: usize, period: usize) -> Optio
 }
 
 fn ma_overlay(
-    data: Vec<SpotDailyKline>,
+    data: Vec<KlineData>,
     range: KlineRange,
     period: usize,
     color: Hsla,

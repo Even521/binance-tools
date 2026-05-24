@@ -2,7 +2,10 @@
   "agent": {
     "enabled": true,
     "version": 2,
-    "default_model": null,
+    "default_model": {
+      "provider": "deepseek-ai",
+      "model": "deepseek-ai/deepseek-v4-pro"
+    },
     "inline_assistant_model": null,
     "commit_message_model": null,
     "thread_summary_model": null,

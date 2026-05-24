@@ -25,6 +25,10 @@ src/db/
 | `spot_symbols` | [`spot_symbols.md`](./spot_symbols.md) | Binance Spot 交易对基础信息缓存 |
 | `spot_klines` | [`spot_klines.md`](./spot_klines.md) | Spot K 线缓存 |
 | `binance_market_products_cache` | [`binance_market_products_cache.md`](./binance_market_products_cache.md) | Binance Web product 市场榜单缓存 |
+| `alpha_tokens` | [`alpha_tokens.md`](./alpha_tokens.md) | Binance Alpha Token 列表缓存 |
+| `alpha_assets` | [`alpha_assets.md`](./alpha_assets.md) | Binance Alpha 资产列表缓存 |
+| `alpha_symbols` | [`alpha_symbols.md`](./alpha_symbols.md) | Binance Alpha 交易对信息缓存 |
+| `alpha_klines` | [`alpha_klines.md`](./alpha_klines.md) | Binance Alpha K 线缓存，用于日均线信号 |
 | `binance_square_keys` | [`binance_square_keys.md`](./binance_square_keys.md) | 币安广场 API Key |
 | `binance_square_tasks` | [`binance_square_tasks.md`](./binance_square_tasks.md) | 币安广场定时任务 |
 | `binance_square_send_logs` | [`binance_square_send_logs.md`](./binance_square_send_logs.md) | 币安广场发送日志 |
@@ -32,6 +36,7 @@ src/db/
 | `binance_square_ai_logs` | [`binance_square_ai_logs.md`](./binance_square_ai_logs.md) | AI 生成任务日志 |
 | `ai_provider_keys` | [`ai_provider_keys.md`](./ai_provider_keys.md) | AI Provider 本地 API Key |
 | `ai_chat_threads` | [`ai_chat_threads.md`](./ai_chat_threads.md) | AI Chat 历史会话，内容使用 zstd 压缩保存 |
+| `ai_rules` | [`ai_rules.md`](./ai_rules.md) | 页面级 AI 分析规则，内容使用 zstd 压缩保存 |
 
 ## 维护约定
 

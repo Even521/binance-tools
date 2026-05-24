@@ -84,6 +84,27 @@ pub fn list_spot_daily_klines_blocking(
     list_spot_daily_klines(&connection, &symbol, limit)
 }
 
+pub fn load_or_fetch_spot_daily_klines_blocking(
+    settings: BinanceSettings,
+    symbol: String,
+    days: u16,
+) -> anyhow::Result<Vec<SpotDailyKline>> {
+    let days = days.clamp(1, 1000);
+    let mut connection = super::open_default_connection()?;
+    let cached = list_spot_daily_klines(&connection, &symbol, days as usize)?;
+    if has_complete_daily_window(
+        cached.len(),
+        cached.last().map(|kline| kline.open_time),
+        days,
+    ) {
+        return Ok(cached);
+    }
+
+    let klines = crate::binance::spot::fetch_spot_daily_klines_blocking(settings, &symbol, days)?;
+    upsert_spot_daily_klines(&mut connection, &klines)?;
+    list_spot_daily_klines(&connection, &symbol, days as usize)
+}
+
 pub fn list_spot_symbols(connection: &Connection) -> anyhow::Result<Vec<SpotSymbolInfo>> {
     let mut statement = connection
         .prepare(
@@ -439,6 +460,11 @@ fn today_utc_open_time_millis() -> i64 {
     now_millis / DAY_MILLIS * DAY_MILLIS
 }
 
+fn has_complete_daily_window(samples: usize, latest_open_time: Option<i64>, days: u16) -> bool {
+    samples >= days as usize
+        && latest_open_time.is_some_and(|time| time >= today_utc_open_time_millis())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,5 +578,17 @@ mod tests {
         assert_eq!(klines.len(), 2);
         assert_eq!(klines[0].close_price, 100.0);
         assert_eq!(klines[1].close_price, 120.0);
+    }
+
+    #[test]
+    fn stale_daily_window_is_not_complete() {
+        let latest = today_utc_open_time_millis() - DAY_MILLIS;
+
+        assert!(!has_complete_daily_window(120, Some(latest), 120));
+        assert!(has_complete_daily_window(
+            120,
+            Some(today_utc_open_time_millis()),
+            120
+        ));
     }
 }
