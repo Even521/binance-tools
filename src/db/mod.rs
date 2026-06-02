@@ -14,6 +14,7 @@ pub mod alpha;
 pub mod market;
 pub mod spot;
 pub mod square;
+pub mod task_board;
 
 pub const DEFAULT_DATABASE_PATH: &str = "db/binance_tools.sqlite";
 
@@ -295,6 +296,22 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_ai_rules_enabled_updated_at
                 ON ai_rules(enabled, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS tool_board_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                due_at TEXT NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tool_board_tasks_completed_due
+                ON tool_board_tasks(completed, due_at);
+
+            CREATE INDEX IF NOT EXISTS idx_tool_board_tasks_updated_at
+                ON tool_board_tasks(updated_at DESC);
 
             "#,
         )

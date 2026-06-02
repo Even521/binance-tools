@@ -9,6 +9,7 @@ pub use binance_sdk as sdk;
 pub mod alpha;
 pub mod market;
 pub mod spot;
+pub mod vision;
 
 /// Binance 运行环境。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -13,6 +13,7 @@
 | [`05-ai.md`](./05-ai.md) | Zed 风格 AI 模块、Provider 配置、Chat 面板和流式输出 |
 | [`06-ai-market-analysis.md`](./06-ai-market-analysis.md) | 市场榜单 AI 分析按钮、精简 JSON 和 prompt 约束 |
 | [`07-binance-alpha.md`](./07-binance-alpha.md) | Binance Alpha 文档入库、REST 客户端和 WebSocket 辅助 |
+| [`08-工具.md`](./08-工具.md) | 工具菜单和文档转换 |
 
 ## 当前主功能
 
@@ -27,6 +28,7 @@
 - ✓ AI 历史会话保存规则快照，后续修改规则不会覆盖旧分析记录。
 - ✓ 币安广场 AI 生成每日最多 100 条，失败最多重试 3 次且间隔 5 分钟。
 - ✓ Binance Alpha 官方文档已入库，REST 市场数据接口、WebSocket stream 辅助和顶部 Alpha 菜单已实现。
+- ✓ 工具菜单包含文档转换，支持 Markdown / HTML 本地互转、复制和保存。
 
 ## 维护约定
 

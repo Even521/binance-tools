@@ -9,6 +9,7 @@ use crate::ui::{
     alpha::{AlphaExchangeInfoPage, AlphaTokensEvent, AlphaTokensPage},
     alpha_heatmap::{AlphaHeatmapEvent, AlphaHeatmapPage},
     alpha_ma_signal::AlphaDailyMaSignalPage,
+    backtest::SpotBacktestPage,
     heatmap::{MarketHeatmapEvent, MarketHeatmapPage},
     kline::KlineCandlestickPage,
     ma_signal::{DailyMaSignalEvent, DailyMaSignalPage},
@@ -16,11 +17,14 @@ use crate::ui::{
     palette,
     spot::SpotPage,
     square::{SquareKeySettingsPage, SquareSendLogsPage, SquareTasksPage},
+    task_board::TaskBoardPage,
     title_bar::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
-        OpenAlphaTokens, OpenDailyMaSignals, OpenMarketHeatmap, OpenMarketProducts,
-        OpenSpotSymbols, OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks,
+        OpenAlphaTokens, OpenDailyMaSignals, OpenDocumentConvert, OpenMarketHeatmap,
+        OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols, OpenSquareKeySettings,
+        OpenSquareSendLogs, OpenSquareTasks, OpenTaskBoard,
     },
+    tools::DocumentConvertPage,
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{ActiveTheme, h_flex, v_flex};
@@ -42,11 +46,14 @@ pub struct Dashboard {
     alpha_heatmap_page: Option<Entity<AlphaHeatmapPage>>,
     alpha_daily_ma_signal_page: Option<Entity<AlphaDailyMaSignalPage>>,
     spot_page: Option<Entity<SpotPage>>,
+    spot_backtest_page: Option<Entity<SpotBacktestPage>>,
     daily_ma_signal_page: Option<Entity<DailyMaSignalPage>>,
     kline_candlestick_page: Option<Entity<KlineCandlestickPage>>,
     square_key_settings_page: Option<Entity<SquareKeySettingsPage>>,
     square_tasks_page: Option<Entity<SquareTasksPage>>,
     square_send_logs_page: Option<Entity<SquareSendLogsPage>>,
+    document_convert_page: Option<Entity<DocumentConvertPage>>,
+    task_board_page: Option<Entity<TaskBoardPage>>,
     active_page: ActivePage,
     /// Current proportional width of the AI chat panel.
     chat_panel_ratio: f32,
@@ -69,11 +76,14 @@ enum ActivePage {
     AlphaHeatmap,
     AlphaDailyMaSignal,
     Spot,
+    SpotBacktest,
     DailyMaSignal,
     KlineCandlestick,
     SquareKeySettings,
     SquareTasks,
     SquareSendLogs,
+    DocumentConvert,
+    TaskBoard,
 }
 
 impl Dashboard {
@@ -105,11 +115,14 @@ impl Dashboard {
             alpha_heatmap_page: None,
             alpha_daily_ma_signal_page: None,
             spot_page: None,
+            spot_backtest_page: None,
             daily_ma_signal_page: None,
             kline_candlestick_page: None,
             square_key_settings_page: None,
             square_tasks_page: None,
             square_send_logs_page: None,
+            document_convert_page: None,
+            task_board_page: None,
             active_page: ActivePage::MarketProducts,
             chat_panel_ratio: CHAT_PANEL_DEFAULT_RATIO,
             dragging_sash: false,
@@ -145,6 +158,15 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.open_market_heatmap_page(window, cx);
+    }
+
+    fn on_open_spot_backtest(
+        &mut self,
+        _: &OpenSpotBacktest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_spot_backtest_page(window, cx);
     }
 
     fn on_open_alpha_tokens(
@@ -407,11 +429,37 @@ impl Dashboard {
         self.open_square_send_logs_page(window, cx);
     }
 
+    fn on_open_document_convert(
+        &mut self,
+        _: &OpenDocumentConvert,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_document_convert_page(window, cx);
+    }
+
+    fn on_open_task_board(
+        &mut self,
+        _: &OpenTaskBoard,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_task_board_page(window, cx);
+    }
+
     fn open_spot_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.spot_page.is_none() {
             self.spot_page = Some(cx.new(|cx| SpotPage::new(window, cx)));
         }
         self.active_page = ActivePage::Spot;
+        cx.notify();
+    }
+
+    fn open_spot_backtest_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.spot_backtest_page.is_none() {
+            self.spot_backtest_page = Some(cx.new(|cx| SpotBacktestPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::SpotBacktest;
         cx.notify();
     }
 
@@ -552,6 +600,22 @@ impl Dashboard {
         cx.notify();
     }
 
+    fn open_document_convert_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.document_convert_page.is_none() {
+            self.document_convert_page = Some(cx.new(|cx| DocumentConvertPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::DocumentConvert;
+        cx.notify();
+    }
+
+    fn open_task_board_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_board_page.is_none() {
+            self.task_board_page = Some(cx.new(|cx| TaskBoardPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::TaskBoard;
+        cx.notify();
+    }
+
     fn open_ai_providers_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai_providers_page.is_none() {
             let page = cx.new(|cx| AiProvidersPage::new(window, cx));
@@ -685,6 +749,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::SpotBacktest => self
+                .spot_backtest_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::AlphaTokens => self
                 .alpha_tokens_page
                 .as_ref()
@@ -793,6 +869,30 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::DocumentConvert => self
+                .document_convert_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::TaskBoard => self
+                .task_board_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
         }
     }
 
@@ -830,6 +930,7 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_spot_symbols))
             .on_action(cx.listener(Self::on_open_market_products))
             .on_action(cx.listener(Self::on_open_market_heatmap))
+            .on_action(cx.listener(Self::on_open_spot_backtest))
             .on_action(cx.listener(Self::on_open_alpha_tokens))
             .on_action(cx.listener(Self::on_open_alpha_exchange_info))
             .on_action(cx.listener(Self::on_open_alpha_heatmap))
@@ -842,6 +943,8 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_square_key_settings))
             .on_action(cx.listener(Self::on_open_square_tasks))
             .on_action(cx.listener(Self::on_open_square_send_logs))
+            .on_action(cx.listener(Self::on_open_document_convert))
+            .on_action(cx.listener(Self::on_open_task_board))
             .when(self.dragging_sash, |parent| {
                 parent
                     .cursor_col_resize()

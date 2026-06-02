@@ -10,7 +10,7 @@ use binance_tools::{
     },
 };
 use chrono::{Local, NaiveDateTime, TimeZone, Utc};
-use gpui::{prelude::FluentBuilder, *};
+use gpui::{actions, prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},

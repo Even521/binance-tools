@@ -4,6 +4,7 @@
 
 pub mod ai;
 pub mod app;
+pub mod backtest;
 pub mod binance;
 pub mod db;
 pub mod square;

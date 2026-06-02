@@ -250,11 +250,7 @@ impl AlphaHeatmapPage {
         let share = weight_share(weight, total_weight);
         let size = tile_size(row_ix, share);
         let symbol = alpha_usdt_symbol(token);
-        let display_symbol = if size.compact {
-            token.symbol.clone()
-        } else {
-            symbol.clone()
-        };
+        let display_symbol = token.symbol.clone();
 
         v_flex()
             .id(("alpha-heatmap-tile", row_ix))
@@ -310,7 +306,8 @@ impl AlphaHeatmapPage {
                         .text_size(px(size.name_font))
                         .text_color(hsla(0.0, 0.0, 1.0, 0.72))
                         .child(format!(
-                            "{} {} · {:.2}%",
+                            "{} · {} {} · {:.2}%",
+                            token_name(token),
                             self.weight_mode.item_label(),
                             format_money(weight),
                             share * 100.0
@@ -612,6 +609,15 @@ fn alpha_usdt_symbol(token: &AlphaToken) -> String {
     } else {
         format!("{}USDT", token.alpha_id)
     }
+}
+
+fn token_name(token: &AlphaToken) -> String {
+    token
+        .name
+        .trim()
+        .is_empty()
+        .then(|| token.symbol.clone())
+        .unwrap_or_else(|| token.name.clone())
 }
 
 fn parse_number(value: &Option<String>) -> Option<f64> {

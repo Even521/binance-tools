@@ -3,3 +3,4 @@ db/*.sqlite
 db/*.sqlite-*
 !db/.gitkeep
 nul
+data/backtest/*

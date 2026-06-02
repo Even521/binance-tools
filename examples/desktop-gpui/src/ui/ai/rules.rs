@@ -5,11 +5,12 @@ use binance_tools::db::ai_rules::{
 };
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Sizable, Theme,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, Theme,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
+    text::TextView,
     v_flex,
 };
 
@@ -23,6 +24,7 @@ pub struct AiRulesPage {
     saved_content: String,
     enabled: bool,
     rule_format: RuleFormat,
+    preview_open: bool,
     status: Option<String>,
     error: Option<String>,
     search_input: Entity<InputState>,
@@ -125,6 +127,7 @@ impl AiRulesPage {
             saved_content: content_value,
             enabled,
             rule_format,
+            preview_open: false,
             status: None,
             error,
             search_input,
@@ -151,6 +154,7 @@ impl AiRulesPage {
         self.saved_content.clear();
         self.enabled = true;
         self.rule_format = RuleFormat::Markdown;
+        self.preview_open = false;
         self.error = None;
         self.status = Some("New rule".to_string());
         self.key_input
@@ -169,6 +173,7 @@ impl AiRulesPage {
                 self.saved_content = rule.content.clone();
                 self.enabled = rule.enabled;
                 self.rule_format = RuleFormat::from_db(&rule.format);
+                self.preview_open = false;
                 self.error = None;
                 self.status = None;
                 self.key_input.update(cx, |input, cx| {
@@ -286,6 +291,21 @@ impl AiRulesPage {
 
     fn set_rule_format(&mut self, rule_format: RuleFormat, cx: &mut Context<Self>) {
         self.rule_format = rule_format;
+        if self.rule_format != RuleFormat::Markdown {
+            self.preview_open = false;
+        }
+        cx.notify();
+    }
+
+    fn open_preview(&mut self, cx: &mut Context<Self>) {
+        if self.rule_format == RuleFormat::Markdown {
+            self.preview_open = true;
+        }
+        cx.notify();
+    }
+
+    fn close_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview_open = false;
         cx.notify();
     }
 
@@ -586,10 +606,30 @@ impl AiRulesPage {
                         v_flex()
                             .gap_1()
                             .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(palette::muted(app_theme))
-                                    .child("Rule"),
+                                h_flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(palette::muted(app_theme))
+                                            .child("Rule"),
+                                    )
+                                    .child(
+                                        Button::new("preview-ai-rule")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(Icon::new(IconName::Eye).size_4())
+                                            .tooltip(if self.rule_format == RuleFormat::Markdown {
+                                                "预览 Markdown"
+                                            } else {
+                                                "仅 Markdown 规则支持预览"
+                                            })
+                                            .disabled(self.rule_format != RuleFormat::Markdown)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.open_preview(cx);
+                                            })),
+                                    ),
                             )
                             .child(
                                 div()
@@ -600,7 +640,7 @@ impl AiRulesPage {
                                     .border_color(palette::border(app_theme))
                                     .bg(app_theme.background)
                                     .p_2()
-                                    .child(Input::new(&self.content_input).appearance(false)),
+                                    .child(self.render_rule_body()),
                             ),
                     )
                     .child(
@@ -627,6 +667,100 @@ impl AiRulesPage {
                                         cx.write_to_clipboard(ClipboardItem::new_string(content));
                                     })),
                             ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_rule_body(&self) -> AnyElement {
+        Input::new(&self.content_input)
+            .appearance(false)
+            .into_any_element()
+    }
+
+    fn render_preview_overlay(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let title = input_text(&self.label_input, cx);
+        let content = self.content_input.read(cx).text().to_string();
+        let app_theme = cx.theme();
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(gpui::black().opacity(0.18))
+            .child(
+                v_flex()
+                    .absolute()
+                    .top(px(48.))
+                    .left(px(72.))
+                    .right(px(72.))
+                    .bottom(px(48.))
+                    .min_w(px(640.))
+                    .min_h(px(420.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(palette::border(app_theme))
+                    .shadow_md()
+                    .bg(app_theme.background)
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .h(px(42.))
+                            .px_3()
+                            .border_b_1()
+                            .border_color(palette::border(app_theme))
+                            .child(Icon::new(IconName::Eye).size_4())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(15.))
+                                    .text_color(palette::text_strong(app_theme))
+                                    .child(if title.is_empty() {
+                                        "Markdown Preview".to_string()
+                                    } else {
+                                        format!("{title} Preview")
+                                    }),
+                            )
+                            .child(
+                                Button::new("close-rule-preview")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::Close).size_4())
+                                    .tooltip("关闭预览")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_preview(cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_y_scrollbar()
+                            .p_4()
+                            .when(content.trim().is_empty(), |parent| {
+                                parent.child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .text_color(palette::muted(app_theme))
+                                        .child("Preview is empty"),
+                                )
+                            })
+                            .when(!content.trim().is_empty(), |parent| {
+                                parent.child(
+                                    TextView::markdown(
+                                        "ai-rule-markdown-preview",
+                                        content,
+                                        window,
+                                        cx,
+                                    )
+                                    .selectable(true),
+                                )
+                            }),
                     ),
             )
             .into_any_element()
@@ -737,7 +871,7 @@ impl AiRulesPage {
 impl EventEmitter<AiRulesEvent> for AiRulesPage {}
 
 impl Render for AiRulesPage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app_theme = cx.theme();
 
         div()
@@ -770,6 +904,9 @@ impl Render for AiRulesPage {
                             .child(self.render_editor(cx)),
                     ),
             )
+            .when(self.preview_open, |parent| {
+                parent.child(self.render_preview_overlay(window, cx))
+            })
     }
 }
 

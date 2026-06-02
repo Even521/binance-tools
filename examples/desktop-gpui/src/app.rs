@@ -1,9 +1,10 @@
 use crate::{theme, ui::dashboard::Dashboard};
 use gpui::*;
 use gpui_component::{Root, TitleBar};
+use gpui_component_assets::Assets;
 
 pub fn run() {
-    let app = Application::new().with_assets(gpui_component_assets::Assets);
+    let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
         gpui_component::init(cx);

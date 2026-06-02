@@ -11,9 +11,11 @@ resolver = "3"
 [dependencies]
 anyhow = "1.0"
 binance-sdk = { version = "48.0.1", default-features = false, features = ["spot", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.33", features = ["rt", "time"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"

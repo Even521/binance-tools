@@ -37,6 +37,7 @@ src/db/
 | `ai_provider_keys` | [`ai_provider_keys.md`](./ai_provider_keys.md) | AI Provider 本地 API Key |
 | `ai_chat_threads` | [`ai_chat_threads.md`](./ai_chat_threads.md) | AI Chat 历史会话，内容使用 zstd 压缩保存 |
 | `ai_rules` | [`ai_rules.md`](./ai_rules.md) | 页面级 AI 分析规则，内容使用 zstd 压缩保存 |
+| `tool_board_tasks` | [`tool_board_tasks.md`](./tool_board_tasks.md) | 工具模块任务看板本地提醒任务 |
 
 ## 维护约定
 

@@ -3,7 +3,7 @@ use binance_tools::ai::{
     AiSettings, ApiFormat, LanguageModelsSettings, ModelCapabilities, ModelDefinition,
     ProviderSettings,
 };
-use gpui::{prelude::FluentBuilder, *};
+use gpui::{actions, prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, Theme,
     button::{Button, ButtonVariants},

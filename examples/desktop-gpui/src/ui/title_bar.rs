@@ -17,13 +17,16 @@ actions!(
         OpenAlphaExchangeInfo,
         OpenAlphaHeatmap,
         OpenAlphaTokens,
+        OpenDocumentConvert,
         OpenMarketHeatmap,
         OpenKlineCandlestick,
         OpenMarketProducts,
+        OpenSpotBacktest,
         OpenSpotSymbols,
         OpenSquareKeySettings,
         OpenSquareSendLogs,
-        OpenSquareTasks
+        OpenSquareTasks,
+        OpenTaskBoard
     ]
 );
 
@@ -138,6 +141,16 @@ impl Render for DesktopTitleBar {
                                         },
                                     ),
                                 )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("回测")
+                                    })
+                                    .on_click(
+                                        |_, window, cx| {
+                                            window.dispatch_action(Box::new(OpenSpotBacktest), cx);
+                                        },
+                                    ),
+                                )
                                 .min_w(px(110.))
                             }),
                     )
@@ -190,6 +203,31 @@ impl Render for DesktopTitleBar {
                     .gap_1()
                     .text_size(px(11.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new("tools-menu")
+                            .label("工具")
+                            .ghost()
+                            .xsmall()
+                            .dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("文档转换")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenDocumentConvert), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("任务看板")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenTaskBoard), cx);
+                                    }),
+                                )
+                                .min_w(px(120.))
+                            }),
+                    )
                     .child(
                         Button::new("square-menu")
                             .label("币安广场")
