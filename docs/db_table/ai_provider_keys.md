@@ -45,10 +45,10 @@ CREATE INDEX IF NOT EXISTS idx_ai_provider_keys_enabled
 
 ## 功能清单
 
-- ✓ 新增或编辑 Provider 时，真实 API Key 保存到本表。
-- ✓ `config/ai.json` 不再保存真实 API Key。
-- ✓ 读取 Provider 时优先合并本表保存的 DB key。
-- ✓ 使用 DB key 发起请求后更新 `last_used_at`。
-- ✓ `Clear Key` 将记录更新为 `key_source = 'none'`，保留 Provider 配置。
-- ✓ `Delete` 删除 Provider 配置时，同步删除本表对应 key 记录。
-- ✓ Provider 列表只有 DB key 存在且非空时显示绿色勾。
+- [✓] 【完成】 新增或编辑 Provider 时，真实 API Key 保存到本表。
+- [✓] 【完成】 `config/ai.json` 不再保存真实 API Key。
+- [✓] 【完成】 读取 Provider 时优先合并本表保存的 DB key。
+- [✓] 【完成】 使用 DB key 发起请求后更新 `last_used_at`。
+- [✓] 【完成】 `Clear Key` 将记录更新为 `key_source = 'none'`，保留 Provider 配置。
+- [✓] 【完成】 `Delete` 删除 Provider 配置时，同步删除本表对应 key 记录。
+- [✓] 【完成】 Provider 列表只有 DB key 存在且非空时显示绿色勾。

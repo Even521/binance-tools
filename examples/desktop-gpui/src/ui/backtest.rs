@@ -1,7 +1,8 @@
 use crate::ui::palette;
 use binance_tools::{
     backtest::{
-        BacktestAction, BacktestParams, BacktestResult, BacktestTrade, run_ma_cross_backtest,
+        BacktestAction, BacktestResult, BacktestRunParams, BacktestStrategy, BacktestTrade,
+        run_backtest,
     },
     binance::vision::{
         SUPPORTED_SPOT_KLINE_INTERVALS, VisionKline, download_spot_daily_klines_blocking,
@@ -10,12 +11,13 @@ use binance_tools::{
 use chrono::{DateTime, Duration, Local, NaiveDate};
 use gpui::{InteractiveElement as _, prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, PixelsExt, Sizable, StyledExt,
+    ActiveTheme, IndexPath, PixelsExt, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     chart::{BarChart, CandlestickChart},
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
+    select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 
@@ -23,14 +25,31 @@ const MIN_VISIBLE_KLINES: usize = 20;
 const ZOOM_STEP: usize = 20;
 const EMA_PERIODS: [usize; 4] = [7, 25, 99, 120];
 const VOLUME_MA_PERIODS: [usize; 2] = [5, 10];
+const MA_CROSS_STRATEGY: &str = "MA Cross";
+const GRID_STRATEGY: &str = "Grid";
+const TREND_GRID_STRATEGY: &str = "Trend Grid";
+const TURTLE_STRATEGY: &str = "Turtle";
+const MARTINGALE_STRATEGY: &str = "Martingale";
+const RSI_STRATEGY: &str = "RSI";
+const MACD_STRATEGY: &str = "MACD";
+const BOLLINGER_STRATEGY: &str = "Bollinger Bands";
+const VOLUME_SPIKE_STRATEGY: &str = "Volume Spike";
+const OBV_STRATEGY: &str = "OBV";
+const STOCHASTIC_STRATEGY: &str = "Stochastic";
+const CCI_STRATEGY: &str = "CCI";
+const SUPERTREND_STRATEGY: &str = "SuperTrend";
 
 pub struct SpotBacktestPage {
+    strategy_select: Entity<SelectState<Vec<String>>>,
     symbol_input: Entity<InputState>,
     interval_input: Entity<InputState>,
     start_input: Entity<InputState>,
     end_input: Entity<InputState>,
     short_input: Entity<InputState>,
     long_input: Entity<InputState>,
+    grid_count_input: Entity<InputState>,
+    trend_window_input: Entity<InputState>,
+    stop_loss_input: Entity<InputState>,
     cash_input: Entity<InputState>,
     fee_input: Entity<InputState>,
     loading: bool,
@@ -56,32 +75,51 @@ impl SpotBacktestPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let today = Local::now().date_naive();
         let default_start = today - Duration::days(120);
+        let strategy_select = cx.new(|cx| {
+            SelectState::new(
+                backtest_strategy_options(),
+                Some(IndexPath::default().row(0)),
+                window,
+                cx,
+            )
+        });
         let symbol_input = input(window, cx, "BTCUSDT");
         let interval_input = input(window, cx, "1d");
         let start_input = input(window, cx, &default_start.format("%Y-%m-%d").to_string());
         let end_input = input(window, cx, &today.format("%Y-%m-%d").to_string());
         let short_input = input(window, cx, "7");
         let long_input = input(window, cx, "30");
+        let grid_count_input = input(window, cx, "20");
+        let trend_window_input = input(window, cx, "120");
+        let stop_loss_input = input(window, cx, "3");
         let cash_input = input(window, cx, "10000");
         let fee_input = input(window, cx, "0.001");
         let _subscriptions = vec![
+            cx.subscribe_in(&strategy_select, window, Self::on_strategy_event),
             cx.subscribe_in(&symbol_input, window, Self::on_input_event),
             cx.subscribe_in(&interval_input, window, Self::on_input_event),
             cx.subscribe_in(&start_input, window, Self::on_input_event),
             cx.subscribe_in(&end_input, window, Self::on_input_event),
             cx.subscribe_in(&short_input, window, Self::on_input_event),
             cx.subscribe_in(&long_input, window, Self::on_input_event),
+            cx.subscribe_in(&grid_count_input, window, Self::on_input_event),
+            cx.subscribe_in(&trend_window_input, window, Self::on_input_event),
+            cx.subscribe_in(&stop_loss_input, window, Self::on_input_event),
             cx.subscribe_in(&cash_input, window, Self::on_input_event),
             cx.subscribe_in(&fee_input, window, Self::on_input_event),
         ];
 
         Self {
+            strategy_select,
             symbol_input,
             interval_input,
             start_input,
             end_input,
             short_input,
             long_input,
+            grid_count_input,
+            trend_window_input,
+            stop_loss_input,
             cash_input,
             fee_input,
             loading: false,
@@ -118,6 +156,179 @@ impl SpotBacktestPage {
         }
     }
 
+    fn on_strategy_event(
+        &mut self,
+        _: &Entity<SelectState<Vec<String>>>,
+        event: &SelectEvent<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(strategy) = event;
+        if let Some(strategy) = strategy {
+            self.apply_strategy_defaults(strategy, window, cx);
+        }
+        self.status = None;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn apply_strategy_defaults(
+        &mut self,
+        strategy: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match strategy {
+            MA_CROSS_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("7", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("30", window, cx));
+            }
+            GRID_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("65000", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("85000", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+            }
+            TREND_GRID_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("65000", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("85000", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("120", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("3", window, cx));
+            }
+            TURTLE_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("10", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("25", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("14", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("2", window, cx));
+            }
+            MARTINGALE_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("3", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("2", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("5", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("5", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("1.5", window, cx));
+            }
+            RSI_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("14", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("30", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("70", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            MACD_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("12", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("26", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("9", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            BOLLINGER_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("2", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("5", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            VOLUME_SPIKE_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("2", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            OBV_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("30", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("5", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            STOCHASTIC_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("14", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("3", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("80", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+            }
+            CCI_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("20", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("-100", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            SUPERTREND_STRATEGY => {
+                self.short_input
+                    .update(cx, |input, cx| input.set_value("10", window, cx));
+                self.long_input
+                    .update(cx, |input, cx| input.set_value("3", window, cx));
+                self.grid_count_input
+                    .update(cx, |input, cx| input.set_value("100", window, cx));
+                self.trend_window_input
+                    .update(cx, |input, cx| input.set_value("5", window, cx));
+                self.stop_loss_input
+                    .update(cx, |input, cx| input.set_value("8", window, cx));
+            }
+            _ => {}
+        }
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
         let request = match self.parse_request(cx) {
             Ok(request) => request,
@@ -146,7 +357,7 @@ impl SpotBacktestPage {
                         request.end,
                     )?;
                     let rows = downloaded.klines.len();
-                    let backtest = run_ma_cross_backtest(&downloaded.klines, request.params)?;
+                    let backtest = run_backtest(&downloaded.klines, request.params)?;
                     anyhow::Ok(BacktestRunOutput {
                         rows,
                         cached_files: downloaded.cached_files,
@@ -191,9 +402,18 @@ impl SpotBacktestPage {
         let end_text = self.end_input.read(cx).text().to_string();
         let short_text = self.short_input.read(cx).text().to_string();
         let long_text = self.long_input.read(cx).text().to_string();
+        let grid_count_text = self.grid_count_input.read(cx).text().to_string();
+        let trend_window_text = self.trend_window_input.read(cx).text().to_string();
+        let stop_loss_text = self.stop_loss_input.read(cx).text().to_string();
         let cash_text = self.cash_input.read(cx).text().to_string();
         let fee_text = self.fee_input.read(cx).text().to_string();
         let interval = interval.trim().to_lowercase();
+        let strategy_label = self
+            .strategy_select
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or_else(|| MA_CROSS_STRATEGY.to_string());
 
         if !SUPPORTED_SPOT_KLINE_INTERVALS.contains(&interval.as_str()) {
             return Err(format!(
@@ -208,11 +428,17 @@ impl SpotBacktestPage {
             interval,
             start: parse_date(start_text.trim(), "开始日期")?,
             end: parse_date(end_text.trim(), "结束日期")?,
-            params: BacktestParams {
+            params: BacktestRunParams {
                 initial_cash: parse_f64(cash_text.trim(), "初始资金")?,
-                short_window: parse_usize(short_text.trim(), "短均线")?,
-                long_window: parse_usize(long_text.trim(), "长均线")?,
                 fee_rate: parse_f64(fee_text.trim(), "手续费率")?,
+                strategy: parse_backtest_strategy(
+                    &strategy_label,
+                    short_text.trim(),
+                    long_text.trim(),
+                    grid_count_text.trim(),
+                    trend_window_text.trim(),
+                    stop_loss_text.trim(),
+                )?,
             },
         })
     }
@@ -340,6 +566,34 @@ impl SpotBacktestPage {
                     .child(Input::new(input).appearance(false)),
             )
             .into_any_element()
+    }
+
+    fn render_strategy_select(&self) -> AnyElement {
+        v_flex()
+            .gap_0p5()
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(rgb(0x6b7280))
+                    .child("策略"),
+            )
+            .child(
+                div().w(px(160.)).child(
+                    Select::new(&self.strategy_select)
+                        .placeholder("选择策略")
+                        .menu_width(px(180.))
+                        .with_size(gpui_component::Size::Small),
+                ),
+            )
+            .into_any_element()
+    }
+
+    fn selected_strategy_label(&self, cx: &mut Context<Self>) -> String {
+        self.strategy_select
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or_else(|| MA_CROSS_STRATEGY.to_string())
     }
 
     fn render_metric(
@@ -782,6 +1036,11 @@ impl Render for SpotBacktestPage {
             })
             .unwrap_or_default();
         let chart_panel = self.render_chart_panel(cx);
+        let selected_strategy = self.selected_strategy_label(cx);
+        let is_grid_strategy =
+            selected_strategy == GRID_STRATEGY || selected_strategy == TREND_GRID_STRATEGY;
+        let uses_five_strategy_params = uses_five_strategy_params(&selected_strategy);
+        let uses_third_strategy_param = is_grid_strategy || uses_five_strategy_params;
         let app_theme = cx.theme();
         let status = self
             .error
@@ -860,12 +1119,37 @@ impl Render for SpotBacktestPage {
                             .gap_2()
                             .items_end()
                             .flex_wrap()
+                            .child(self.render_strategy_select())
                             .child(self.render_field("交易对", &self.symbol_input))
                             .child(self.render_field("周期", &self.interval_input))
                             .child(self.render_field("开始日期", &self.start_input))
                             .child(self.render_field("结束日期", &self.end_input))
-                            .child(self.render_field("短均线", &self.short_input))
-                            .child(self.render_field("长均线", &self.long_input))
+                            .child(self.render_field(
+                                strategy_param_label(&selected_strategy, 0),
+                                &self.short_input,
+                            ))
+                            .child(self.render_field(
+                                strategy_param_label(&selected_strategy, 1),
+                                &self.long_input,
+                            ))
+                            .when(uses_third_strategy_param, |parent| {
+                                parent.child(self.render_field(
+                                    strategy_param_label(&selected_strategy, 2),
+                                    &self.grid_count_input,
+                                ))
+                            })
+                            .when(uses_five_strategy_params, |parent| {
+                                parent.child(self.render_field(
+                                    strategy_param_label(&selected_strategy, 3),
+                                    &self.trend_window_input,
+                                ))
+                            })
+                            .when(uses_five_strategy_params, |parent| {
+                                parent.child(self.render_field(
+                                    strategy_param_label(&selected_strategy, 4),
+                                    &self.stop_loss_input,
+                                ))
+                            })
                             .child(self.render_field("初始资金", &self.cash_input))
                             .child(self.render_field("手续费率", &self.fee_input)),
                     ),
@@ -926,7 +1210,7 @@ struct BacktestRunRequest {
     interval: String,
     start: NaiveDate,
     end: NaiveDate,
-    params: BacktestParams,
+    params: BacktestRunParams,
 }
 
 struct BacktestRunOutput {
@@ -953,6 +1237,203 @@ fn input(
 ) -> Entity<InputState> {
     let value = value.to_string();
     cx.new(|cx| InputState::new(window, cx).default_value(value))
+}
+
+fn backtest_strategy_options() -> Vec<String> {
+    vec![
+        MA_CROSS_STRATEGY.to_string(),
+        GRID_STRATEGY.to_string(),
+        TREND_GRID_STRATEGY.to_string(),
+        TURTLE_STRATEGY.to_string(),
+        MARTINGALE_STRATEGY.to_string(),
+        RSI_STRATEGY.to_string(),
+        MACD_STRATEGY.to_string(),
+        BOLLINGER_STRATEGY.to_string(),
+        VOLUME_SPIKE_STRATEGY.to_string(),
+        OBV_STRATEGY.to_string(),
+        STOCHASTIC_STRATEGY.to_string(),
+        CCI_STRATEGY.to_string(),
+        SUPERTREND_STRATEGY.to_string(),
+    ]
+}
+
+fn parse_backtest_strategy(
+    strategy: &str,
+    param_a: &str,
+    param_b: &str,
+    param_c: &str,
+    param_d: &str,
+    param_e: &str,
+) -> Result<BacktestStrategy, String> {
+    match strategy {
+        MA_CROSS_STRATEGY => Ok(BacktestStrategy::MaCross {
+            short_window: parse_usize(param_a, "短均线")?,
+            long_window: parse_usize(param_b, "长均线")?,
+        }),
+        GRID_STRATEGY => Ok(BacktestStrategy::Grid {
+            lower_price: parse_f64(param_a, "网格下限")?,
+            upper_price: parse_f64(param_b, "网格上限")?,
+            grid_count: parse_usize(param_c, "网格数量")?,
+        }),
+        TREND_GRID_STRATEGY => Ok(BacktestStrategy::TrendGrid {
+            lower_price: parse_f64(param_a, "网格下限")?,
+            upper_price: parse_f64(param_b, "网格上限")?,
+            grid_count: parse_usize(param_c, "网格数量")?,
+            trend_window: parse_usize(param_d, "趋势 EMA")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        TURTLE_STRATEGY => Ok(BacktestStrategy::Turtle {
+            entry_window: parse_usize(param_a, "突破周期")?,
+            exit_window: parse_usize(param_b, "退出周期")?,
+            unit_pct: parse_f64(param_c, "单次仓位")?,
+            atr_window: parse_usize(param_d, "ATR 周期")?,
+            stop_atr: parse_f64(param_e, "止损 ATR")?,
+        }),
+        MARTINGALE_STRATEGY => Ok(BacktestStrategy::Martingale {
+            drop_pct: parse_f64(param_a, "加仓跌幅")?,
+            take_profit_pct: parse_f64(param_b, "止盈比例")?,
+            max_levels: parse_usize(param_c, "最大层数")?,
+            first_order_pct: parse_f64(param_d, "首单资金")?,
+            multiplier: parse_f64(param_e, "加仓倍数")?,
+        }),
+        RSI_STRATEGY => Ok(BacktestStrategy::Rsi {
+            period: parse_usize(param_a, "RSI周期")?,
+            oversold: parse_f64(param_b, "超卖")?,
+            unit_pct: parse_f64(param_c, "单次仓位")?,
+            overbought: parse_f64(param_d, "超买")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        MACD_STRATEGY => Ok(BacktestStrategy::Macd {
+            fast_window: parse_usize(param_a, "快线 EMA")?,
+            slow_window: parse_usize(param_b, "慢线 EMA")?,
+            signal_window: parse_usize(param_c, "信号线")?,
+            unit_pct: parse_f64(param_d, "单次仓位")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        BOLLINGER_STRATEGY => Ok(BacktestStrategy::Bollinger {
+            period: parse_usize(param_a, "周期")?,
+            std_multiplier: parse_f64(param_b, "标准差倍数")?,
+            unit_pct: parse_f64(param_c, "单次仓位")?,
+            take_profit_pct: parse_f64(param_d, "止盈比例")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        VOLUME_SPIKE_STRATEGY => Ok(BacktestStrategy::VolumeSpike {
+            breakout_window: parse_usize(param_a, "突破周期")?,
+            volume_window: parse_usize(param_b, "成交量均线")?,
+            spike_ratio: parse_f64(param_c, "放量倍数")?,
+            unit_pct: parse_f64(param_d, "单次仓位")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        OBV_STRATEGY => Ok(BacktestStrategy::Obv {
+            obv_window: parse_usize(param_a, "OBV均线")?,
+            price_window: parse_usize(param_b, "价格均线")?,
+            unit_pct: parse_f64(param_c, "单次仓位")?,
+            take_profit_pct: parse_f64(param_d, "止盈比例")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        STOCHASTIC_STRATEGY => Ok(BacktestStrategy::Stochastic {
+            k_window: parse_usize(param_a, "K周期")?,
+            d_window: parse_usize(param_b, "D周期")?,
+            oversold: parse_f64(param_c, "超卖")?,
+            overbought: parse_f64(param_d, "超买")?,
+            unit_pct: parse_f64(param_e, "单次仓位")?,
+        }),
+        CCI_STRATEGY => Ok(BacktestStrategy::Cci {
+            period: parse_usize(param_a, "CCI周期")?,
+            oversold: parse_f64(param_b, "超卖")?,
+            overbought: parse_f64(param_c, "超买")?,
+            unit_pct: parse_f64(param_d, "单次仓位")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        SUPERTREND_STRATEGY => Ok(BacktestStrategy::SuperTrend {
+            atr_window: parse_usize(param_a, "ATR周期")?,
+            multiplier: parse_f64(param_b, "ATR倍数")?,
+            unit_pct: parse_f64(param_c, "单次仓位")?,
+            take_profit_pct: parse_f64(param_d, "止盈比例")?,
+            stop_loss_pct: parse_f64(param_e, "止损比例")?,
+        }),
+        other => Err(format!("暂不支持回测策略：{other}")),
+    }
+}
+
+fn uses_five_strategy_params(strategy: &str) -> bool {
+    matches!(
+        strategy,
+        TREND_GRID_STRATEGY
+            | TURTLE_STRATEGY
+            | MARTINGALE_STRATEGY
+            | RSI_STRATEGY
+            | MACD_STRATEGY
+            | BOLLINGER_STRATEGY
+            | VOLUME_SPIKE_STRATEGY
+            | OBV_STRATEGY
+            | STOCHASTIC_STRATEGY
+            | CCI_STRATEGY
+            | SUPERTREND_STRATEGY
+    )
+}
+
+fn strategy_param_label(strategy: &str, index: usize) -> &'static str {
+    match (strategy, index) {
+        (GRID_STRATEGY | TREND_GRID_STRATEGY, 0) => "网格下限",
+        (GRID_STRATEGY | TREND_GRID_STRATEGY, 1) => "网格上限",
+        (GRID_STRATEGY | TREND_GRID_STRATEGY, 2) => "网格数量",
+        (TREND_GRID_STRATEGY, 3) => "趋势 EMA",
+        (TREND_GRID_STRATEGY, 4) => "止损%",
+        (TURTLE_STRATEGY, 0) => "突破周期",
+        (TURTLE_STRATEGY, 1) => "退出周期",
+        (TURTLE_STRATEGY, 2) => "单次仓位%",
+        (TURTLE_STRATEGY, 3) => "ATR周期",
+        (TURTLE_STRATEGY, 4) => "止损ATR",
+        (MARTINGALE_STRATEGY, 0) => "加仓跌幅%",
+        (MARTINGALE_STRATEGY, 1) => "止盈%",
+        (MARTINGALE_STRATEGY, 2) => "最大层数",
+        (MARTINGALE_STRATEGY, 3) => "首单资金%",
+        (MARTINGALE_STRATEGY, 4) => "加仓倍数",
+        (RSI_STRATEGY, 0) => "RSI周期",
+        (RSI_STRATEGY, 1) => "超卖",
+        (RSI_STRATEGY, 2) => "单次仓位%",
+        (RSI_STRATEGY, 3) => "超买",
+        (RSI_STRATEGY, 4) => "止损%",
+        (MACD_STRATEGY, 0) => "快线 EMA",
+        (MACD_STRATEGY, 1) => "慢线 EMA",
+        (MACD_STRATEGY, 2) => "信号线",
+        (MACD_STRATEGY, 3) => "单次仓位%",
+        (MACD_STRATEGY, 4) => "止损%",
+        (BOLLINGER_STRATEGY, 0) => "周期",
+        (BOLLINGER_STRATEGY, 1) => "标准差倍数",
+        (BOLLINGER_STRATEGY, 2) => "单次仓位%",
+        (BOLLINGER_STRATEGY, 3) => "止盈%",
+        (BOLLINGER_STRATEGY, 4) => "止损%",
+        (VOLUME_SPIKE_STRATEGY, 0) => "突破周期",
+        (VOLUME_SPIKE_STRATEGY, 1) => "成交量均线",
+        (VOLUME_SPIKE_STRATEGY, 2) => "放量倍数",
+        (VOLUME_SPIKE_STRATEGY, 3) => "单次仓位%",
+        (VOLUME_SPIKE_STRATEGY, 4) => "止损%",
+        (OBV_STRATEGY, 0) => "OBV均线",
+        (OBV_STRATEGY, 1) => "价格均线",
+        (OBV_STRATEGY, 2) => "单次仓位%",
+        (OBV_STRATEGY, 3) => "止盈%",
+        (OBV_STRATEGY, 4) => "止损%",
+        (STOCHASTIC_STRATEGY, 0) => "K周期",
+        (STOCHASTIC_STRATEGY, 1) => "D周期",
+        (STOCHASTIC_STRATEGY, 2) => "超卖",
+        (STOCHASTIC_STRATEGY, 3) => "超买",
+        (STOCHASTIC_STRATEGY, 4) => "单次仓位%",
+        (CCI_STRATEGY, 0) => "CCI周期",
+        (CCI_STRATEGY, 1) => "超卖",
+        (CCI_STRATEGY, 2) => "超买",
+        (CCI_STRATEGY, 3) => "单次仓位%",
+        (CCI_STRATEGY, 4) => "止损%",
+        (SUPERTREND_STRATEGY, 0) => "ATR周期",
+        (SUPERTREND_STRATEGY, 1) => "ATR倍数",
+        (SUPERTREND_STRATEGY, 2) => "单次仓位%",
+        (SUPERTREND_STRATEGY, 3) => "止盈%",
+        (SUPERTREND_STRATEGY, 4) => "止损%",
+        (_, 0) => "短均线",
+        (_, 1) => "长均线",
+        _ => "参数",
+    }
 }
 
 fn parse_date(value: &str, label: &str) -> Result<NaiveDate, String> {

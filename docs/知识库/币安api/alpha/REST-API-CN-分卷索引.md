@@ -12,6 +12,6 @@
 
 | 状态 | 模块 | 说明 |
 | --- | --- | --- |
-| ✓ | `src/binance/alpha.rs` | Alpha REST 和 WebSocket 辅助方法 |
-| ✓ | `src/binance/mod.rs` | 已公开 `binance::alpha` 模块 |
+| [✓] 【完成】 | `src/binance/alpha.rs` | Alpha REST 和 WebSocket 辅助方法 |
+| [✓] 【完成】 | `src/binance/mod.rs` | 已公开 `binance::alpha` 模块 |
 | x | UI 页面 | 当前未新增独立 Alpha 页面，可由后续页面调用 Alpha 客户端 |

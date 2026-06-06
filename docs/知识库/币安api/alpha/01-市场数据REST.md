@@ -13,12 +13,12 @@
 
 | 状态 | 名称 | HTTP | Path | 本地函数 |
 | --- | --- | --- | --- | --- |
-| ✓ | Token 列表 | GET | `/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list` | `AlphaClient::token_list` |
-| ✓ | 交易对信息 | GET | `/bapi/defi/v1/public/alpha-trade/get-exchange-info` | `AlphaClient::exchange_info` |
-| ✓ | 聚合交易 | GET | `/bapi/defi/v1/public/alpha-trade/agg-trades` | `AlphaClient::aggregate_trades` |
-| ✓ | K 线 | GET | `/bapi/defi/v1/public/alpha-trade/klines` | `AlphaClient::klines` |
-| ✓ | 24hr 价格变动 | GET | `/bapi/defi/v1/public/alpha-trade/ticker` | `AlphaClient::ticker_24hr` |
-| ✓ | 完整深度 | GET | `/bapi/defi/v1/public/alpha-trade/fullDepth` | `AlphaClient::full_depth` |
+| [✓] 【完成】 | Token 列表 | GET | `/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list` | `AlphaClient::token_list` |
+| [✓] 【完成】 | 交易对信息 | GET | `/bapi/defi/v1/public/alpha-trade/get-exchange-info` | `AlphaClient::exchange_info` |
+| [✓] 【完成】 | 聚合交易 | GET | `/bapi/defi/v1/public/alpha-trade/agg-trades` | `AlphaClient::aggregate_trades` |
+| [✓] 【完成】 | K 线 | GET | `/bapi/defi/v1/public/alpha-trade/klines` | `AlphaClient::klines` |
+| [✓] 【完成】 | 24hr 价格变动 | GET | `/bapi/defi/v1/public/alpha-trade/ticker` | `AlphaClient::ticker_24hr` |
+| [✓] 【完成】 | 完整深度 | GET | `/bapi/defi/v1/public/alpha-trade/fullDepth` | `AlphaClient::full_depth` |
 
 ## Token 列表
 

@@ -49,19 +49,19 @@ wss://nbstream.binance.com/w3w/wsa/stream
 
 | 状态 | Stream | 说明 | 本地辅助 |
 | --- | --- | --- | --- |
-| ✓ | `came@allTokens@ticker24` | 全部 Alpha Token 24h ticker 列表 | `alpha_all_tokens_ticker_24hr_stream` |
-| ✓ | `<symbol>@aggTrade` | 聚合交易 | `alpha_symbol_stream(symbol, "aggTrade")` |
-| ✓ | `<symbol>@fulldepth@<interval>` | 完整深度，包含 UI 和 API 订单 | `alpha_full_depth_stream` |
-| ✓ | `came@contractAddress@chainId@kline_<interval>` | 合约地址维度 K 线 | `alpha_contract_kline_stream` |
-| ✓ | `<symbol>@bookTicker` | 最优买卖价 | `alpha_symbol_stream(symbol, "bookTicker")` |
-| ✓ | `!bookTicker` | 全市场最优买卖价 |
-| ✓ | `<symbol>@miniTicker` | 单交易对 24h mini ticker | `alpha_symbol_stream(symbol, "miniTicker")` |
-| ✓ | `!miniTicker@arr` | 全市场 mini ticker |
-| ✓ | `<symbol>@ticker` | 单交易对 24h ticker | `alpha_symbol_stream(symbol, "ticker")` |
-| ✓ | `!ticker@arr` | 全市场 24h ticker |
-| ✓ | `<symbol>@trade` | 原始成交 | `alpha_symbol_stream(symbol, "trade")` |
-| ✓ | `<symbol>@depth<levels>@<interval>` | 部分深度，仅 UI 订单 | `alpha_partial_depth_stream` |
-| ✓ | `<symbol>@kline_<interval>` | 交易对 K 线 | `alpha_symbol_kline_stream` |
+| [✓] 【完成】 | `came@allTokens@ticker24` | 全部 Alpha Token 24h ticker 列表 | `alpha_all_tokens_ticker_24hr_stream` |
+| [✓] 【完成】 | `<symbol>@aggTrade` | 聚合交易 | `alpha_symbol_stream(symbol, "aggTrade")` |
+| [✓] 【完成】 | `<symbol>@fulldepth@<interval>` | 完整深度，包含 UI 和 API 订单 | `alpha_full_depth_stream` |
+| [✓] 【完成】 | `came@contractAddress@chainId@kline_<interval>` | 合约地址维度 K 线 | `alpha_contract_kline_stream` |
+| [✓] 【完成】 | `<symbol>@bookTicker` | 最优买卖价 | `alpha_symbol_stream(symbol, "bookTicker")` |
+| [✓] 【完成】 | `!bookTicker` | 全市场最优买卖价 |
+| [✓] 【完成】 | `<symbol>@miniTicker` | 单交易对 24h mini ticker | `alpha_symbol_stream(symbol, "miniTicker")` |
+| [✓] 【完成】 | `!miniTicker@arr` | 全市场 mini ticker |
+| [✓] 【完成】 | `<symbol>@ticker` | 单交易对 24h ticker | `alpha_symbol_stream(symbol, "ticker")` |
+| [✓] 【完成】 | `!ticker@arr` | 全市场 24h ticker |
+| [✓] 【完成】 | `<symbol>@trade` | 原始成交 | `alpha_symbol_stream(symbol, "trade")` |
+| [✓] 【完成】 | `<symbol>@depth<levels>@<interval>` | 部分深度，仅 UI 订单 | `alpha_partial_depth_stream` |
+| [✓] 【完成】 | `<symbol>@kline_<interval>` | 交易对 K 线 | `alpha_symbol_kline_stream` |
 
 ## interval 规则
 
@@ -94,7 +94,7 @@ interval: 0ms, 100ms, 500ms
 
 | 状态 | 项目 | 说明 |
 | --- | --- | --- |
-| ✓ | 订阅消息 | `alpha_ws_subscribe_message` |
-| ✓ | 取消订阅消息 | `alpha_ws_unsubscribe_message` |
-| ✓ | 已订阅查询消息 | `alpha_ws_list_subscriptions_message` |
-| ✓ | stream 名称构造 | symbol 会统一转小写，匹配官方示例 |
+| [✓] 【完成】 | 订阅消息 | `alpha_ws_subscribe_message` |
+| [✓] 【完成】 | 取消订阅消息 | `alpha_ws_unsubscribe_message` |
+| [✓] 【完成】 | 已订阅查询消息 | `alpha_ws_list_subscriptions_message` |
+| [✓] 【完成】 | stream 名称构造 | symbol 会统一转小写，匹配官方示例 |

@@ -1,6 +1,8 @@
 use crate::binance::vision::VisionKline;
 use anyhow::{Result, bail};
 
+use super::{BacktestAction, BacktestResult, BacktestTrade};
+
 #[derive(Clone, Debug)]
 pub struct BacktestParams {
     pub initial_cash: f64,
@@ -9,59 +11,27 @@ pub struct BacktestParams {
     pub fee_rate: f64,
 }
 
-#[derive(Clone, Debug)]
-pub struct BacktestTrade {
-    pub time: i64,
-    pub action: BacktestAction,
-    pub price: f64,
-    pub quantity: f64,
-    pub equity: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BacktestAction {
-    Buy,
-    Sell,
-}
-
-impl BacktestAction {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Buy => "买入",
-            Self::Sell => "卖出",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct BacktestResult {
-    pub initial_cash: f64,
-    pub final_equity: f64,
-    pub return_pct: f64,
-    pub max_drawdown_pct: f64,
-    pub trade_count: usize,
-    pub win_rate_pct: f64,
-    pub trades: Vec<BacktestTrade>,
-}
-
 pub fn run_ma_cross_backtest(
     klines: &[VisionKline],
     params: BacktestParams,
 ) -> Result<BacktestResult> {
     if params.initial_cash <= 0.0 {
-        bail!("初始资金必须大于 0");
+        bail!("initial cash must be greater than 0");
     }
     if params.short_window == 0 || params.long_window == 0 {
-        bail!("均线周期必须大于 0");
+        bail!("MA windows must be greater than 0");
     }
     if params.short_window >= params.long_window {
-        bail!("短均线周期必须小于长均线周期");
+        bail!("short MA window must be smaller than long MA window");
     }
     if !(0.0..0.1).contains(&params.fee_rate) {
-        bail!("手续费率需要在 0 到 0.1 之间");
+        bail!("fee rate must be between 0 and 0.1");
     }
     if klines.len() < params.long_window + 2 {
-        bail!("K 线数量不足，至少需要 {} 条", params.long_window + 2);
+        bail!(
+            "not enough klines, need at least {}",
+            params.long_window + 2
+        );
     }
 
     let mut sorted = klines.to_vec();

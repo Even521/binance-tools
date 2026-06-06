@@ -18,11 +18,11 @@
 
 | 状态 | 项目 | 说明 |
 | --- | --- | --- |
-| ✓ | Alpha 知识库目录 | 已创建独立 `alpha` 目录，不混入现货文档 |
-| ✓ | Alpha REST 文档整理 | 已覆盖 Token 列表、交易对信息、聚合交易、K 线、24hr ticker、完整深度 |
-| ✓ | Alpha WebSocket 文档整理 | 已覆盖订阅协议和官方列出的 stream 名称 |
-| ✓ | Alpha REST 客户端 | 已在 `src/binance/alpha.rs` 实现 6 个 REST 接口 |
-| ✓ | Alpha WebSocket 辅助 | 已提供订阅/取消订阅消息和 stream 名称构造函数 |
+| [✓] 【完成】 | Alpha 知识库目录 | 已创建独立 `alpha` 目录，不混入现货文档 |
+| [✓] 【完成】 | Alpha REST 文档整理 | 已覆盖 Token 列表、交易对信息、聚合交易、K 线、24hr ticker、完整深度 |
+| [✓] 【完成】 | Alpha WebSocket 文档整理 | 已覆盖订阅协议和官方列出的 stream 名称 |
+| [✓] 【完成】 | Alpha REST 客户端 | 已在 `src/binance/alpha.rs` 实现 6 个 REST 接口 |
+| [✓] 【完成】 | Alpha WebSocket 辅助 | 已提供订阅/取消订阅消息和 stream 名称构造函数 |
 
 ## 代码入口
 
