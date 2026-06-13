@@ -8,16 +8,15 @@ use binance_tools::{
         SUPPORTED_SPOT_KLINE_INTERVALS, VisionKline, download_spot_daily_klines_blocking,
     },
 };
-use chrono::{DateTime, Duration, Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate};
 use gpui::{InteractiveElement as _, prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, IndexPath, PixelsExt, Sizable, StyledExt,
+    ActiveTheme, Icon, IconName, PixelsExt, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     chart::{BarChart, CandlestickChart},
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 
@@ -40,7 +39,7 @@ const CCI_STRATEGY: &str = "CCI";
 const SUPERTREND_STRATEGY: &str = "SuperTrend";
 
 pub struct SpotBacktestPage {
-    strategy_select: Entity<SelectState<Vec<String>>>,
+    selected_strategy: String,
     symbol_input: Entity<InputState>,
     interval_input: Entity<InputState>,
     start_input: Entity<InputState>,
@@ -52,6 +51,7 @@ pub struct SpotBacktestPage {
     stop_loss_input: Entity<InputState>,
     cash_input: Entity<InputState>,
     fee_input: Entity<InputState>,
+    settings_open: bool,
     loading: bool,
     status: Option<String>,
     error: Option<String>,
@@ -64,6 +64,10 @@ pub struct SpotBacktestPage {
     visible_start: usize,
     visible_count: usize,
     price_chart_bounds: Option<Bounds<Pixels>>,
+    volume_chart_bounds: Option<Bounds<Pixels>>,
+    hover_point: Option<Point<Pixels>>,
+    volume_hover_point: Option<Point<Pixels>>,
+    hover_index: Option<usize>,
     drag_start_x: Option<Pixels>,
     drag_start_visible_start: usize,
     result: Option<BacktestResult>,
@@ -74,17 +78,9 @@ pub struct SpotBacktestPage {
 impl SpotBacktestPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let today = Local::now().date_naive();
-        let default_start = today - Duration::days(120);
-        let strategy_select = cx.new(|cx| {
-            SelectState::new(
-                backtest_strategy_options(),
-                Some(IndexPath::default().row(0)),
-                window,
-                cx,
-            )
-        });
+        let default_start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap_or(today);
         let symbol_input = input(window, cx, "BTCUSDT");
-        let interval_input = input(window, cx, "1d");
+        let interval_input = input(window, cx, "4h");
         let start_input = input(window, cx, &default_start.format("%Y-%m-%d").to_string());
         let end_input = input(window, cx, &today.format("%Y-%m-%d").to_string());
         let short_input = input(window, cx, "7");
@@ -95,7 +91,6 @@ impl SpotBacktestPage {
         let cash_input = input(window, cx, "10000");
         let fee_input = input(window, cx, "0.001");
         let _subscriptions = vec![
-            cx.subscribe_in(&strategy_select, window, Self::on_strategy_event),
             cx.subscribe_in(&symbol_input, window, Self::on_input_event),
             cx.subscribe_in(&interval_input, window, Self::on_input_event),
             cx.subscribe_in(&start_input, window, Self::on_input_event),
@@ -109,8 +104,8 @@ impl SpotBacktestPage {
             cx.subscribe_in(&fee_input, window, Self::on_input_event),
         ];
 
-        Self {
-            strategy_select,
+        let mut page = Self {
+            selected_strategy: MA_CROSS_STRATEGY.to_string(),
             symbol_input,
             interval_input,
             start_input,
@@ -122,6 +117,7 @@ impl SpotBacktestPage {
             stop_loss_input,
             cash_input,
             fee_input,
+            settings_open: false,
             loading: false,
             status: None,
             error: None,
@@ -130,16 +126,22 @@ impl SpotBacktestPage {
             downloaded_files: 0,
             missing_files: 0,
             klines: Vec::new(),
-            current_interval: "1d".to_string(),
+            current_interval: "4h".to_string(),
             visible_start: 0,
-            visible_count: 120,
+            visible_count: 240,
             price_chart_bounds: None,
+            volume_chart_bounds: None,
+            hover_point: None,
+            volume_hover_point: None,
+            hover_index: None,
             drag_start_x: None,
             drag_start_visible_start: 0,
             result: None,
             _task: Task::ready(()),
             _subscriptions,
-        }
+        };
+        page.run(cx);
+        page
     }
 
     fn on_input_event(
@@ -156,20 +158,24 @@ impl SpotBacktestPage {
         }
     }
 
-    fn on_strategy_event(
-        &mut self,
-        _: &Entity<SelectState<Vec<String>>>,
-        event: &SelectEvent<Vec<String>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let SelectEvent::Confirm(strategy) = event;
-        if let Some(strategy) = strategy {
-            self.apply_strategy_defaults(strategy, window, cx);
-        }
+    fn set_strategy(&mut self, strategy: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_strategy = strategy.clone();
+        self.apply_strategy_defaults(&strategy, window, cx);
         self.status = None;
         self.error = None;
         cx.notify();
+    }
+
+    fn set_interval_and_run(
+        &mut self,
+        interval: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.interval_input
+            .update(cx, |input, cx| input.set_value(interval, window, cx));
+        self.current_interval = interval.to_string();
+        self.run(cx);
     }
 
     fn apply_strategy_defaults(
@@ -345,6 +351,9 @@ impl SpotBacktestPage {
         self.status = Some("正在从 Binance Vision 读取/补齐 K 线并回测...".to_string());
         self.result = None;
         self.klines.clear();
+        self.hover_point = None;
+        self.volume_hover_point = None;
+        self.hover_index = None;
         cx.notify();
 
         self._task = cx.spawn(async move |this, cx| {
@@ -382,7 +391,7 @@ impl SpotBacktestPage {
                         this.current_interval = output.interval;
                         this.reset_visible_window();
                         this.result = Some(output.backtest);
-                        this.status = Some("回测完成".to_string());
+                        this.status = None;
                         this.error = None;
                     }
                     Err(err) => {
@@ -408,12 +417,7 @@ impl SpotBacktestPage {
         let cash_text = self.cash_input.read(cx).text().to_string();
         let fee_text = self.fee_input.read(cx).text().to_string();
         let interval = interval.trim().to_lowercase();
-        let strategy_label = self
-            .strategy_select
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_else(|| MA_CROSS_STRATEGY.to_string());
+        let strategy_label = self.selected_strategy.clone();
 
         if !SUPPORTED_SPOT_KLINE_INTERVALS.contains(&interval.as_str()) {
             return Err(format!(
@@ -463,6 +467,10 @@ impl SpotBacktestPage {
         let count = self.visible_count.min(self.klines.len());
         self.visible_start = self.klines.len().saturating_sub(count);
         self.price_chart_bounds = None;
+        self.volume_chart_bounds = None;
+        self.hover_point = None;
+        self.volume_hover_point = None;
+        self.hover_index = None;
         self.drag_start_x = None;
         self.drag_start_visible_start = self.visible_start;
     }
@@ -538,12 +546,193 @@ impl SpotBacktestPage {
         }
     }
 
+    fn update_hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if self.drag_start_x.is_some() {
+            self.pan_to(position, cx);
+            return;
+        }
+
+        let Some(bounds) = self.price_chart_bounds else {
+            return;
+        };
+        let visible_len = self.visible_klines().len();
+        if visible_len == 0 || !bounds.contains(&position) {
+            self.clear_hover(cx);
+            return;
+        }
+
+        let x = (position.x - bounds.left())
+            .max(px(0.))
+            .min(bounds.size.width);
+        let y = (position.y - bounds.top())
+            .max(px(0.))
+            .min(bounds.size.height);
+        let ratio = if bounds.size.width.as_f32() > 0.0 {
+            x.as_f32() / bounds.size.width.as_f32()
+        } else {
+            0.0
+        };
+        let index = ((ratio * visible_len as f32).floor() as usize).min(visible_len - 1);
+        self.hover_index = Some(index);
+        self.hover_point = Some(point(x, y));
+        cx.notify();
+    }
+
+    fn clear_hover(&mut self, cx: &mut Context<Self>) {
+        if self.hover_index.is_some()
+            || self.hover_point.is_some()
+            || self.volume_hover_point.is_some()
+        {
+            self.hover_index = None;
+            self.hover_point = None;
+            self.volume_hover_point = None;
+            cx.notify();
+        }
+    }
+
+    fn update_volume_hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(bounds) = self.volume_chart_bounds else {
+            return;
+        };
+        let visible_len = self.visible_klines().len();
+        if visible_len == 0 || !bounds.contains(&position) {
+            self.clear_hover(cx);
+            return;
+        }
+
+        let x = (position.x - bounds.left())
+            .max(px(0.))
+            .min(bounds.size.width);
+        let y = (position.y - bounds.top())
+            .max(px(0.))
+            .min(bounds.size.height);
+        let ratio = if bounds.size.width.as_f32() > 0.0 {
+            x.as_f32() / bounds.size.width.as_f32()
+        } else {
+            0.0
+        };
+        let index = ((ratio * visible_len as f32).floor() as usize).min(visible_len - 1);
+        self.hover_index = Some(index);
+        self.volume_hover_point = Some(point(x, y));
+        self.hover_point = self.price_chart_bounds.map(|price_bounds| {
+            point(
+                x.min(price_bounds.size.width),
+                (price_bounds.size.height / 2.).max(px(0.)),
+            )
+        });
+        cx.notify();
+    }
+
+    fn hover_price(&self, y: Pixels, range: BacktestPriceRange) -> Option<f64> {
+        let bounds = self.price_chart_bounds?;
+        let height = bounds.size.height.as_f32().max(1.0);
+        let ratio = (y.as_f32() / height).clamp(0.0, 1.0) as f64;
+        Some(range.high - (range.high - range.low) * ratio)
+    }
+
+    fn price_hover_overlay(&self, range: BacktestPriceRange) -> Option<impl IntoElement> {
+        let point = self.hover_point?;
+        let visible = self.visible_klines();
+        let kline = self.hover_index.and_then(|index| visible.get(index))?;
+        let price = self.hover_price(point.y, range)?;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(dashed_vertical(point.x))
+                .child(dashed_horizontal(point.y))
+                .child(
+                    div()
+                        .absolute()
+                        .left((point.x - px(56.)).max(px(0.)))
+                        .bottom_1()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .bg(hsla(0.61, 0.14, 0.30, 1.0))
+                        .text_color(hsla(0., 0., 1., 1.))
+                        .text_size(px(12.))
+                        .child(format_time(kline.open_time)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top((point.y - px(12.)).max(px(0.)))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .bg(hsla(0.61, 0.14, 0.30, 1.0))
+                        .text_color(hsla(0., 0., 1., 1.))
+                        .text_size(px(12.))
+                        .child(format_price(price)),
+                ),
+        )
+    }
+
+    fn volume_hover_overlay(&self) -> Option<impl IntoElement> {
+        let point = self.volume_hover_point.or(self.hover_point)?;
+        let visible = self.visible_klines();
+        let kline = self.hover_index.and_then(|index| visible.get(index))?;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(dashed_vertical(point.x))
+                .child(dashed_horizontal(point.y))
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top(px(10.))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .bg(hsla(0.61, 0.14, 0.30, 1.0))
+                        .text_color(hsla(0., 0., 1., 1.))
+                        .text_size(px(12.))
+                        .child(format_volume(kline.volume)),
+                ),
+        )
+    }
+
+    fn latest_price_overlay(&self, range: BacktestPriceRange) -> Option<impl IntoElement> {
+        let visible = self.visible_klines();
+        let latest = visible.last()?;
+        let chart_size = self.price_chart_bounds.map(|bounds| bounds.size)?;
+        if range.high <= range.low || chart_size.height.as_f32() <= 0.0 {
+            return None;
+        }
+
+        let y = ((range.high - latest.close_price) / (range.high - range.low)
+            * chart_size.height.as_f32() as f64)
+            .clamp(0.0, chart_size.height.as_f32() as f64) as f32;
+
+        Some(red_dotted_horizontal(px(y)))
+    }
+
     fn volume_high(&self) -> f64 {
         self.visible_klines()
             .iter()
             .map(|kline| kline.volume)
             .reduce(f64::max)
             .unwrap_or(0.0)
+    }
+
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = true;
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        cx.notify();
     }
 
     fn render_field(&self, label: &'static str, input: &Entity<InputState>) -> AnyElement {
@@ -568,32 +757,312 @@ impl SpotBacktestPage {
             .into_any_element()
     }
 
-    fn render_strategy_select(&self) -> AnyElement {
-        v_flex()
-            .gap_0p5()
+    fn selected_strategy_label(&self, cx: &mut Context<Self>) -> String {
+        let _ = cx;
+        self.selected_strategy.clone()
+    }
+
+    fn render_strategy_picker_item(
+        &self,
+        index: usize,
+        strategy: String,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let app_theme = cx.theme();
+        div()
+            .rounded(px(6.))
+            .px_3()
+            .py_2()
+            .cursor_pointer()
+            .bg(if selected {
+                app_theme.accent.opacity(0.14)
+            } else {
+                transparent_black()
+            })
+            .text_color(if selected {
+                app_theme.accent
+            } else {
+                palette::text(app_theme)
+            })
+            .hover(|style| style.bg(app_theme.muted.opacity(0.14)))
             .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(0x6b7280))
-                    .child("策略"),
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_medium()
+                            .child(strategy.clone()),
+                    )
+                    .when(selected, |parent| {
+                        parent.child(Icon::new(IconName::Check).size_4())
+                    }),
             )
-            .child(
-                div().w(px(160.)).child(
-                    Select::new(&self.strategy_select)
-                        .placeholder("选择策略")
-                        .menu_width(px(180.))
-                        .with_size(gpui_component::Size::Small),
-                ),
-            )
+            .id(("backtest-strategy-picker", index))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_strategy(strategy.clone(), window, cx);
+            }))
             .into_any_element()
     }
 
-    fn selected_strategy_label(&self, cx: &mut Context<Self>) -> String {
-        self.strategy_select
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_else(|| MA_CROSS_STRATEGY.to_string())
+    fn render_settings_dialog(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected_strategy = self.selected_strategy_label(cx);
+        let is_grid_strategy =
+            selected_strategy == GRID_STRATEGY || selected_strategy == TREND_GRID_STRATEGY;
+        let uses_five_strategy_params = uses_five_strategy_params(&selected_strategy);
+        let uses_third_strategy_param = is_grid_strategy || uses_five_strategy_params;
+        let strategy_items = backtest_strategy_options()
+            .into_iter()
+            .enumerate()
+            .map(|(index, strategy)| {
+                self.render_strategy_picker_item(
+                    index,
+                    strategy.clone(),
+                    strategy == selected_strategy,
+                    cx,
+                )
+            })
+            .collect::<Vec<_>>();
+        let app_theme = cx.theme();
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(gpui::black().opacity(0.18))
+            .child(
+                v_flex()
+                    .absolute()
+                    .top(px(72.))
+                    .left(px(180.))
+                    .right(px(180.))
+                    .min_w(px(680.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(palette::border(app_theme))
+                    .shadow_md()
+                    .bg(app_theme.background)
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .h(px(44.))
+                            .px_3()
+                            .border_b_1()
+                            .border_color(palette::border(app_theme))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(16.))
+                                    .font_semibold()
+                                    .text_color(palette::text_strong(app_theme))
+                                    .child("回测参数设置"),
+                            )
+                            .child(
+                                Button::new("close-backtest-settings")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::Close).size_4())
+                                    .tooltip("关闭")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_settings(cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_start()
+                            .min_h(px(380.))
+                            .child(
+                                v_flex()
+                                    .w(px(220.))
+                                    .p_3()
+                                    .gap_1()
+                                    .border_r_1()
+                                    .border_color(palette::border(app_theme))
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .pb_2()
+                                            .text_size(px(12.))
+                                            .font_semibold()
+                                            .text_color(palette::muted(app_theme))
+                                            .child("选择策略"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_y_scrollbar()
+                                            .child(v_flex().gap_1().children(strategy_items)),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .gap_4()
+                                    .p_4()
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_size(px(15.))
+                                                    .font_semibold()
+                                                    .text_color(palette::text_strong(app_theme))
+                                                    .child(format!("{selected_strategy} 设置")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(palette::muted(app_theme))
+                                                    .child("切换左侧策略会自动填入合理默认参数，右侧参数可以继续手动修改。"),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_semibold()
+                                                    .text_color(palette::muted(app_theme))
+                                                    .child("市场与时间"),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_3()
+                                                    .items_end()
+                                                    .flex_wrap()
+                                                    .child(self.render_field(
+                                                        "交易对",
+                                                        &self.symbol_input,
+                                                    ))
+                                                    .child(self.render_field(
+                                                        "开始日期",
+                                                        &self.start_input,
+                                                    ))
+                                                    .child(self.render_field(
+                                                        "结束日期",
+                                                        &self.end_input,
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_semibold()
+                                                    .text_color(palette::muted(app_theme))
+                                                    .child("策略参数"),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_3()
+                                                    .items_end()
+                                                    .flex_wrap()
+                                                    .child(self.render_field(
+                                                        strategy_param_label(
+                                                            &selected_strategy,
+                                                            0,
+                                                        ),
+                                                        &self.short_input,
+                                                    ))
+                                                    .child(self.render_field(
+                                                        strategy_param_label(
+                                                            &selected_strategy,
+                                                            1,
+                                                        ),
+                                                        &self.long_input,
+                                                    ))
+                                                    .when(uses_third_strategy_param, |parent| {
+                                                        parent.child(self.render_field(
+                                                            strategy_param_label(
+                                                                &selected_strategy,
+                                                                2,
+                                                            ),
+                                                            &self.grid_count_input,
+                                                        ))
+                                                    })
+                                                    .when(uses_five_strategy_params, |parent| {
+                                                        parent.child(self.render_field(
+                                                            strategy_param_label(
+                                                                &selected_strategy,
+                                                                3,
+                                                            ),
+                                                            &self.trend_window_input,
+                                                        ))
+                                                    })
+                                                    .when(uses_five_strategy_params, |parent| {
+                                                        parent.child(self.render_field(
+                                                            strategy_param_label(
+                                                                &selected_strategy,
+                                                                4,
+                                                            ),
+                                                            &self.stop_loss_input,
+                                                        ))
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_semibold()
+                                                    .text_color(palette::muted(app_theme))
+                                                    .child("资金设置"),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_3()
+                                                    .items_end()
+                                                    .flex_wrap()
+                                                    .child(self.render_field(
+                                                        "初始资金",
+                                                        &self.cash_input,
+                                                    ))
+                                                    .child(self.render_field(
+                                                        "手续费率",
+                                                        &self.fee_input,
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .justify_end()
+                                            .gap_2()
+                                            .mt_auto()
+                                            .child(
+                                                Button::new("cancel-backtest-settings")
+                                                    .outline()
+                                                    .small()
+                                                    .label("取消")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.close_settings(cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("apply-backtest-settings")
+                                                    .primary()
+                                                    .small()
+                                                    .label("完成")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.close_settings(cx);
+                                                    })),
+                                            ),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_metric(
@@ -669,7 +1138,7 @@ impl SpotBacktestPage {
         let visible = self.visible_klines();
         let Some(range) = price_range_for(&visible) else {
             return div()
-                .h(px(620.))
+                .h(px(680.))
                 .rounded(px(6.))
                 .border_1()
                 .border_color(palette::border(app_theme))
@@ -689,8 +1158,9 @@ impl SpotBacktestPage {
             .unwrap_or_default();
         let tick_margin = (visible.len() / 8).max(1);
         let symbol = self.symbol_input.read(cx).text().to_string();
-        let interval = self.current_interval.clone();
         let latest = visible.last();
+        let selected_kline = self.hover_index.and_then(|index| visible.get(index));
+        let volume_label_kline = selected_kline.or(latest);
         let ema_values = EMA_PERIODS
             .iter()
             .map(|period| (*period, ema_last(&visible, *period)))
@@ -699,9 +1169,11 @@ impl SpotBacktestPage {
             .iter()
             .map(|period| (*period, volume_ma_last(&visible, *period)))
             .collect::<Vec<_>>();
-        let chart_bg = palette::surface(app_theme);
+        let chart_bg = app_theme.background;
         let chart_border = palette::border(app_theme);
         let chart_axis = palette::muted(app_theme);
+        let is_4h = self.current_interval == "4h";
+        let is_1d = self.current_interval == "1d";
         let weak = cx.weak_entity();
 
         v_flex()
@@ -711,99 +1183,112 @@ impl SpotBacktestPage {
             .bg(chart_bg)
             .overflow_hidden()
             .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
+                v_flex()
+                    .gap_1()
                     .px_3()
                     .py_2()
                     .border_b_1()
                     .border_color(chart_border)
                     .child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
+                        div()
+                            .relative()
+                            .min_h(px(24.))
                             .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_semibold()
-                                    .text_color(rgb(0xf8fafc))
-                                    .child(format!("{symbol} {}", interval)),
+                                h_flex()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .right(px(190.))
+                                    .gap_3()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .child(div().text_size(px(12.)).text_color(chart_axis).child(
+                                        format!(
+                                            "显示 {} / {} 根",
+                                            visible.len(),
+                                            self.klines.len()
+                                        ),
+                                    ))
+                                    .when_some(latest, |parent, latest| {
+                                        parent.child(
+                                            div().text_size(px(12.)).text_color(chart_axis).child(
+                                                format!(
+                                                    "最新收盘 {}",
+                                                    format_price(latest.close_price)
+                                                ),
+                                            ),
+                                        )
+                                    })
+                                    .children(ema_values.iter().map(|(period, value)| {
+                                        indicator_label(
+                                            &format!("EMA({period})"),
+                                            *value,
+                                            ema_color(*period),
+                                        )
+                                    })),
                             )
                             .child(
-                                div()
+                                h_flex()
+                                    .absolute()
+                                    .right_0()
+                                    .top_0()
+                                    .gap_2()
+                                    .items_center()
                                     .text_size(px(12.))
-                                    .text_color(chart_axis)
-                                    .child(format!(
-                                        "显示 {} / {} 根",
-                                        visible.len(),
-                                        self.klines.len()
-                                    )),
-                            )
-                            .when_some(latest, |parent, latest| {
-                                parent.child(div().text_size(px(12.)).text_color(chart_axis).child(
-                                    format!("最新收盘 {}", format_price(latest.close_price)),
-                                ))
-                            })
-                            .children(ema_values.iter().map(|(period, value)| {
-                                indicator_label(
-                                    &format!("EMA({period})"),
-                                    *value,
-                                    ema_color(*period),
-                                )
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(
-                                Button::new("backtest-kline-zoom-in")
-                                    .outline()
-                                    .xsmall()
-                                    .label("+")
-                                    .on_click(cx.listener(|this, _, _, cx| this.zoom_in(cx))),
-                            )
-                            .child(
-                                Button::new("backtest-kline-zoom-out")
-                                    .outline()
-                                    .xsmall()
-                                    .label("-")
-                                    .on_click(cx.listener(|this, _, _, cx| this.zoom_out(cx))),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .text_color(chart_axis)
                                     .child(
-                                        div()
-                                            .w(px(8.))
-                                            .h(px(8.))
-                                            .rounded_full()
-                                            .bg(app_theme.success),
+                                        Button::new("backtest-interval-4h")
+                                            .when(is_4h, |button| button.primary())
+                                            .when(!is_4h, |button| button.outline())
+                                            .xsmall()
+                                            .label("4H")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.set_interval_and_run("4h", window, cx);
+                                            })),
                                     )
-                                    .child("买入"),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .text_color(chart_axis)
                                     .child(
-                                        div()
-                                            .w(px(8.))
-                                            .h(px(8.))
-                                            .rounded_full()
-                                            .bg(app_theme.danger),
+                                        Button::new("backtest-interval-1d")
+                                            .when(is_1d, |button| button.primary())
+                                            .when(!is_1d, |button| button.outline())
+                                            .xsmall()
+                                            .label("1D")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.set_interval_and_run("1d", window, cx);
+                                            })),
                                     )
-                                    .child("卖出"),
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .text_color(chart_axis)
+                                            .child(
+                                                div()
+                                                    .w(px(8.))
+                                                    .h(px(8.))
+                                                    .rounded_full()
+                                                    .bg(app_theme.success),
+                                            )
+                                            .child("买入"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .text_color(chart_axis)
+                                            .child(
+                                                div()
+                                                    .w(px(8.))
+                                                    .h(px(8.))
+                                                    .rounded_full()
+                                                    .bg(app_theme.danger),
+                                            )
+                                            .child("卖出"),
+                                    ),
                             ),
                     ),
             )
             .child(
                 h_flex()
-                    .h(px(620.))
+                    .h(px(680.))
                     .p_2()
                     .gap_2()
                     .child(
@@ -835,8 +1320,11 @@ impl SpotBacktestPage {
                                     .low(|kline| kline.low_price)
                                     .close(|kline| kline.close_price)
                                     .tick_margin(tick_margin)
-                                    .body_width_ratio(0.72),
+                                    .body_width_ratio(1.5),
                             )
+                            .when_some(self.latest_price_overlay(range), |parent, overlay| {
+                                parent.child(overlay)
+                            })
                             .children(EMA_PERIODS.iter().map(|period| {
                                 ema_overlay(visible.clone(), range, *period, ema_color(*period))
                                     .into_any_element()
@@ -847,6 +1335,9 @@ impl SpotBacktestPage {
                                 range,
                                 self.price_chart_bounds.map(|bounds| bounds.size),
                             ))
+                            .when_some(self.price_hover_overlay(range), |parent, overlay| {
+                                parent.child(overlay)
+                            })
                             .child(
                                 div()
                                     .id("backtest-kline-interaction-layer")
@@ -889,7 +1380,7 @@ impl SpotBacktestPage {
                                         let weak = weak.clone();
                                         move |event, _, cx| {
                                             _ = weak.update(cx, |this, cx| {
-                                                this.pan_to(event.position, cx);
+                                                this.update_hover(event.position, cx);
                                             });
                                         }
                                     })
@@ -916,6 +1407,16 @@ impl SpotBacktestPage {
                                                 }
                                             });
                                         }
+                                    })
+                                    .on_hover({
+                                        let weak = weak.clone();
+                                        move |hovered, _, cx| {
+                                            if !hovered {
+                                                _ = weak.update(cx, |this, cx| {
+                                                    this.clear_hover(cx);
+                                                });
+                                            }
+                                        }
                                     }),
                             ),
                     )
@@ -923,9 +1424,9 @@ impl SpotBacktestPage {
             )
             .child(
                 h_flex()
-                    .h(px(128.))
-                    .p_2()
-                    .pt_0()
+                    .h(px(150.))
+                    .px_2()
+                    .pb_2()
                     .gap_2()
                     .border_t_1()
                     .border_color(chart_border)
@@ -945,7 +1446,7 @@ impl SpotBacktestPage {
                                     .text_color(chart_axis)
                                     .child(format!(
                                         "VOL: {}",
-                                        latest
+                                        volume_label_kline
                                             .map(|kline| format_volume(kline.volume))
                                             .unwrap_or_else(|| "0".to_string())
                                     ))
@@ -981,7 +1482,59 @@ impl SpotBacktestPage {
                                     volume_ma_color(*period),
                                 )
                                 .into_any_element()
-                            })),
+                            }))
+                            .when_some(self.volume_hover_overlay(), |parent, overlay| {
+                                parent.child(overlay)
+                            })
+                            .child(
+                                div()
+                                    .id("backtest-volume-interaction-layer")
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .occlude()
+                                    .bg(transparent_black())
+                                    .child(
+                                        canvas(
+                                            {
+                                                let weak = weak.clone();
+                                                move |bounds, _, cx| {
+                                                    _ = weak.update(cx, |this, cx| {
+                                                        let should_notify = this
+                                                            .volume_chart_bounds
+                                                            .map(|old| old.size != bounds.size)
+                                                            .unwrap_or(true);
+                                                        this.volume_chart_bounds = Some(bounds);
+                                                        if should_notify {
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                            |_, _, _, _| {},
+                                        )
+                                        .size_full(),
+                                    )
+                                    .on_mouse_move({
+                                        let weak = weak.clone();
+                                        move |event, _, cx| {
+                                            _ = weak.update(cx, |this, cx| {
+                                                this.update_volume_hover(event.position, cx);
+                                            });
+                                        }
+                                    })
+                                    .on_hover({
+                                        let weak = weak.clone();
+                                        move |hovered, _, cx| {
+                                            if !hovered {
+                                                _ = weak.update(cx, |this, cx| {
+                                                    this.clear_hover(cx);
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
                     )
                     .child(volume_axis(self.volume_high(), chart_axis)),
             )
@@ -1036,40 +1589,23 @@ impl Render for SpotBacktestPage {
             })
             .unwrap_or_default();
         let chart_panel = self.render_chart_panel(cx);
-        let selected_strategy = self.selected_strategy_label(cx);
-        let is_grid_strategy =
-            selected_strategy == GRID_STRATEGY || selected_strategy == TREND_GRID_STRATEGY;
-        let uses_five_strategy_params = uses_five_strategy_params(&selected_strategy);
-        let uses_third_strategy_param = is_grid_strategy || uses_five_strategy_params;
+        let settings_dialog = self.settings_open.then(|| self.render_settings_dialog(cx));
+        let selected_strategy = self.selected_strategy.clone();
         let app_theme = cx.theme();
-        let status = self
-            .error
-            .as_ref()
-            .map(|error| {
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded(px(6.))
-                    .bg(app_theme.danger.opacity(0.12))
-                    .text_color(app_theme.danger)
-                    .child(error.clone())
-                    .into_any_element()
-            })
-            .or_else(|| {
-                self.status.as_ref().map(|status| {
-                    div()
-                        .px_3()
-                        .py_2()
-                        .rounded(px(6.))
-                        .bg(app_theme.muted.opacity(0.12))
-                        .text_color(palette::muted(app_theme))
-                        .child(status.clone())
-                        .into_any_element()
-                })
-            });
+        let error = self.error.as_ref().map(|error| {
+            div()
+                .px_3()
+                .py_2()
+                .rounded(px(6.))
+                .bg(app_theme.danger.opacity(0.12))
+                .text_color(app_theme.danger)
+                .child(error.clone())
+                .into_any_element()
+        });
 
         v_flex()
             .size_full()
+            .relative()
             .gap_2()
             .px_4()
             .py_2()
@@ -1098,69 +1634,30 @@ impl Render for SpotBacktestPage {
                                     ),
                             )
                             .child(
-                                Button::new("run-backtest")
-                                    .primary()
-                                    .small()
-                                    .label(if self.loading { "回测中" } else { "下载并回测" })
-                                    .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        Button::new("open-backtest-strategy-settings")
+                                            .outline()
+                                            .small()
+                                            .label(selected_strategy)
+                                            .tooltip("当前回测策略，点击修改策略和参数")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.open_settings(cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("run-backtest")
+                                            .primary()
+                                            .small()
+                                            .label(if self.loading { "回测中" } else { "下载并回测" })
+                                            .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
+                                    ),
                             ),
                     ),
             )
-            .child(
-                div()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(palette::border(app_theme))
-                    .bg(app_theme.background)
-                    .px_3()
-                    .py_2()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_end()
-                            .flex_wrap()
-                            .child(self.render_strategy_select())
-                            .child(self.render_field("交易对", &self.symbol_input))
-                            .child(self.render_field("周期", &self.interval_input))
-                            .child(self.render_field("开始日期", &self.start_input))
-                            .child(self.render_field("结束日期", &self.end_input))
-                            .child(self.render_field(
-                                strategy_param_label(&selected_strategy, 0),
-                                &self.short_input,
-                            ))
-                            .child(self.render_field(
-                                strategy_param_label(&selected_strategy, 1),
-                                &self.long_input,
-                            ))
-                            .when(uses_third_strategy_param, |parent| {
-                                parent.child(self.render_field(
-                                    strategy_param_label(&selected_strategy, 2),
-                                    &self.grid_count_input,
-                                ))
-                            })
-                            .when(uses_five_strategy_params, |parent| {
-                                parent.child(self.render_field(
-                                    strategy_param_label(&selected_strategy, 3),
-                                    &self.trend_window_input,
-                                ))
-                            })
-                            .when(uses_five_strategy_params, |parent| {
-                                parent.child(self.render_field(
-                                    strategy_param_label(&selected_strategy, 4),
-                                    &self.stop_loss_input,
-                                ))
-                            })
-                            .child(self.render_field("初始资金", &self.cash_input))
-                            .child(self.render_field("手续费率", &self.fee_input)),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette::muted(app_theme))
-                    .child("K 线图支持鼠标拖动平移、滚轮缩放，也可以用 + / - 调整显示根数。"),
-            )
-            .when_some(status, |parent, status| parent.child(status))
+            .when_some(error, |parent, error| parent.child(error))
             .child(chart_panel)
             .child(h_flex().gap_2().flex_wrap().children(metrics))
             .child(
@@ -1202,6 +1699,7 @@ impl Render for SpotBacktestPage {
                             ),
                     ),
             )
+            .when_some(settings_dialog, |parent, dialog| parent.child(dialog))
     }
 }
 
@@ -1845,6 +2343,61 @@ fn volume_axis(high: f64, muted_color: Hsla) -> impl IntoElement {
         .child(format_volume(high))
         .child(format_volume(high / 2.0))
         .child("0")
+}
+
+fn dashed_vertical(x: Pixels) -> impl IntoElement {
+    div()
+        .absolute()
+        .left(x)
+        .top_0()
+        .bottom_0()
+        .w(px(1.))
+        .children((0..80).map(|index| {
+            div()
+                .absolute()
+                .top(px(index as f32 * 10.))
+                .h(px(5.))
+                .w(px(1.))
+                .bg(crosshair_color())
+        }))
+}
+
+fn dashed_horizontal(y: Pixels) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(y)
+        .left_0()
+        .right_0()
+        .h(px(1.))
+        .children((0..180).map(|index| {
+            div()
+                .absolute()
+                .left(px(index as f32 * 10.))
+                .h(px(1.))
+                .w(px(5.))
+                .bg(crosshair_color())
+        }))
+}
+
+fn red_dotted_horizontal(y: Pixels) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(y)
+        .left_0()
+        .right_0()
+        .h(px(1.))
+        .children((0..260).map(|index| {
+            div()
+                .absolute()
+                .left(px(index as f32 * 6.))
+                .h(px(1.))
+                .w(px(2.))
+                .bg(hsla(0.0, 0.86, 0.58, 0.78))
+        }))
+}
+
+fn crosshair_color() -> Hsla {
+    hsla(0.62, 0.24, 0.70, 0.42)
 }
 
 fn format_time(timestamp_ms: i64) -> String {

@@ -7,11 +7,14 @@ use gpui_component::{
     chart::{BarChart, CandlestickChart},
     h_flex, v_flex,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
-const MIN_PRICE_CHART_HEIGHT: f32 = 360.0;
+const MIN_PRICE_CHART_HEIGHT: f32 = 430.0;
 const VOLUME_CHART_HEIGHT: f32 = 116.0;
 const MIN_VISIBLE_KLINES: usize = 20;
 const ZOOM_STEP: usize = 20;
+const DAY_MILLIS: i64 = 86_400_000;
+const SPOT_DAILY_START_2026_MS: i64 = 1_767_225_600_000;
 
 pub struct KlineCandlestickPage {
     symbol: String,
@@ -22,6 +25,8 @@ pub struct KlineCandlestickPage {
     hover_index: Option<usize>,
     hover_point: Option<Point<Pixels>>,
     price_chart_bounds: Option<Bounds<Pixels>>,
+    volume_chart_bounds: Option<Bounds<Pixels>>,
+    volume_hover_point: Option<Point<Pixels>>,
     drag_start_x: Option<Pixels>,
     drag_start_visible_start: usize,
     error: Option<String>,
@@ -44,7 +49,7 @@ impl KlineSource {
 
     fn table_name(self) -> &'static str {
         match self {
-            Self::Spot => "spot_klines",
+            Self::Spot => "spot_klines_1d",
             Self::Alpha => "alpha_klines",
         }
     }
@@ -114,10 +119,12 @@ impl KlineCandlestickPage {
             source,
             klines: Vec::new(),
             visible_start: 0,
-            visible_count: 120,
+            visible_count: 240,
             hover_index: None,
             hover_point: None,
             price_chart_bounds: None,
+            volume_chart_bounds: None,
+            volume_hover_point: None,
             drag_start_x: None,
             drag_start_visible_start: 0,
             error: None,
@@ -145,6 +152,7 @@ impl KlineCandlestickPage {
         self.source = source;
         self.hover_index = None;
         self.hover_point = None;
+        self.volume_hover_point = None;
         self.reload(cx);
     }
 
@@ -157,12 +165,19 @@ impl KlineCandlestickPage {
                 .background_spawn(async move {
                     match source {
                         KlineSource::Spot => {
+                            let days = spot_daily_days_since_2026();
                             binance_tools::db::spot::load_or_fetch_spot_daily_klines_blocking(
                                 BinanceSettings::production(),
                                 symbol,
-                                120,
+                                days,
                             )
-                            .map(|klines| klines.into_iter().map(KlineData::from).collect())
+                            .map(|klines| {
+                                klines
+                                    .into_iter()
+                                    .filter(|kline| kline.open_time >= SPOT_DAILY_START_2026_MS)
+                                    .map(KlineData::from)
+                                    .collect()
+                            })
                         }
                         KlineSource::Alpha => {
                             binance_tools::db::alpha::load_or_fetch_alpha_daily_klines_blocking(
@@ -182,20 +197,25 @@ impl KlineCandlestickPage {
                             MIN_VISIBLE_KLINES,
                             this.klines.len().max(MIN_VISIBLE_KLINES),
                         );
-                        this.visible_start = this
-                            .klines
-                            .len()
-                            .saturating_sub(this.visible_count.min(this.klines.len()));
+                        this.visible_start = if this.source == KlineSource::Spot {
+                            0
+                        } else {
+                            this.klines
+                                .len()
+                                .saturating_sub(this.visible_count.min(this.klines.len()))
+                        };
                         this.drag_start_x = None;
                         this.drag_start_visible_start = this.visible_start;
                         this.hover_index = None;
                         this.hover_point = None;
+                        this.volume_hover_point = None;
                         this.error = None;
                     }
                     Err(err) => {
                         this.klines.clear();
                         this.hover_index = None;
                         this.hover_point = None;
+                        this.volume_hover_point = None;
                         this.error = Some(err.to_string());
                     }
                 }
@@ -282,6 +302,7 @@ impl KlineCandlestickPage {
             .min(self.klines.len().saturating_sub(new_count));
         self.hover_index = None;
         self.hover_point = None;
+        self.volume_hover_point = None;
         cx.notify();
     }
 
@@ -296,6 +317,7 @@ impl KlineCandlestickPage {
             .min(self.klines.len().saturating_sub(new_count));
         self.hover_index = None;
         self.hover_point = None;
+        self.volume_hover_point = None;
         cx.notify();
     }
 
@@ -337,6 +359,7 @@ impl KlineCandlestickPage {
             self.visible_start = next_start;
             self.hover_index = None;
             self.hover_point = None;
+            self.volume_hover_point = None;
             cx.notify();
         }
     }
@@ -370,15 +393,53 @@ impl KlineCandlestickPage {
         let index = ((ratio * visible_len as f32).floor() as usize).min(visible_len - 1);
         self.hover_index = Some(index);
         self.hover_point = Some(point(x, y));
+        self.volume_hover_point = None;
         cx.notify();
     }
 
     fn clear_hover(&mut self, cx: &mut Context<Self>) {
-        if self.hover_index.is_some() || self.hover_point.is_some() {
+        if self.hover_index.is_some()
+            || self.hover_point.is_some()
+            || self.volume_hover_point.is_some()
+        {
             self.hover_index = None;
             self.hover_point = None;
+            self.volume_hover_point = None;
             cx.notify();
         }
+    }
+
+    fn update_volume_hover(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(bounds) = self.volume_chart_bounds else {
+            return;
+        };
+        let visible_len = self.visible_klines().len();
+        if visible_len == 0 || !bounds.contains(&position) {
+            self.clear_hover(cx);
+            return;
+        }
+
+        let x = (position.x - bounds.left())
+            .max(px(0.))
+            .min(bounds.size.width);
+        let y = (position.y - bounds.top())
+            .max(px(0.))
+            .min(bounds.size.height);
+        let ratio = if bounds.size.width.as_f32() > 0.0 {
+            x.as_f32() / bounds.size.width.as_f32()
+        } else {
+            0.0
+        };
+        let index = ((ratio * visible_len as f32).floor() as usize).min(visible_len - 1);
+        self.hover_index = Some(index);
+        self.volume_hover_point = Some(point(x, y));
+        self.hover_point = self.price_chart_bounds.map(|price_bounds| {
+            point(
+                x.min(price_bounds.size.width),
+                (price_bounds.size.height / 2.).max(px(0.)),
+            )
+        });
+        cx.notify();
     }
 
     fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -509,7 +570,7 @@ impl KlineCandlestickPage {
                     .relative()
                     .flex_1()
                     .h_full()
-                    .child(chart_watermark(self.symbol.trim_end_matches("USDT")))
+                    .child(chart_watermark(&self.symbol))
                     .child(
                         CandlestickChart::new(visible.clone())
                             .x(|kline| short_date(kline.open_time))
@@ -518,8 +579,11 @@ impl KlineCandlestickPage {
                             .low(|kline| kline.low_price)
                             .close(|kline| kline.close_price)
                             .tick_margin(tick_margin)
-                            .body_width_ratio(0.74),
+                            .body_width_ratio(1.5),
                     )
+                    .when_some(self.latest_price_overlay(range), |parent, overlay| {
+                        parent.child(overlay)
+                    })
                     .child(ma_overlay(visible.clone(), range, 7, ma7_color()))
                     .child(ma_overlay(visible.clone(), range, 25, ma25_color()))
                     .child(ma_overlay(visible.clone(), range, 99, ma99_color()))
@@ -532,18 +596,6 @@ impl KlineCandlestickPage {
                         format_price(range.low),
                         palette::text(cx.theme()),
                         LabelPosition::BottomLeft,
-                    ))
-                    .child(price_line_label(
-                        visible
-                            .last()
-                            .map(|kline| kline.close_price)
-                            .unwrap_or(range.mid),
-                        market_color(
-                            self.kline_change(&visible, visible.len().saturating_sub(1))
-                                .map(|(change, _)| change)
-                                .unwrap_or_default(),
-                            cx,
-                        ),
                     ))
                     .when_some(self.hover_overlay(), |this, overlay| this.child(overlay))
                     .child(
@@ -629,6 +681,7 @@ impl KlineCandlestickPage {
         };
         let visible = self.visible_klines();
         let tick_margin = (visible.len() / 8).max(1);
+        let weak = cx.weak_entity();
 
         h_flex()
             .h(px(VOLUME_CHART_HEIGHT))
@@ -651,7 +704,7 @@ impl KlineCandlestickPage {
                             .child(format!("Vol {}", format_volume(range.high))),
                     )
                     .child(
-                        BarChart::new(visible)
+                        BarChart::new(visible.clone())
                             .x(|kline| short_date(kline.open_time))
                             .y(|kline| kline.volume)
                             .fill(|kline| {
@@ -662,6 +715,56 @@ impl KlineCandlestickPage {
                                 }
                             })
                             .tick_margin(tick_margin),
+                    )
+                    .when_some(self.volume_hover_overlay(), |parent, overlay| {
+                        parent.child(overlay)
+                    })
+                    .child(
+                        div()
+                            .id("kline-volume-interaction-layer")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .occlude()
+                            .bg(transparent_black())
+                            .child(
+                                canvas(
+                                    {
+                                        let weak = weak.clone();
+                                        move |bounds, _, cx| {
+                                            _ = weak.update(cx, |this, cx| {
+                                                let should_notify = this
+                                                    .volume_chart_bounds
+                                                    .map(|old| old.size != bounds.size)
+                                                    .unwrap_or(true);
+                                                this.volume_chart_bounds = Some(bounds);
+                                                if should_notify {
+                                                    cx.notify();
+                                                }
+                                            });
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .size_full(),
+                            )
+                            .on_mouse_move({
+                                let weak = weak.clone();
+                                move |event, _, cx| {
+                                    _ = weak.update(cx, |this, cx| {
+                                        this.update_volume_hover(event.position, cx);
+                                    });
+                                }
+                            })
+                            .on_hover({
+                                let weak = weak.clone();
+                                move |hovered, _, cx| {
+                                    if !hovered {
+                                        _ = weak.update(cx, |this, cx| this.clear_hover(cx));
+                                    }
+                                }
+                            }),
                     ),
             )
             .child(volume_axis(range, cx))
@@ -709,6 +812,50 @@ impl KlineCandlestickPage {
                         .child(format_price(price)),
                 ),
         )
+    }
+
+    fn volume_hover_overlay(&self) -> Option<impl IntoElement> {
+        let point = self.volume_hover_point.or(self.hover_point)?;
+        let visible = self.visible_klines();
+        let kline = self.hover_index.and_then(|index| visible.get(index))?;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(dashed_vertical(point.x))
+                .child(dashed_horizontal(point.y))
+                .child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top(px(10.))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.))
+                        .bg(hsla(0.61, 0.14, 0.30, 1.0))
+                        .text_color(hsla(0., 0., 1., 1.))
+                        .text_size(px(12.))
+                        .child(format_volume(kline.volume)),
+                ),
+        )
+    }
+
+    fn latest_price_overlay(&self, range: KlineRange) -> Option<impl IntoElement> {
+        let visible = self.visible_klines();
+        let latest = visible.last()?;
+        let chart_size = self.price_chart_bounds.map(|bounds| bounds.size)?;
+        if range.high <= range.low || chart_size.height.as_f32() <= 0.0 {
+            return None;
+        }
+
+        let y = ((range.high - latest.close_price) / (range.high - range.low)
+            * chart_size.height.as_f32() as f64)
+            .clamp(0.0, chart_size.height.as_f32() as f64) as f32;
+
+        Some(red_dotted_horizontal(px(y)))
     }
 
     fn hover_price(&self, y: Pixels) -> Option<f64> {
@@ -851,14 +998,14 @@ fn metric(label: &'static str, value: impl Into<SharedString>, color: Hsla) -> A
 fn chart_watermark(symbol: &str) -> impl IntoElement {
     div()
         .absolute()
-        .top(px(118.))
+        .top(px(170.))
         .left(px(0.))
         .right(px(0.))
         .text_center()
-        .text_size(px(44.))
+        .text_size(px(48.))
         .font_semibold()
-        .text_color(hsla(0.61, 0.12, 0.62, 0.08))
-        .child(format!("BINANCE {symbol}"))
+        .text_color(hsla(0.61, 0.12, 0.62, 0.12))
+        .child(symbol.to_string())
 }
 
 fn extreme_label(price: String, color: Hsla, position: LabelPosition) -> impl IntoElement {
@@ -880,36 +1027,10 @@ fn extreme_label(price: String, color: Hsla, position: LabelPosition) -> impl In
         .child(price)
 }
 
-fn price_line_label(price: f64, color: Hsla) -> impl IntoElement {
-    h_flex()
-        .absolute()
-        .right_0()
-        .top(px(122.))
-        .items_center()
-        .child(
-            div()
-                .h(px(1.))
-                .w(px(120.))
-                .border_t_1()
-                .border_color(color.opacity(0.6)),
-        )
-        .child(
-            div()
-                .px_2()
-                .py_1()
-                .rounded(px(4.))
-                .bg(color)
-                .text_color(hsla(0., 0., 1., 1.))
-                .text_size(px(12.))
-                .font_semibold()
-                .child(format_price(price)),
-        )
-}
-
 fn price_axis(range: KlineRange, cx: &mut Context<KlineCandlestickPage>) -> impl IntoElement {
     v_flex()
         .h_full()
-        .w(px(96.))
+        .w(px(88.))
         .justify_between()
         .items_end()
         .text_size(px(12.))
@@ -923,7 +1044,7 @@ fn price_axis(range: KlineRange, cx: &mut Context<KlineCandlestickPage>) -> impl
 fn volume_axis(range: VolumeRange, cx: &mut Context<KlineCandlestickPage>) -> impl IntoElement {
     v_flex()
         .h_full()
-        .w(px(96.))
+        .w(px(88.))
         .justify_between()
         .items_end()
         .text_size(px(12.))
@@ -943,7 +1064,7 @@ fn market_color(change: f64, cx: &mut Context<KlineCandlestickPage>) -> Hsla {
 }
 
 fn chart_background(cx: &mut Context<KlineCandlestickPage>) -> Hsla {
-    palette::surface(cx.theme())
+    cx.theme().background
 }
 
 fn chart_grid(cx: &mut Context<KlineCandlestickPage>) -> Hsla {
@@ -951,7 +1072,7 @@ fn chart_grid(cx: &mut Context<KlineCandlestickPage>) -> Hsla {
 }
 
 fn crosshair_color() -> Hsla {
-    hsla(0.61, 0.14, 0.62, 0.88)
+    hsla(0.62, 0.24, 0.70, 0.42)
 }
 
 fn ma7_color() -> Hsla {
@@ -1039,7 +1160,7 @@ fn dashed_vertical(x: Pixels) -> impl IntoElement {
         .top_0()
         .bottom_0()
         .w(px(1.))
-        .children((0..36).map(|index| {
+        .children((0..80).map(|index| {
             div()
                 .absolute()
                 .top(px(index as f32 * 10.))
@@ -1056,13 +1177,30 @@ fn dashed_horizontal(y: Pixels) -> impl IntoElement {
         .left_0()
         .right_0()
         .h(px(1.))
-        .children((0..160).map(|index| {
+        .children((0..260).map(|index| {
             div()
                 .absolute()
                 .left(px(index as f32 * 10.))
                 .h(px(1.))
                 .w(px(5.))
                 .bg(crosshair_color())
+        }))
+}
+
+fn red_dotted_horizontal(y: Pixels) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(y)
+        .left_0()
+        .right_0()
+        .h(px(1.))
+        .children((0..260).map(|index| {
+            div()
+                .absolute()
+                .left(px(index as f32 * 6.))
+                .h(px(1.))
+                .w(px(2.))
+                .bg(hsla(0.0, 0.86, 0.58, 0.78))
         }))
 }
 
@@ -1076,13 +1214,13 @@ fn format_price(value: f64) -> String {
 
 fn format_volume(value: f64) -> String {
     if value >= 1_000_000_000.0 {
-        format!("{:.3}B", value / 1_000_000_000.0)
+        format!("{:.2}B", value / 1_000_000_000.0)
     } else if value >= 1_000_000.0 {
-        format!("{:.3}M", value / 1_000_000.0)
+        format!("{:.2}M", value / 1_000_000.0)
     } else if value >= 1_000.0 {
-        format!("{:.3}K", value / 1_000.0)
+        format!("{:.2}K", value / 1_000.0)
     } else {
-        format!("{value:.3}")
+        format!("{value:.2}")
     }
 }
 
@@ -1099,6 +1237,19 @@ fn full_date(timestamp_ms: i64) -> String {
 fn date_parts(timestamp_ms: i64) -> (i32, u32, u32) {
     let days = timestamp_ms.div_euclid(86_400_000);
     civil_from_days(days)
+}
+
+fn spot_daily_days_since_2026() -> u16 {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(SPOT_DAILY_START_2026_MS);
+    let days = if now_ms <= SPOT_DAILY_START_2026_MS {
+        1
+    } else {
+        (now_ms - SPOT_DAILY_START_2026_MS).div_euclid(DAY_MILLIS) + 1
+    };
+    days.clamp(1, 1000) as u16
 }
 
 fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {

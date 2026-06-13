@@ -1,6 +1,14 @@
 # spot_klines 表结构
 
-`spot_klines` 存储 Binance Spot K 线数据。当前用于“日均线信号”页面缓存 `1d` 日 K 数据，避免每次打开页面都对所有 `USDT` 交易对请求 Binance。
+`spot_klines` 是旧版通用 Spot K 线缓存表，保留用于历史数据兼容和非 `4h` / `1d` 周期兜底。
+
+现货回测的 `4h` 和 `1d` 数据已经拆到独立分表：
+
+- [✓] 【完成】 `4h` 回测数据写入 [`spot_klines_4h`](./spot_klines_4h.md)。
+- [✓] 【完成】 `1d` 回测数据写入 [`spot_klines_1d`](./spot_klines_1d.md)。
+- [✓] 【完成】 现货日均线信号和现货日 K 图也已改为读取 [`spot_klines_1d`](./spot_klines_1d.md)。
+
+本表继续保留，避免旧数据库升级后丢失历史缓存；程序启动迁移会把其中已有的 `4h` / `1d` 数据复制到对应分表。
 
 数据库文件默认位置：
 

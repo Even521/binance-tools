@@ -62,8 +62,24 @@ pub fn download_spot_daily_klines_blocking(
     let mut cached_files = 0;
     let mut downloaded_files = 0;
     let mut missing_files = 0;
+    let mut connection = crate::db::open_default_connection()?;
+    let expected_rows_per_day = expected_daily_rows(&interval)?;
 
     while date <= end {
+        let (day_start, day_end) = day_open_time_range_millis(date)?;
+        let stored_rows = crate::db::spot::count_spot_klines_in_range(
+            &connection,
+            &symbol,
+            &interval,
+            day_start,
+            day_end,
+        )?;
+        if stored_rows >= expected_rows_per_day {
+            cached_files += 1;
+            date += Duration::days(1);
+            continue;
+        }
+
         let cache_path = daily_kline_cache_path(&symbol, &interval, date)?;
         if cache_path.is_file() {
             let csv = fs::read_to_string(&cache_path).with_context(|| {
@@ -80,6 +96,7 @@ pub fn download_spot_daily_klines_blocking(
                     )
                 })?;
             cached_files += 1;
+            crate::db::spot::upsert_spot_vision_klines(&mut connection, &cached_klines)?;
             klines.append(&mut cached_klines);
             date += Duration::days(1);
             continue;
@@ -126,13 +143,21 @@ pub fn download_spot_daily_klines_blocking(
         let mut file_klines = parse_daily_kline_csv(&symbol, &interval, &csv)
             .with_context(|| format!("Failed to parse Binance Vision CSV: {url}"))?;
         downloaded_files += 1;
+        crate::db::spot::upsert_spot_vision_klines(&mut connection, &file_klines)?;
         klines.append(&mut file_klines);
 
         date += Duration::days(1);
     }
 
-    klines.sort_by_key(|kline| kline.open_time);
-    klines.dedup_by_key(|kline| kline.open_time);
+    let (start_open_time, _) = day_open_time_range_millis(start)?;
+    let (_, end_open_time) = day_open_time_range_millis(end)?;
+    klines = crate::db::spot::list_spot_vision_klines_in_range(
+        &connection,
+        &symbol,
+        &interval,
+        start_open_time,
+        end_open_time,
+    )?;
 
     if klines.is_empty() {
         bail!(
@@ -169,6 +194,37 @@ fn daily_kline_cache_path(symbol: &str, interval: &str, date: NaiveDate) -> Resu
             "{symbol}-{interval}-{}.csv",
             date.format("%Y-%m-%d")
         )))
+}
+
+fn day_open_time_range_millis(date: NaiveDate) -> Result<(i64, i64)> {
+    let start = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow!("Invalid date: {date}"))?
+        .and_utc()
+        .timestamp_millis();
+    Ok((start, start + 86_400_000 - 1))
+}
+
+fn expected_daily_rows(interval: &str) -> Result<usize> {
+    let millis = match interval {
+        "1s" => 1_000,
+        "1m" => 60_000,
+        "3m" => 3 * 60_000,
+        "5m" => 5 * 60_000,
+        "15m" => 15 * 60_000,
+        "30m" => 30 * 60_000,
+        "1h" => 60 * 60_000,
+        "2h" => 2 * 60 * 60_000,
+        "4h" => 4 * 60 * 60_000,
+        "6h" => 6 * 60 * 60_000,
+        "8h" => 8 * 60 * 60_000,
+        "12h" => 12 * 60 * 60_000,
+        "1d" => 86_400_000,
+        "3d" | "1w" | "1mo" => return Ok(1),
+        _ => bail!("Unsupported interval: {interval}"),
+    };
+
+    Ok((86_400_000 / millis).max(1) as usize)
 }
 
 fn extract_daily_kline_csv(bytes: &[u8]) -> Result<String> {

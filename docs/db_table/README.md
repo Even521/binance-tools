@@ -24,6 +24,8 @@ src/db/
 | --- | --- | --- |
 | `spot_symbols` | [`spot_symbols.md`](./spot_symbols.md) | Binance Spot 交易对基础信息缓存 |
 | `spot_klines` | [`spot_klines.md`](./spot_klines.md) | Spot K 线缓存 |
+| `spot_klines_4h` | [`spot_klines_4h.md`](./spot_klines_4h.md) | Spot 回测 `4h` K 线缓存 |
+| `spot_klines_1d` | [`spot_klines_1d.md`](./spot_klines_1d.md) | Spot 回测 `1d` K 线缓存 |
 | `binance_market_products_cache` | [`binance_market_products_cache.md`](./binance_market_products_cache.md) | Binance Web product 市场榜单缓存 |
 | `alpha_tokens` | [`alpha_tokens.md`](./alpha_tokens.md) | Binance Alpha Token 列表缓存 |
 | `alpha_assets` | [`alpha_assets.md`](./alpha_assets.md) | Binance Alpha 资产列表缓存 |
@@ -44,3 +46,9 @@ src/db/
 - 新增或修改表结构时，同步更新本目录对应文档。
 - UI 层不直接拼 SQL；通过 `src/db/` 提供的函数读取数据。
 - 运行时生成的 SQLite 文件不提交到版本控制。
+
+## BTCC 补充
+
+| 表 | 文档 | 说明 |
+| --- | --- | --- |
+| `btcc_wallets` | [`btcc_wallets.md`](./btcc_wallets.md) | BTCC 多钱包列表、本地地址元数据和余额缓存 |

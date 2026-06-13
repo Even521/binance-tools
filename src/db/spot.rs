@@ -3,6 +3,7 @@
 use crate::binance::{
     BinanceSettings,
     spot::{DailyMaSignal, SpotDailyKline, SpotSymbolInfo},
+    vision::VisionKline,
 };
 use anyhow::Context;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -14,6 +15,9 @@ use std::{
 const ORDER_TYPES_SEPARATOR: &str = ",";
 const DAY_MILLIS: i64 = 86_400_000;
 const DAILY_INTERVAL: &str = "1d";
+const SPOT_KLINES_TABLE: &str = "spot_klines";
+const SPOT_KLINES_4H_TABLE: &str = "spot_klines_4h";
+const SPOT_KLINES_1D_TABLE: &str = "spot_klines_1d";
 
 pub fn load_or_fetch_spot_symbols_blocking(
     settings: BinanceSettings,
@@ -220,15 +224,16 @@ pub fn upsert_spot_daily_klines(
     connection: &mut Connection,
     klines: &[SpotDailyKline],
 ) -> anyhow::Result<()> {
+    let table = SPOT_KLINES_1D_TABLE;
     let transaction = connection
         .transaction()
         .context("begin upsert spot klines transaction failed")?;
 
     {
         let mut statement = transaction
-            .prepare(
+            .prepare(&format!(
                 r#"
-                INSERT INTO spot_klines (
+                INSERT INTO {table} (
                     symbol,
                     interval,
                     open_time,
@@ -241,7 +246,7 @@ pub fn upsert_spot_daily_klines(
                     updated_at
                 )
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
-                ON CONFLICT(symbol, interval, open_time) DO UPDATE SET
+                ON CONFLICT(symbol, open_time) DO UPDATE SET
                     open_price = excluded.open_price,
                     high_price = excluded.high_price,
                     low_price = excluded.low_price,
@@ -249,8 +254,8 @@ pub fn upsert_spot_daily_klines(
                     volume = excluded.volume,
                     close_time = excluded.close_time,
                     updated_at = CURRENT_TIMESTAMP
-                "#,
-            )
+                "#
+            ))
             .context("prepare upsert spot kline SQL failed")?;
 
         for kline in klines {
@@ -275,6 +280,168 @@ pub fn upsert_spot_daily_klines(
         .context("commit upsert spot klines transaction failed")
 }
 
+pub fn upsert_spot_vision_klines(
+    connection: &mut Connection,
+    klines: &[VisionKline],
+) -> anyhow::Result<()> {
+    let Some(first) = klines.first() else {
+        return Ok(());
+    };
+    let table = backtest_kline_table_for_interval(&first.interval);
+    let conflict_target = backtest_kline_conflict_target_for_interval(&first.interval);
+    let transaction = connection
+        .transaction()
+        .context("begin upsert spot vision klines transaction failed")?;
+
+    {
+        let mut statement = transaction
+            .prepare(&format!(
+                r#"
+                INSERT INTO {table} (
+                    symbol,
+                    interval,
+                    open_time,
+                    open_price,
+                    high_price,
+                    low_price,
+                    close_price,
+                    volume,
+                    close_time,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
+                ON CONFLICT{conflict_target} DO UPDATE SET
+                    open_price = excluded.open_price,
+                    high_price = excluded.high_price,
+                    low_price = excluded.low_price,
+                    close_price = excluded.close_price,
+                    volume = excluded.volume,
+                    close_time = excluded.close_time,
+                    updated_at = CURRENT_TIMESTAMP
+                "#
+            ))
+            .context("prepare upsert spot vision kline SQL failed")?;
+
+        for kline in klines {
+            statement
+                .execute(params![
+                    kline.symbol,
+                    kline.interval,
+                    kline.open_time,
+                    kline.open_price,
+                    kline.high_price,
+                    kline.low_price,
+                    kline.close_price,
+                    kline.volume,
+                    kline.close_time,
+                ])
+                .with_context(|| format!("upsert spot vision kline failed: {}", kline.symbol))?;
+        }
+    }
+
+    transaction
+        .commit()
+        .context("commit upsert spot vision klines transaction failed")
+}
+
+pub fn count_spot_klines_in_range(
+    connection: &Connection,
+    symbol: &str,
+    interval: &str,
+    start_open_time: i64,
+    end_open_time: i64,
+) -> anyhow::Result<usize> {
+    let table = backtest_kline_table_for_interval(interval);
+    let count = connection
+        .query_row(
+            &format!(
+                r#"
+            SELECT COUNT(*)
+            FROM {table}
+            WHERE symbol = ?1
+                AND interval = ?2
+                AND open_time BETWEEN ?3 AND ?4
+            "#
+            ),
+            params![symbol, interval, start_open_time, end_open_time],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .context("query spot kline range count failed")?
+        .unwrap_or(0);
+
+    Ok(count.max(0) as usize)
+}
+
+pub fn list_spot_vision_klines_in_range(
+    connection: &Connection,
+    symbol: &str,
+    interval: &str,
+    start_open_time: i64,
+    end_open_time: i64,
+) -> anyhow::Result<Vec<VisionKline>> {
+    let table = backtest_kline_table_for_interval(interval);
+    let mut statement = connection
+        .prepare(&format!(
+            r#"
+            SELECT
+                symbol,
+                interval,
+                open_time,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume,
+                close_time
+            FROM {table}
+            WHERE symbol = ?1
+                AND interval = ?2
+                AND open_time BETWEEN ?3 AND ?4
+            ORDER BY open_time ASC
+            "#
+        ))
+        .context("prepare list spot vision klines SQL failed")?;
+
+    let klines = statement
+        .query_map(
+            params![symbol, interval, start_open_time, end_open_time],
+            |row| {
+                Ok(VisionKline {
+                    symbol: row.get(0)?,
+                    interval: row.get(1)?,
+                    open_time: row.get(2)?,
+                    open_price: row.get(3)?,
+                    high_price: row.get(4)?,
+                    low_price: row.get(5)?,
+                    close_price: row.get(6)?,
+                    volume: row.get(7)?,
+                    close_time: row.get(8)?,
+                })
+            },
+        )
+        .context("query spot vision klines failed")?
+        .collect::<Result<Vec<_>, _>>()
+        .context("read spot vision kline rows failed")?;
+
+    Ok(klines)
+}
+
+fn backtest_kline_table_for_interval(interval: &str) -> &'static str {
+    match interval {
+        "4h" => SPOT_KLINES_4H_TABLE,
+        "1d" => SPOT_KLINES_1D_TABLE,
+        _ => SPOT_KLINES_TABLE,
+    }
+}
+
+fn backtest_kline_conflict_target_for_interval(interval: &str) -> &'static str {
+    match interval {
+        "4h" | "1d" => "(symbol, open_time)",
+        _ => "(symbol, interval, open_time)",
+    }
+}
+
 pub fn list_cached_usdt_daily_ma_signals(
     connection: &Connection,
     days: u16,
@@ -291,7 +458,7 @@ pub fn list_cached_usdt_daily_ma_signals(
                     COUNT(*) AS samples,
                     AVG(close_price) AS average_price,
                     MAX(open_time) AS latest_open_time
-                FROM spot_klines
+                FROM spot_klines_1d
                 WHERE interval = ?1
                     AND open_time BETWEEN ?2 AND ?3
                 GROUP BY symbol
@@ -306,7 +473,7 @@ pub fn list_cached_usdt_daily_ma_signals(
                 latest.close_price
             FROM kline_window k
             JOIN spot_symbols s ON s.symbol = k.symbol
-            JOIN spot_klines latest
+            JOIN spot_klines_1d latest
                 ON latest.symbol = k.symbol
                 AND latest.interval = ?1
                 AND latest.open_time = k.latest_open_time
@@ -356,7 +523,7 @@ pub fn list_usdt_symbols_missing_daily_klines(
             r#"
             SELECT s.symbol
             FROM spot_symbols s
-            LEFT JOIN spot_klines k
+            LEFT JOIN spot_klines_1d k
                 ON k.symbol = s.symbol
                 AND k.interval = ?1
                 AND k.open_time BETWEEN ?2 AND ?3
@@ -401,7 +568,7 @@ pub fn list_spot_daily_klines(
                 close_price,
                 volume,
                 close_time
-            FROM spot_klines
+            FROM spot_klines_1d
             WHERE symbol = ?1
                 AND interval = ?2
             ORDER BY open_time DESC

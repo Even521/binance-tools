@@ -10,6 +10,12 @@ use crate::ui::{
     alpha_heatmap::{AlphaHeatmapEvent, AlphaHeatmapPage},
     alpha_ma_signal::AlphaDailyMaSignalPage,
     backtest::SpotBacktestPage,
+    btcc::{
+        wallet_generator::WalletGeneratorPage,
+        wallet_list::{BtccWalletListEvent, BtccWalletListPage},
+        wallet_manager::WalletGeneratorPage as WalletManagerPage,
+    },
+    calculator::CalculatorPage,
     heatmap::{MarketHeatmapEvent, MarketHeatmapPage},
     kline::KlineCandlestickPage,
     ma_signal::{DailyMaSignalEvent, DailyMaSignalPage},
@@ -17,17 +23,19 @@ use crate::ui::{
     palette,
     spot::SpotPage,
     square::{SquareKeySettingsPage, SquareSendLogsPage, SquareTasksPage},
+    strategy_help::StrategyHelpPage,
     task_board::TaskBoardPage,
     title_bar::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
-        OpenAlphaTokens, OpenDailyMaSignals, OpenDocumentConvert, OpenMarketHeatmap,
-        OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols, OpenSquareKeySettings,
-        OpenSquareSendLogs, OpenSquareTasks, OpenTaskBoard,
+        OpenAlphaTokens, OpenBtccWalletList, OpenCalculator, OpenDailyMaSignals,
+        OpenDocumentConvert, OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest,
+        OpenSpotSymbols, OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks,
+        OpenStrategyHelp, OpenTaskBoard, OpenWalletGenerator, OpenWalletManager,
     },
     tools::DocumentConvertPage,
 };
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::{ActiveTheme, h_flex, scroll::ScrollableElement, v_flex};
 
 const CHAT_PANEL_DEFAULT_RATIO: f32 = 0.34;
 const CHAT_PANEL_MIN_WIDTH: f32 = 280.0;
@@ -52,8 +60,13 @@ pub struct Dashboard {
     square_key_settings_page: Option<Entity<SquareKeySettingsPage>>,
     square_tasks_page: Option<Entity<SquareTasksPage>>,
     square_send_logs_page: Option<Entity<SquareSendLogsPage>>,
+    calculator_page: Option<Entity<CalculatorPage>>,
     document_convert_page: Option<Entity<DocumentConvertPage>>,
     task_board_page: Option<Entity<TaskBoardPage>>,
+    strategy_help_page: Option<Entity<StrategyHelpPage>>,
+    btcc_wallet_list_page: Option<Entity<BtccWalletListPage>>,
+    wallet_generator_page: Option<Entity<WalletGeneratorPage>>,
+    wallet_manager_page: Option<Entity<WalletManagerPage>>,
     active_page: ActivePage,
     /// Current proportional width of the AI chat panel.
     chat_panel_ratio: f32,
@@ -82,8 +95,13 @@ enum ActivePage {
     SquareKeySettings,
     SquareTasks,
     SquareSendLogs,
+    Calculator,
     DocumentConvert,
     TaskBoard,
+    StrategyHelp,
+    BtccWalletList,
+    WalletGenerator,
+    WalletManager,
 }
 
 impl Dashboard {
@@ -121,8 +139,13 @@ impl Dashboard {
             square_key_settings_page: None,
             square_tasks_page: None,
             square_send_logs_page: None,
+            calculator_page: None,
             document_convert_page: None,
             task_board_page: None,
+            strategy_help_page: None,
+            btcc_wallet_list_page: None,
+            wallet_generator_page: None,
+            wallet_manager_page: None,
             active_page: ActivePage::MarketProducts,
             chat_panel_ratio: CHAT_PANEL_DEFAULT_RATIO,
             dragging_sash: false,
@@ -438,6 +461,15 @@ impl Dashboard {
         self.open_document_convert_page(window, cx);
     }
 
+    fn on_open_calculator(
+        &mut self,
+        _: &OpenCalculator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_calculator_page(window, cx);
+    }
+
     fn on_open_task_board(
         &mut self,
         _: &OpenTaskBoard,
@@ -445,6 +477,61 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.open_task_board_page(window, cx);
+    }
+
+    fn on_open_strategy_help(
+        &mut self,
+        _: &OpenStrategyHelp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_strategy_help_page(window, cx);
+    }
+
+    fn on_open_btcc_wallet_list(
+        &mut self,
+        _: &OpenBtccWalletList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_btcc_wallet_list_page(window, cx);
+    }
+
+    fn on_btcc_wallet_list_event(
+        &mut self,
+        _: &Entity<BtccWalletListPage>,
+        event: &BtccWalletListEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            BtccWalletListEvent::OpenTransfer(address) => {
+                self.open_wallet_manager_page(window, cx);
+                if let Some(page) = &self.wallet_manager_page {
+                    page.update(cx, |page, cx| {
+                        page.set_transfer_address(address.clone(), cx)
+                    });
+                }
+            }
+        }
+    }
+
+    fn on_open_wallet_generator(
+        &mut self,
+        _: &OpenWalletGenerator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_wallet_generator_page(window, cx);
+    }
+
+    fn on_open_wallet_manager(
+        &mut self,
+        _: &OpenWalletManager,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_wallet_manager_page(window, cx);
     }
 
     fn open_spot_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -608,11 +695,57 @@ impl Dashboard {
         cx.notify();
     }
 
+    fn open_calculator_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.calculator_page.is_none() {
+            self.calculator_page = Some(cx.new(|cx| CalculatorPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::Calculator;
+        cx.notify();
+    }
+
     fn open_task_board_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.task_board_page.is_none() {
             self.task_board_page = Some(cx.new(|cx| TaskBoardPage::new(window, cx)));
         }
         self.active_page = ActivePage::TaskBoard;
+        cx.notify();
+    }
+
+    fn open_strategy_help_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.strategy_help_page.is_none() {
+            self.strategy_help_page = Some(cx.new(|cx| StrategyHelpPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::StrategyHelp;
+        cx.notify();
+    }
+
+    fn open_btcc_wallet_list_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.btcc_wallet_list_page.is_none() {
+            let page = cx.new(|cx| BtccWalletListPage::new(window, cx));
+            self._subscriptions.push(cx.subscribe_in(
+                &page,
+                window,
+                Self::on_btcc_wallet_list_event,
+            ));
+            self.btcc_wallet_list_page = Some(page);
+        }
+        self.active_page = ActivePage::BtccWalletList;
+        cx.notify();
+    }
+
+    fn open_wallet_generator_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.wallet_generator_page.is_none() {
+            self.wallet_generator_page = Some(cx.new(|cx| WalletGeneratorPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::WalletGenerator;
+        cx.notify();
+    }
+
+    fn open_wallet_manager_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.wallet_manager_page.is_none() {
+            self.wallet_manager_page = Some(cx.new(|cx| WalletManagerPage::new(window, cx)));
+        }
+        self.active_page = ActivePage::WalletManager;
         cx.notify();
     }
 
@@ -869,6 +1002,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::Calculator => self
+                .calculator_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::DocumentConvert => self
                 .document_convert_page
                 .as_ref()
@@ -889,6 +1034,53 @@ impl Dashboard {
                         .flex_1()
                         .size_full()
                         .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::StrategyHelp => self
+                .strategy_help_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::BtccWalletList => self
+                .btcc_wallet_list_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::WalletGenerator => self
+                .wallet_generator_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::WalletManager => self
+                .wallet_manager_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .size_full()
+                        .overflow_y_scrollbar()
                         .child(page.clone())
                         .into_any_element()
                 })
@@ -943,8 +1135,13 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_square_key_settings))
             .on_action(cx.listener(Self::on_open_square_tasks))
             .on_action(cx.listener(Self::on_open_square_send_logs))
+            .on_action(cx.listener(Self::on_open_calculator))
             .on_action(cx.listener(Self::on_open_document_convert))
             .on_action(cx.listener(Self::on_open_task_board))
+            .on_action(cx.listener(Self::on_open_strategy_help))
+            .on_action(cx.listener(Self::on_open_btcc_wallet_list))
+            .on_action(cx.listener(Self::on_open_wallet_generator))
+            .on_action(cx.listener(Self::on_open_wallet_manager))
             .when(self.dragging_sash, |parent| {
                 parent
                     .cursor_col_resize()

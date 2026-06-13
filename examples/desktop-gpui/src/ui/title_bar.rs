@@ -17,6 +17,8 @@ actions!(
         OpenAlphaExchangeInfo,
         OpenAlphaHeatmap,
         OpenAlphaTokens,
+        OpenBtccWalletList,
+        OpenCalculator,
         OpenDocumentConvert,
         OpenMarketHeatmap,
         OpenKlineCandlestick,
@@ -26,7 +28,10 @@ actions!(
         OpenSquareKeySettings,
         OpenSquareSendLogs,
         OpenSquareTasks,
-        OpenTaskBoard
+        OpenStrategyHelp,
+        OpenTaskBoard,
+        OpenWalletGenerator,
+        OpenWalletManager
     ]
 );
 
@@ -194,6 +199,39 @@ impl Render for DesktopTitleBar {
                                 )
                                 .min_w(px(120.))
                             }),
+                    )
+                    .child(
+                        Button::new("btcc-menu")
+                            .label("BTCC")
+                            .ghost()
+                            .xsmall()
+                            .dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("钱包列表")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenBtccWalletList), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("钱包生成")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenWalletGenerator), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("钱包管理")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenWalletManager), cx);
+                                    }),
+                                )
+                                .min_w(px(120.))
+                            }),
                     ),
             )
             .child(
@@ -210,6 +248,14 @@ impl Render for DesktopTitleBar {
                             .xsmall()
                             .dropdown_menu(|menu, _, _| {
                                 menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("计算器")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenCalculator), cx);
+                                    }),
+                                )
+                                .item(
                                     PopupMenuItem::element(|_, _| {
                                         div().text_size(px(11.)).child("文档转换")
                                     })
@@ -278,6 +324,14 @@ impl Render for DesktopTitleBar {
                             .xsmall()
                             .dropdown_menu(|menu, _, _| {
                                 menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("策略说明")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenStrategyHelp), cx);
+                                    }),
+                                )
+                                .item(
                                     PopupMenuItem::element(|_, _| {
                                         div().text_size(px(11.)).child("推特")
                                     })

@@ -8,14 +8,30 @@ members = ["examples/desktop-gpui"]
 default-members = ["."]
 resolver = "3"
 
+[profile.dev]
+debug = 0
+incremental = false
+
 [dependencies]
 anyhow = "1.0"
+aes = "0.8"
+argon2 = "0.5"
+base64 = "0.22"
 binance-sdk = { version = "48.0.1", default-features = false, features = ["spot", "rustls-tls"] }
+bitcoin = "0.32"
+bip39 = "2"
+bech32 = "0.11"
+cbc = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+cipher = "0.4"
+num_cpus = "1.16"
+pbkdf2 = "0.12"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tokio = { version = "1.33", features = ["rt", "time"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"

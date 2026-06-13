@@ -11,6 +11,7 @@ pub mod ai;
 pub mod ai_rules;
 pub mod ai_threads;
 pub mod alpha;
+pub mod btcc_wallet;
 pub mod market;
 pub mod spot;
 pub mod square;
@@ -78,6 +79,40 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_spot_klines_symbol_interval_time
                 ON spot_klines(symbol, interval, open_time);
+
+            CREATE TABLE IF NOT EXISTS spot_klines_4h (
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL DEFAULT '4h',
+                open_time INTEGER NOT NULL,
+                open_price REAL NOT NULL,
+                high_price REAL NOT NULL,
+                low_price REAL NOT NULL,
+                close_price REAL NOT NULL,
+                volume REAL NOT NULL,
+                close_time INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (symbol, open_time)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_spot_klines_4h_symbol_time
+                ON spot_klines_4h(symbol, open_time);
+
+            CREATE TABLE IF NOT EXISTS spot_klines_1d (
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL DEFAULT '1d',
+                open_time INTEGER NOT NULL,
+                open_price REAL NOT NULL,
+                high_price REAL NOT NULL,
+                low_price REAL NOT NULL,
+                close_price REAL NOT NULL,
+                volume REAL NOT NULL,
+                close_time INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (symbol, open_time)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_spot_klines_1d_symbol_time
+                ON spot_klines_1d(symbol, open_time);
 
             CREATE TABLE IF NOT EXISTS binance_market_products_cache (
                 symbol TEXT PRIMARY KEY,
@@ -313,6 +348,33 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             CREATE INDEX IF NOT EXISTS idx_tool_board_tasks_updated_at
                 ON tool_board_tasks(updated_at DESC);
 
+            CREATE TABLE IF NOT EXISTS btcc_wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                address TEXT NOT NULL UNIQUE,
+                network TEXT NOT NULL DEFAULT 'Bitcoin-Classic (BTCC)',
+                derivation_path TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT 'watch'
+                    CHECK (source_type IN ('generated', 'mnemonic', 'wif', 'watch')),
+                public_key TEXT NOT NULL DEFAULT '',
+                encrypted_mnemonic BLOB,
+                encrypted_wif BLOB,
+                balance_sats INTEGER NOT NULL DEFAULT 0,
+                unconfirmed_sats INTEGER NOT NULL DEFAULT 0,
+                utxo_count INTEGER NOT NULL DEFAULT 0,
+                last_synced_at TEXT,
+                note TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_btcc_wallets_active_updated
+                ON btcc_wallets(is_active, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_btcc_wallets_address
+                ON btcc_wallets(address);
+
             "#,
         )
         .context("run SQLite migrations failed")?;
@@ -354,6 +416,58 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             r#"
+            INSERT OR IGNORE INTO spot_klines_4h (
+                symbol,
+                interval,
+                open_time,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume,
+                close_time,
+                updated_at
+            )
+            SELECT
+                symbol,
+                interval,
+                open_time,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume,
+                close_time,
+                updated_at
+            FROM spot_klines
+            WHERE interval = '4h';
+
+            INSERT OR IGNORE INTO spot_klines_1d (
+                symbol,
+                interval,
+                open_time,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume,
+                close_time,
+                updated_at
+            )
+            SELECT
+                symbol,
+                interval,
+                open_time,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume,
+                close_time,
+                updated_at
+            FROM spot_klines
+            WHERE interval = '1d';
+
             CREATE INDEX IF NOT EXISTS idx_binance_square_tasks_scheduled_status
                 ON binance_square_tasks(send_status, scheduled_at);
 
