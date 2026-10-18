@@ -9,7 +9,6 @@ pub mod binance;
 pub mod calculator;
 pub mod db;
 pub mod square;
-pub mod wallet;
 
 /// 默认应用名称。
 pub fn greeting() -> &'static str {

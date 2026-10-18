@@ -147,13 +147,13 @@
     },
     "ollama": {
       "version": 1,
-      "api_url": "http://localhost:11434/v1",
+      "api_url": "http://192.168.31.60:11434",
       "api_key_env": "OLLAMA_API_KEY",
       "api_format": "open_ai_chat",
       "available_models": [
         {
-          "name": "qwen2.5-coder",
-          "display_name": "qwen2.5-coder",
+          "name": "qwen2.5:3b",
+          "display_name": "qwen2.5:3b",
           "max_tokens": 32768,
           "max_output_tokens": null,
           "max_completion_tokens": null,

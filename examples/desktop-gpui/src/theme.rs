@@ -29,12 +29,7 @@ pub fn init(cx: &mut App) {
     let theme_name = load_user_settings().theme;
 
     apply_theme(&theme_name, None, cx);
-    if let Err(err) = ThemeRegistry::watch_dir(themes_dir, cx, |cx| {
-        let theme_name = load_user_settings().theme;
-        apply_theme(&theme_name, None, cx);
-    }) {
-        eprintln!("failed to watch desktop-gpui themes: {err}");
-    }
+    let _ = themes_dir;
 }
 
 pub fn theme_names(cx: &App) -> Vec<SharedString> {

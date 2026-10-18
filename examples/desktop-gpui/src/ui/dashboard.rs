@@ -10,11 +10,6 @@ use crate::ui::{
     alpha_heatmap::{AlphaHeatmapEvent, AlphaHeatmapPage},
     alpha_ma_signal::AlphaDailyMaSignalPage,
     backtest::SpotBacktestPage,
-    btcc::{
-        wallet_generator::WalletGeneratorPage,
-        wallet_list::{BtccWalletListEvent, BtccWalletListPage},
-        wallet_manager::WalletGeneratorPage as WalletManagerPage,
-    },
     calculator::CalculatorPage,
     heatmap::{MarketHeatmapEvent, MarketHeatmapPage},
     kline::KlineCandlestickPage,
@@ -27,15 +22,17 @@ use crate::ui::{
     task_board::TaskBoardPage,
     title_bar::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
-        OpenAlphaTokens, OpenBtccWalletList, OpenCalculator, OpenDailyMaSignals,
-        OpenDocumentConvert, OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest,
-        OpenSpotSymbols, OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks,
-        OpenStrategyHelp, OpenTaskBoard, OpenWalletGenerator, OpenWalletManager,
+        OpenAlphaTokens, OpenCalculator, OpenDailyMaSignals, OpenDocumentConvert,
+        OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols,
+        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenStrategyHelp,
+        OpenTaskBoard, OpenWalletGenerator, OpenXAssistant,
     },
     tools::DocumentConvertPage,
+    wallet_generator::WalletGeneratorPage,
+    x_assistant::XAssistantPage,
 };
 use gpui::{prelude::FluentBuilder, *};
-use gpui_component::{ActiveTheme, h_flex, scroll::ScrollableElement, v_flex};
+use gpui_component::{ActiveTheme, h_flex, v_flex};
 
 const CHAT_PANEL_DEFAULT_RATIO: f32 = 0.34;
 const CHAT_PANEL_MIN_WIDTH: f32 = 280.0;
@@ -64,9 +61,8 @@ pub struct Dashboard {
     document_convert_page: Option<Entity<DocumentConvertPage>>,
     task_board_page: Option<Entity<TaskBoardPage>>,
     strategy_help_page: Option<Entity<StrategyHelpPage>>,
-    btcc_wallet_list_page: Option<Entity<BtccWalletListPage>>,
+    x_assistant_page: Option<Entity<XAssistantPage>>,
     wallet_generator_page: Option<Entity<WalletGeneratorPage>>,
-    wallet_manager_page: Option<Entity<WalletManagerPage>>,
     active_page: ActivePage,
     /// Current proportional width of the AI chat panel.
     chat_panel_ratio: f32,
@@ -99,9 +95,8 @@ enum ActivePage {
     DocumentConvert,
     TaskBoard,
     StrategyHelp,
-    BtccWalletList,
+    XAssistant,
     WalletGenerator,
-    WalletManager,
 }
 
 impl Dashboard {
@@ -143,9 +138,8 @@ impl Dashboard {
             document_convert_page: None,
             task_board_page: None,
             strategy_help_page: None,
-            btcc_wallet_list_page: None,
+            x_assistant_page: None,
             wallet_generator_page: None,
-            wallet_manager_page: None,
             active_page: ActivePage::MarketProducts,
             chat_panel_ratio: CHAT_PANEL_DEFAULT_RATIO,
             dragging_sash: false,
@@ -479,41 +473,17 @@ impl Dashboard {
         self.open_task_board_page(window, cx);
     }
 
-    fn on_open_strategy_help(
+    fn on_open_x_assistant(
         &mut self,
-        _: &OpenStrategyHelp,
+        _: &OpenXAssistant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_strategy_help_page(window, cx);
-    }
-
-    fn on_open_btcc_wallet_list(
-        &mut self,
-        _: &OpenBtccWalletList,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_btcc_wallet_list_page(window, cx);
-    }
-
-    fn on_btcc_wallet_list_event(
-        &mut self,
-        _: &Entity<BtccWalletListPage>,
-        event: &BtccWalletListEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            BtccWalletListEvent::OpenTransfer(address) => {
-                self.open_wallet_manager_page(window, cx);
-                if let Some(page) = &self.wallet_manager_page {
-                    page.update(cx, |page, cx| {
-                        page.set_transfer_address(address.clone(), cx)
-                    });
-                }
-            }
+        if self.x_assistant_page.is_none() {
+            self.x_assistant_page = Some(cx.new(|cx| XAssistantPage::new(window, cx)));
         }
+        self.activate_page(ActivePage::XAssistant, cx);
+        cx.notify();
     }
 
     fn on_open_wallet_generator(
@@ -525,20 +495,41 @@ impl Dashboard {
         self.open_wallet_generator_page(window, cx);
     }
 
-    fn on_open_wallet_manager(
+    fn open_wallet_generator_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.wallet_generator_page.is_none() {
+            self.wallet_generator_page = Some(cx.new(|cx| WalletGeneratorPage::new(window, cx)));
+        }
+        self.activate_page(ActivePage::WalletGenerator, cx);
+        cx.notify();
+    }
+
+    fn activate_page(&mut self, page: ActivePage, cx: &mut Context<Self>) {
+        if self.active_page == ActivePage::WalletGenerator
+            && page != ActivePage::WalletGenerator
+            && let Some(wallet_page) = &self.wallet_generator_page
+        {
+            wallet_page.update(cx, |wallet_page, cx| {
+                wallet_page.stop_search(cx);
+                wallet_page.clear_secrets(cx);
+            });
+        }
+        self.active_page = page;
+    }
+
+    fn on_open_strategy_help(
         &mut self,
-        _: &OpenWalletManager,
+        _: &OpenStrategyHelp,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_wallet_manager_page(window, cx);
+        self.open_strategy_help_page(window, cx);
     }
 
     fn open_spot_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.spot_page.is_none() {
             self.spot_page = Some(cx.new(|cx| SpotPage::new(window, cx)));
         }
-        self.active_page = ActivePage::Spot;
+        self.activate_page(ActivePage::Spot, cx);
         cx.notify();
     }
 
@@ -546,7 +537,7 @@ impl Dashboard {
         if self.spot_backtest_page.is_none() {
             self.spot_backtest_page = Some(cx.new(|cx| SpotBacktestPage::new(window, cx)));
         }
-        self.active_page = ActivePage::SpotBacktest;
+        self.activate_page(ActivePage::SpotBacktest, cx);
         cx.notify();
     }
 
@@ -560,7 +551,7 @@ impl Dashboard {
             ));
             self.market_products_page = Some(page);
         }
-        self.active_page = ActivePage::MarketProducts;
+        self.activate_page(ActivePage::MarketProducts, cx);
         cx.notify();
     }
 
@@ -571,7 +562,7 @@ impl Dashboard {
                 .push(cx.subscribe_in(&page, window, Self::on_market_heatmap_event));
             self.market_heatmap_page = Some(page);
         }
-        self.active_page = ActivePage::MarketHeatmap;
+        self.activate_page(ActivePage::MarketHeatmap, cx);
         cx.notify();
     }
 
@@ -582,7 +573,7 @@ impl Dashboard {
                 .push(cx.subscribe_in(&page, window, Self::on_alpha_tokens_event));
             self.alpha_tokens_page = Some(page);
         }
-        self.active_page = ActivePage::AlphaTokens;
+        self.activate_page(ActivePage::AlphaTokens, cx);
         cx.notify();
     }
 
@@ -591,7 +582,7 @@ impl Dashboard {
             self.alpha_exchange_info_page =
                 Some(cx.new(|cx| AlphaExchangeInfoPage::new(window, cx)));
         }
-        self.active_page = ActivePage::AlphaExchangeInfo;
+        self.activate_page(ActivePage::AlphaExchangeInfo, cx);
         cx.notify();
     }
 
@@ -602,7 +593,7 @@ impl Dashboard {
                 .push(cx.subscribe_in(&page, window, Self::on_alpha_heatmap_event));
             self.alpha_heatmap_page = Some(page);
         }
-        self.active_page = ActivePage::AlphaHeatmap;
+        self.activate_page(ActivePage::AlphaHeatmap, cx);
         cx.notify();
     }
 
@@ -611,7 +602,7 @@ impl Dashboard {
             self.alpha_daily_ma_signal_page =
                 Some(cx.new(|cx| AlphaDailyMaSignalPage::new(window, cx)));
         }
-        self.active_page = ActivePage::AlphaDailyMaSignal;
+        self.activate_page(ActivePage::AlphaDailyMaSignal, cx);
         cx.notify();
     }
 
@@ -625,7 +616,7 @@ impl Dashboard {
             ));
             self.daily_ma_signal_page = Some(page);
         }
-        self.active_page = ActivePage::DailyMaSignal;
+        self.activate_page(ActivePage::DailyMaSignal, cx);
         cx.notify();
     }
 
@@ -640,7 +631,7 @@ impl Dashboard {
         } else {
             self.kline_candlestick_page = Some(cx.new(|cx| KlineCandlestickPage::new(symbol, cx)));
         }
-        self.active_page = ActivePage::KlineCandlestick;
+        self.activate_page(ActivePage::KlineCandlestick, cx);
         cx.notify();
     }
 
@@ -656,7 +647,7 @@ impl Dashboard {
             self.kline_candlestick_page =
                 Some(cx.new(|cx| KlineCandlestickPage::new_alpha(symbol, cx)));
         }
-        self.active_page = ActivePage::KlineCandlestick;
+        self.activate_page(ActivePage::KlineCandlestick, cx);
         cx.notify();
     }
 
@@ -665,7 +656,7 @@ impl Dashboard {
             self.square_key_settings_page =
                 Some(cx.new(|cx| SquareKeySettingsPage::new(window, cx)));
         }
-        self.active_page = ActivePage::SquareKeySettings;
+        self.activate_page(ActivePage::SquareKeySettings, cx);
         cx.notify();
     }
 
@@ -675,7 +666,7 @@ impl Dashboard {
         } else if let Some(page) = &self.square_tasks_page {
             page.update(cx, |page, cx| page.reload(cx));
         }
-        self.active_page = ActivePage::SquareTasks;
+        self.activate_page(ActivePage::SquareTasks, cx);
         cx.notify();
     }
 
@@ -683,7 +674,7 @@ impl Dashboard {
         if self.square_send_logs_page.is_none() {
             self.square_send_logs_page = Some(cx.new(|cx| SquareSendLogsPage::new(window, cx)));
         }
-        self.active_page = ActivePage::SquareSendLogs;
+        self.activate_page(ActivePage::SquareSendLogs, cx);
         cx.notify();
     }
 
@@ -691,7 +682,7 @@ impl Dashboard {
         if self.document_convert_page.is_none() {
             self.document_convert_page = Some(cx.new(|cx| DocumentConvertPage::new(window, cx)));
         }
-        self.active_page = ActivePage::DocumentConvert;
+        self.activate_page(ActivePage::DocumentConvert, cx);
         cx.notify();
     }
 
@@ -699,7 +690,7 @@ impl Dashboard {
         if self.calculator_page.is_none() {
             self.calculator_page = Some(cx.new(|cx| CalculatorPage::new(window, cx)));
         }
-        self.active_page = ActivePage::Calculator;
+        self.activate_page(ActivePage::Calculator, cx);
         cx.notify();
     }
 
@@ -707,7 +698,7 @@ impl Dashboard {
         if self.task_board_page.is_none() {
             self.task_board_page = Some(cx.new(|cx| TaskBoardPage::new(window, cx)));
         }
-        self.active_page = ActivePage::TaskBoard;
+        self.activate_page(ActivePage::TaskBoard, cx);
         cx.notify();
     }
 
@@ -715,37 +706,7 @@ impl Dashboard {
         if self.strategy_help_page.is_none() {
             self.strategy_help_page = Some(cx.new(|cx| StrategyHelpPage::new(window, cx)));
         }
-        self.active_page = ActivePage::StrategyHelp;
-        cx.notify();
-    }
-
-    fn open_btcc_wallet_list_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.btcc_wallet_list_page.is_none() {
-            let page = cx.new(|cx| BtccWalletListPage::new(window, cx));
-            self._subscriptions.push(cx.subscribe_in(
-                &page,
-                window,
-                Self::on_btcc_wallet_list_event,
-            ));
-            self.btcc_wallet_list_page = Some(page);
-        }
-        self.active_page = ActivePage::BtccWalletList;
-        cx.notify();
-    }
-
-    fn open_wallet_generator_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.wallet_generator_page.is_none() {
-            self.wallet_generator_page = Some(cx.new(|cx| WalletGeneratorPage::new(window, cx)));
-        }
-        self.active_page = ActivePage::WalletGenerator;
-        cx.notify();
-    }
-
-    fn open_wallet_manager_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.wallet_manager_page.is_none() {
-            self.wallet_manager_page = Some(cx.new(|cx| WalletManagerPage::new(window, cx)));
-        }
-        self.active_page = ActivePage::WalletManager;
+        self.activate_page(ActivePage::StrategyHelp, cx);
         cx.notify();
     }
 
@@ -1038,20 +999,8 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
-            ActivePage::StrategyHelp => self
-                .strategy_help_page
-                .as_ref()
-                .map(|page| {
-                    div()
-                        .flex_1()
-                        .size_full()
-                        .p_6()
-                        .child(page.clone())
-                        .into_any_element()
-                })
-                .unwrap_or_else(|| div().into_any_element()),
-            ActivePage::BtccWalletList => self
-                .btcc_wallet_list_page
+            ActivePage::XAssistant => self
+                .x_assistant_page
                 .as_ref()
                 .map(|page| {
                     div()
@@ -1074,13 +1023,14 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
-            ActivePage::WalletManager => self
-                .wallet_manager_page
+            ActivePage::StrategyHelp => self
+                .strategy_help_page
                 .as_ref()
                 .map(|page| {
                     div()
+                        .flex_1()
                         .size_full()
-                        .overflow_y_scrollbar()
+                        .p_6()
                         .child(page.clone())
                         .into_any_element()
                 })
@@ -1139,9 +1089,8 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_document_convert))
             .on_action(cx.listener(Self::on_open_task_board))
             .on_action(cx.listener(Self::on_open_strategy_help))
-            .on_action(cx.listener(Self::on_open_btcc_wallet_list))
+            .on_action(cx.listener(Self::on_open_x_assistant))
             .on_action(cx.listener(Self::on_open_wallet_generator))
-            .on_action(cx.listener(Self::on_open_wallet_manager))
             .when(self.dragging_sash, |parent| {
                 parent
                     .cursor_col_resize()

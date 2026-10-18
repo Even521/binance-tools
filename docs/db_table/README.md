@@ -46,9 +46,3 @@ src/db/
 - 新增或修改表结构时，同步更新本目录对应文档。
 - UI 层不直接拼 SQL；通过 `src/db/` 提供的函数读取数据。
 - 运行时生成的 SQLite 文件不提交到版本控制。
-
-## BTCC 补充
-
-| 表 | 文档 | 说明 |
-| --- | --- | --- |
-| `btcc_wallets` | [`btcc_wallets.md`](./btcc_wallets.md) | BTCC 多钱包列表、本地地址元数据和余额缓存 |

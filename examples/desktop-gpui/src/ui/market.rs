@@ -64,7 +64,7 @@ impl MarketProductsPage {
         let _subscriptions =
             vec![cx.subscribe_in(&search_input, window, Self::on_search_input_event)];
 
-        let mut this = Self {
+        let this = Self {
             table,
             search_input,
             products: Vec::new(),
@@ -75,7 +75,6 @@ impl MarketProductsPage {
             _load_task: Task::ready(()),
             _subscriptions,
         };
-        this.reload(false, cx);
         this
     }
 

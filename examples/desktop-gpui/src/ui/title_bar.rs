@@ -17,7 +17,6 @@ actions!(
         OpenAlphaExchangeInfo,
         OpenAlphaHeatmap,
         OpenAlphaTokens,
-        OpenBtccWalletList,
         OpenCalculator,
         OpenDocumentConvert,
         OpenMarketHeatmap,
@@ -25,13 +24,13 @@ actions!(
         OpenMarketProducts,
         OpenSpotBacktest,
         OpenSpotSymbols,
+        OpenWalletGenerator,
+        OpenXAssistant,
         OpenSquareKeySettings,
         OpenSquareSendLogs,
         OpenSquareTasks,
         OpenStrategyHelp,
         OpenTaskBoard,
-        OpenWalletGenerator,
-        OpenWalletManager
     ]
 );
 
@@ -200,39 +199,6 @@ impl Render for DesktopTitleBar {
                                 .min_w(px(120.))
                             }),
                     )
-                    .child(
-                        Button::new("btcc-menu")
-                            .label("BTCC")
-                            .ghost()
-                            .xsmall()
-                            .dropdown_menu(|menu, _, _| {
-                                menu.item(
-                                    PopupMenuItem::element(|_, _| {
-                                        div().text_size(px(11.)).child("钱包列表")
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(OpenBtccWalletList), cx);
-                                    }),
-                                )
-                                .item(
-                                    PopupMenuItem::element(|_, _| {
-                                        div().text_size(px(11.)).child("钱包生成")
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(OpenWalletGenerator), cx);
-                                    }),
-                                )
-                                .item(
-                                    PopupMenuItem::element(|_, _| {
-                                        div().text_size(px(11.)).child("钱包管理")
-                                    })
-                                    .on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(OpenWalletManager), cx);
-                                    }),
-                                )
-                                .min_w(px(120.))
-                            }),
-                    ),
             )
             .child(
                 div()
@@ -271,7 +237,32 @@ impl Render for DesktopTitleBar {
                                         window.dispatch_action(Box::new(OpenTaskBoard), cx);
                                     }),
                                 )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("X辅助")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenXAssistant), cx);
+                                    }),
+                                )
                                 .min_w(px(120.))
+                            }),
+                    )
+                    .child(
+                        Button::new("wallet-menu")
+                            .label("钱包")
+                            .ghost()
+                            .xsmall()
+                            .dropdown_menu(|menu, _, _| {
+                                menu.item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("EVM 钱包生成")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenWalletGenerator), cx);
+                                    }),
+                                )
+                                .min_w(px(150.))
                             }),
                     )
                     .child(

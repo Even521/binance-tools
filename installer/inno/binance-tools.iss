@@ -13,6 +13,7 @@ DisableProgramGroupPage=no
 
 [Files]
 Source: "..\..\target\release\desktop-gpui.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\release\cudart64_12.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\Binance Tools"; Filename: "{app}\desktop-gpui.exe"; WorkingDir: "{app}"

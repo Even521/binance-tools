@@ -12,9 +12,12 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
+    net::{Shutdown, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
-    time::Duration,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 
 pub const DEFAULT_AI_CONFIG_PATH: &str = "config/ai.json";
@@ -671,6 +674,337 @@ pub struct ChatResponse {
     pub content: String,
     pub provider: String,
     pub model: String,
+}
+
+pub fn list_openai_model_ids(api_url: &str) -> anyhow::Result<Vec<String>> {
+    let endpoint = openai_models_endpoint(api_url);
+    let client = ai_http_client_with_timeout(Duration::from_secs(20))
+        .build()
+        .context("创建 AI HTTP 客户端失败")?;
+    let response = client
+        .get(endpoint)
+        .send()
+        .map_err(|err| anyhow!(format_ai_transport_error("ollama", &err)))?;
+    let status = response.status();
+    let body = if status == StatusCode::NOT_FOUND {
+        let tags = client
+            .get(ollama_tags_endpoint(api_url))
+            .send()
+            .map_err(|err| anyhow!(format_ai_transport_error("ollama", &err)))?;
+        let tags_status = tags.status();
+        let tags_body = tags.text().context("读取模型列表失败")?;
+        if !tags_status.is_success() {
+            return Err(anyhow!(format_ai_http_error(
+                "ollama",
+                tags_status,
+                &tags_body
+            )));
+        }
+        tags_body
+    } else {
+        let body = response.text().context("读取模型列表失败")?;
+        if !status.is_success() {
+            return Err(anyhow!(format_ai_http_error("ollama", status, &body)));
+        }
+        body
+    };
+    let value: Value = serde_json::from_str(&body).context("解析模型列表失败")?;
+    let mut models = Vec::new();
+    if let Some(data) = value.get("data").and_then(Value::as_array) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                models.push(id.to_string());
+            }
+        }
+    }
+    if let Some(data) = value.get("models").and_then(Value::as_array) {
+        for item in data {
+            if let Some(name) = item.get("name").and_then(Value::as_str) {
+                models.push(name.to_string());
+            }
+        }
+    }
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+fn ollama_tags_endpoint(api_url: &str) -> String {
+    let chat = ollama_native_chat_endpoint(api_url);
+    chat.trim_end_matches("/api/chat").to_string() + "/api/tags"
+}
+
+fn openai_models_endpoint(api_url: &str) -> String {
+    let api_url = api_url.trim().trim_end_matches('/');
+    if let Some(base) = api_url.strip_suffix("/chat/completions") {
+        format!("{}/models", base.trim_end_matches('/'))
+    } else {
+        format!("{api_url}/models")
+    }
+}
+
+pub fn send_openai_vision_blocking(
+    api_url: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    image_png: &[u8],
+    request_timeout: Duration,
+) -> anyhow::Result<String> {
+    send_openai_vision_cancellable(
+        api_url,
+        model,
+        system,
+        prompt,
+        image_png,
+        request_timeout,
+        &AtomicBool::new(false),
+    )
+}
+
+pub fn send_openai_vision_cancellable(
+    api_url: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    image_png: &[u8],
+    request_timeout: Duration,
+    cancel: &AtomicBool,
+) -> anyhow::Result<String> {
+    let endpoint = ollama_native_chat_endpoint(api_url);
+    let image = base64_encode(image_png);
+    let body = json!({
+        "model": model,
+        "stream": false,
+        "think": false,
+        "options": {"temperature": 0.2, "num_predict": 1024},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt, "images": [image]}
+        ]
+    });
+
+    let payload = serde_json::to_vec(&body).context("构造 AI 请求失败")?;
+    let (status, response_body) =
+        http_post_cancellable(&endpoint, &payload, request_timeout, cancel)?;
+    if status != 200 {
+        return Err(anyhow!(format_ai_http_error(
+            "ollama",
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            &response_body
+        )));
+    }
+    let value: Value = serde_json::from_str(&response_body).context("解析 AI 响应失败")?;
+    value
+        .pointer("/message/content")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|content| !content.trim().is_empty())
+        .or_else(|| openai_message_content(&response_body).ok())
+        .ok_or_else(|| anyhow!("AI 响应中没有返回消息内容"))
+}
+
+fn http_post_cancellable(
+    url: &str,
+    body: &[u8],
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> anyhow::Result<(u16, String)> {
+    ensure_not_cancelled(cancel)?;
+    let (host, port, path) = split_http_url(url)?;
+    let addr = format!("{host}:{port}")
+        .to_socket_addrs()
+        .with_context(|| format!("解析 AI 地址失败：{host}:{port}"))?
+        .next()
+        .ok_or_else(|| anyhow!("AI 地址没有可用 IP：{host}:{port}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(8))
+        .with_context(|| format!("连接 AI 服务失败：{host}:{port}"))?;
+    stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    stream.set_write_timeout(Some(Duration::from_millis(200)))?;
+    let header = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    write_all_cancellable(&mut stream, header.as_bytes(), timeout, cancel)?;
+    write_all_cancellable(&mut stream, body, timeout, cancel)?;
+    let raw = read_to_end_cancellable(&mut stream, timeout, cancel)?;
+    parse_http_response(&raw)
+}
+
+fn write_all_cancellable(
+    stream: &mut TcpStream,
+    mut data: &[u8],
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    while !data.is_empty() {
+        ensure_not_cancelled(cancel)?;
+        if started.elapsed() > timeout {
+            let _ = stream.shutdown(Shutdown::Both);
+            anyhow::bail!("AI 请求超时");
+        }
+        match stream.write(data) {
+            Ok(0) => anyhow::bail!("AI 连接已关闭"),
+            Ok(sent) => data = &data[sent..],
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => return Err(err).context("发送 AI 请求失败"),
+        }
+    }
+    Ok(())
+}
+
+fn read_to_end_cancellable(
+    stream: &mut TcpStream,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> anyhow::Result<Vec<u8>> {
+    let started = Instant::now();
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        ensure_not_cancelled(cancel)?;
+        if started.elapsed() > timeout {
+            let _ = stream.shutdown(Shutdown::Both);
+            anyhow::bail!("AI 请求超时");
+        }
+        match stream.read(&mut buf) {
+            Ok(0) => return Ok(raw),
+            Ok(read) => raw.extend_from_slice(&buf[..read]),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => return Err(err).context("读取 AI 响应失败"),
+        }
+    }
+}
+
+fn ensure_not_cancelled(cancel: &AtomicBool) -> anyhow::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        anyhow::bail!("已停止");
+    }
+    Ok(())
+}
+
+fn split_http_url(url: &str) -> anyhow::Result<(String, u16, String)> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| anyhow!("识图中断只支持 http 地址：{url}"))?;
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let path = format!("/{path}");
+    let (host, port) = if let Some((host, port)) = authority.split_once(':') {
+        (
+            host.to_string(),
+            port.parse::<u16>().context("AI 端口无效")?,
+        )
+    } else {
+        (authority.to_string(), 80)
+    };
+    Ok((host, port, path))
+}
+
+fn parse_http_response(raw: &[u8]) -> anyhow::Result<(u16, String)> {
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| anyhow!("AI 响应不完整"))?;
+    let header = String::from_utf8_lossy(&raw[..split]);
+    let mut body = raw[split + 4..].to_vec();
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| anyhow!("AI 响应没有状态码"))?;
+    if header
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        body = decode_http_chunks(&body)?;
+    }
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+}
+
+fn decode_http_chunks(mut data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    while !data.is_empty() {
+        let line_end = data
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| anyhow!("AI 分块响应不完整"))?;
+        let size = usize::from_str_radix(
+            std::str::from_utf8(&data[..line_end])
+                .unwrap_or("0")
+                .split(';')
+                .next()
+                .unwrap_or("0")
+                .trim(),
+            16,
+        )
+        .unwrap_or(0);
+        data = &data[line_end + 2..];
+        if size == 0 || data.len() < size {
+            break;
+        }
+        out.extend_from_slice(&data[..size]);
+        data = &data[size..];
+        if data.starts_with(b"\r\n") {
+            data = &data[2..];
+        }
+    }
+    Ok(out)
+}
+
+fn openai_message_content(response_body: &str) -> anyhow::Result<String> {
+    let value: Value = serde_json::from_str(response_body).context("解析 AI 响应失败")?;
+    value
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| anyhow!("AI 响应中没有返回消息内容"))
+}
+
+fn ollama_native_chat_endpoint(api_url: &str) -> String {
+    let mut base = api_url.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/v1"] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            base = stripped.trim_end_matches('/').to_string();
+        }
+    }
+    format!("{base}/api/chat")
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let value = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((value >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((value >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((value >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(value & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 pub fn send_chat_blocking(messages: &[ChatMessage]) -> anyhow::Result<ChatResponse> {

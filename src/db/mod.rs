@@ -11,7 +11,6 @@ pub mod ai;
 pub mod ai_rules;
 pub mod ai_threads;
 pub mod alpha;
-pub mod btcc_wallet;
 pub mod market;
 pub mod spot;
 pub mod square;
@@ -347,33 +346,6 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_tool_board_tasks_updated_at
                 ON tool_board_tasks(updated_at DESC);
-
-            CREATE TABLE IF NOT EXISTS btcc_wallets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                address TEXT NOT NULL UNIQUE,
-                network TEXT NOT NULL DEFAULT 'Bitcoin-Classic (BTCC)',
-                derivation_path TEXT NOT NULL DEFAULT '',
-                source_type TEXT NOT NULL DEFAULT 'watch'
-                    CHECK (source_type IN ('generated', 'mnemonic', 'wif', 'watch')),
-                public_key TEXT NOT NULL DEFAULT '',
-                encrypted_mnemonic BLOB,
-                encrypted_wif BLOB,
-                balance_sats INTEGER NOT NULL DEFAULT 0,
-                unconfirmed_sats INTEGER NOT NULL DEFAULT 0,
-                utxo_count INTEGER NOT NULL DEFAULT 0,
-                last_synced_at TEXT,
-                note TEXT NOT NULL DEFAULT '',
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_btcc_wallets_active_updated
-                ON btcc_wallets(is_active, updated_at DESC);
-
-            CREATE INDEX IF NOT EXISTS idx_btcc_wallets_address
-                ON btcc_wallets(address);
 
             "#,
         )

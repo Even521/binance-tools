@@ -165,6 +165,17 @@ target\installer\BinanceToolsSetup.exe
 
 不要把开发机上的真实 `config/ai.json` 或 `db/binance_tools.sqlite` 打进安装包，避免泄露 API Key、历史消息和缓存数据。
 
+## GPU 钱包搜索
+
+钱包页面的 GPU 模式需要 NVIDIA CUDA，并且必须用 CUDA Toolkit 12.6 构建 Pascal `sm_61`。CUDA 13.x 不能生成该架构。
+
+```powershell
+$env:CUDA_PATH_V12_6 = "E:\app\cuda-12.6.2"
+cargo run -p desktop-gpui --features cuda
+```
+
+启用 `cuda` feature 后，构建脚本会把 `cudart64_12.dll` 复制到 exe 同目录。打包 GPU 版本时，安装包也会带上这个 DLL。未启用该 feature 的默认构建不依赖 CUDA，GPU 选项会显示不可用原因，CPU 搜索仍可使用。
+
 ## 常见问题
 
 ### 图标没有变化
