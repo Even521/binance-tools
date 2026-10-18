@@ -1,0 +1,15 @@
+[package]
+name = "evm-wallet"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+default = []
+cuda = []
+
+[dependencies]
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+bip39 = { version = "2.2", features = ["rand"] }
+sha3 = "0.10"
+zeroize = "1.8"
