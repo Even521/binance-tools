@@ -20,6 +20,7 @@ pub(super) mod native {
         fs,
         mem::{size_of, zeroed},
         path::Path,
+        sync::atomic::{AtomicU64, Ordering},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -34,12 +35,13 @@ pub(super) mod native {
         UI::{
             Input::KeyboardAndMouse::{
                 INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-                KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
-                VIRTUAL_KEY,
+                KEYEVENTF_UNICODE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_WHEEL,
+                MOUSEINPUT, SendInput, VIRTUAL_KEY,
             },
             WindowsAndMessaging::{
                 FindWindowW, GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow,
-                SW_MAXIMIZE, SetCursorPos, SetForegroundWindow, ShowWindow,
+                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SW_MAXIMIZE, SetCursorPos,
+                SetForegroundWindow, ShowWindow,
             },
         },
     };
@@ -98,47 +100,84 @@ pub(super) mod native {
         ));
         let mut cursor = POINT::default();
         unsafe { GetCursorPos(&mut cursor)? };
+        let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        anyhow::ensure!(screen_width > 0 && screen_height > 0, "无法获取屏幕尺寸");
+        anyhow::ensure!(
+            target_x >= 0 && target_x < screen_width && target_y >= 0 && target_y < screen_height,
+            "鼠标目标屏幕坐标 ({target_x}, {target_y}) 超出屏幕范围"
+        );
 
+        static MOVEMENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let mut random = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos() as u64;
-        let steps = 12 + (random % 9) as usize;
-        let distance_x = (target_x - cursor.x) as f64;
-        let distance_y = (target_y - cursor.y) as f64;
-        let distance = (distance_x * distance_x + distance_y * distance_y)
-            .sqrt()
-            .max(1.0);
-        let curve = 4.0 + (random % 15) as f64;
-        let perpendicular_x = -distance_y / distance;
-        let perpendicular_y = distance_x / distance;
-
-        for step in 1..=steps {
-            random ^= random << 13;
-            random ^= random >> 7;
-            random ^= random << 17;
-            let progress = step as f64 / steps as f64;
-            let eased = progress * progress * (3.0 - 2.0 * progress);
-            let arc = (std::f64::consts::PI * progress).sin() * curve;
-            let jitter = (random % 5) as f64 - 2.0;
-            let (next_x, next_y) = if step == steps {
-                (target_x, target_y)
-            } else {
-                (
-                    cursor.x + (distance_x * eased + perpendicular_x * arc + jitter).round() as i32,
-                    cursor.y + (distance_y * eased + perpendicular_y * arc + jitter).round() as i32,
-                )
-            };
-            send_mouse_absolute(next_x, next_y)?;
-            thread::sleep(Duration::from_millis(20 + random % 31));
+            .as_nanos() as u64
+            ^ MOVEMENT_SEQUENCE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+        let waypoint_count = 2 + (next_random(&mut random) % 4) as usize;
+        let mut route = Vec::with_capacity(waypoint_count + 1);
+        for _ in 0..waypoint_count {
+            route.push((
+                (next_random(&mut random) % screen_width as u64) as i32,
+                (next_random(&mut random) % screen_height as u64) as i32,
+            ));
         }
-        thread::sleep(Duration::from_millis(180 + random % 180));
+        route.push((target_x, target_y));
+        super::log_event(&format!(
+            "鼠标移动路线：全屏随机经过 {waypoint_count} 个中间点，最后落点 ({target_x}, {target_y})；每段速度随机。"
+        ));
+
+        let mut from_x = cursor.x;
+        let mut from_y = cursor.y;
+        for (point_index, (to_x, to_y)) in route.iter().copied().enumerate() {
+            let steps = 3 + (next_random(&mut random) % 7) as usize;
+            for step in 1..=steps {
+                let progress = step as f64 / steps as f64;
+                let eased = progress * progress * (3.0 - 2.0 * progress);
+                let is_final_point = point_index + 1 == route.len() && step == steps;
+                let (x, y) = if is_final_point {
+                    (target_x, target_y)
+                } else {
+                    let jitter_x = (next_random(&mut random) % 7) as i32 - 3;
+                    let jitter_y = (next_random(&mut random) % 7) as i32 - 3;
+                    (
+                        (from_x as f64 + (to_x - from_x) as f64 * eased).round() as i32 + jitter_x,
+                        (from_y as f64 + (to_y - from_y) as f64 * eased).round() as i32 + jitter_y,
+                    )
+                };
+                send_mouse_absolute(x.clamp(0, screen_width - 1), y.clamp(0, screen_height - 1))?;
+                thread::sleep(Duration::from_millis(8 + next_random(&mut random) % 33));
+            }
+            from_x = to_x;
+            from_y = to_y;
+        }
+        thread::sleep(Duration::from_millis(100 + next_random(&mut random) % 301));
         Ok(())
+    }
+
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
     }
 
     fn send_mouse_absolute(x: i32, y: i32) -> anyhow::Result<()> {
         unsafe { SetCursorPos(x, y)? };
         Ok(())
+    }
+
+    fn random_typing_delay_ms() -> u64 {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let mut value = now ^ SEQUENCE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        200 + value % 801
     }
 
     pub fn type_text(text: &str) -> anyhow::Result<()> {
@@ -165,7 +204,7 @@ pub(super) mod native {
             };
             let sent = unsafe { SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32) };
             anyhow::ensure!(sent == 2, "模拟键盘输入失败");
-            thread::sleep(Duration::from_millis(28 + (code as u64 % 47)));
+            thread::sleep(Duration::from_millis(random_typing_delay_ms()));
         }
         Ok(())
     }
@@ -202,6 +241,127 @@ pub(super) mod native {
             sent == inputs.len() as u32,
             "回复按钮点击失败；请确认浏览器和本程序以相同权限运行"
         );
+        Ok(())
+    }
+
+    pub fn press_enter() -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，无法确认重新加载提示"
+        );
+        let key = |key_up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0x0D),
+                    wScan: 0,
+                    dwFlags: if key_up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent == 2, "确认重新加载提示失败");
+        Ok(())
+    }
+
+    pub fn press_escape() -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，无法安全关闭回复弹窗"
+        );
+        let key = |key_up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0x1B),
+                    wScan: 0,
+                    dwFlags: if key_up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent == 2, "发送 Escape 键失败，无法关闭回复弹窗");
+        Ok(())
+    }
+
+    pub fn press_f5() -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，已停止刷新，避免把 F5 发给其他窗口"
+        );
+        let key = |key_up| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0x74),
+                    wScan: 0,
+                    dwFlags: if key_up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent == 2, "发送 F5 失败");
+        Ok(())
+    }
+
+    pub fn scroll_down_once() -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，已停止滚动"
+        );
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: (-120i32) as u32,
+                    dwFlags: MOUSEEVENTF_WHEEL,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent == 1, "发送滚轮事件失败");
         Ok(())
     }
 
@@ -258,6 +418,18 @@ pub(super) mod native {
             width, height, origin.x, origin.y
         ));
 
+        capture_rect(path, origin.x, origin.y, width, height)
+    }
+
+    pub fn capture_desktop(path: &Path) -> anyhow::Result<()> {
+        let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        anyhow::ensure!(width > 0 && height > 0, "无法获取桌面尺寸");
+        super::log_event(&format!("截图整个桌面：{}x{}", width, height));
+        capture_rect(path, 0, 0, width, height)
+    }
+
+    fn capture_rect(path: &Path, x: i32, y: i32, width: i32, height: i32) -> anyhow::Result<()> {
         let screen = unsafe { GetDC(None) };
         anyhow::ensure!(!screen.is_invalid(), "无法访问桌面合成画面");
         let memory = unsafe { CreateCompatibleDC(Some(screen)) };
@@ -265,19 +437,7 @@ pub(super) mod native {
         let bitmap = unsafe { CreateCompatibleBitmap(screen, width, height) };
         anyhow::ensure!(!bitmap.is_invalid(), "无法创建截图位图");
         let previous = unsafe { SelectObject(memory, bitmap.into()) };
-        let copied = unsafe {
-            BitBlt(
-                memory,
-                0,
-                0,
-                width,
-                height,
-                Some(screen),
-                origin.x,
-                origin.y,
-                SRCCOPY,
-            )
-        };
+        let copied = unsafe { BitBlt(memory, 0, 0, width, height, Some(screen), x, y, SRCCOPY) };
         if copied.is_err() {
             unsafe {
                 SelectObject(memory, previous);
@@ -285,7 +445,7 @@ pub(super) mod native {
                 let _ = DeleteDC(memory);
                 ReleaseDC(None, screen);
             }
-            anyhow::bail!("截取浏览器客户区失败");
+            anyhow::bail!("截取屏幕区域失败");
         }
 
         let mut info: BITMAPINFO = unsafe { zeroed() };
@@ -299,9 +459,7 @@ pub(super) mod native {
             ..Default::default()
         };
         let mut pixels = vec![0u8; width as usize * height as usize * 4];
-        unsafe {
-            SelectObject(memory, previous);
-        }
+        unsafe { SelectObject(memory, previous) };
         let rows = unsafe {
             GetDIBits(
                 memory,
@@ -318,7 +476,7 @@ pub(super) mod native {
             let _ = DeleteDC(memory);
             ReleaseDC(None, screen);
         }
-        anyhow::ensure!(rows == height, "读取浏览器截图像素失败");
+        anyhow::ensure!(rows == height, "读取屏幕截图像素失败");
         for alpha in pixels.iter_mut().skip(3).step_by(4) {
             *alpha = 255;
         }
@@ -363,10 +521,25 @@ pub(super) mod native {
     pub fn click_at_client_position(_: i32, _: i32) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
+    pub fn press_f5() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn scroll_down_once() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn press_enter() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn press_escape() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
     pub fn type_text(_: &str) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn capture_window(_: &Path) -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn capture_desktop(_: &Path) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
 }

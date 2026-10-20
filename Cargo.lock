@@ -1717,6 +1717,7 @@ dependencies = [
  "gpui-component-assets",
  "image",
  "pulldown-cmark",
+ "reqwest",
  "serde",
  "serde_json",
  "windows 0.61.3",

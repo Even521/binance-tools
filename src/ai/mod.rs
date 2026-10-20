@@ -771,13 +771,34 @@ pub fn send_openai_vision_cancellable(
     request_timeout: Duration,
     cancel: &AtomicBool,
 ) -> anyhow::Result<String> {
+    send_openai_vision_cancellable_with_response(
+        api_url,
+        model,
+        system,
+        prompt,
+        image_png,
+        request_timeout,
+        cancel,
+    )
+    .map(|(content, _)| content)
+}
+
+pub fn send_openai_vision_cancellable_with_response(
+    api_url: &str,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    image_png: &[u8],
+    request_timeout: Duration,
+    cancel: &AtomicBool,
+) -> anyhow::Result<(String, String)> {
     let endpoint = ollama_native_chat_endpoint(api_url);
     let image = base64_encode(image_png);
     let body = json!({
         "model": model,
         "stream": false,
         "think": false,
-        "options": {"temperature": 0.2, "num_predict": 1024},
+        "options": {"temperature": 0.0, "seed": 42, "num_predict": 1024,"num_ctx": 8192},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt, "images": [image]}
@@ -795,13 +816,15 @@ pub fn send_openai_vision_cancellable(
         )));
     }
     let value: Value = serde_json::from_str(&response_body).context("解析 AI 响应失败")?;
-    value
+
+    let content = value
         .pointer("/message/content")
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|content| !content.trim().is_empty())
         .or_else(|| openai_message_content(&response_body).ok())
-        .ok_or_else(|| anyhow!("AI 响应中没有返回消息内容"))
+        .ok_or_else(|| anyhow!("AI 响应中没有返回消息内容"))?;
+    Ok((content, response_body))
 }
 
 fn http_post_cancellable(

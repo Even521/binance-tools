@@ -22,10 +22,13 @@ binance_tools = { path = "../.." }
 evm-wallet = { path = "../../crates/evm-wallet" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png"] }
+
 gpui = "0.2.2"
 gpui-component = { git = "https://github.com/longbridge/gpui-component", tag = "v0.5.1" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", tag = "v0.5.1" }
 pulldown-cmark = "0.11"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

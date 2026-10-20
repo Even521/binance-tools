@@ -1,12 +1,13 @@
 mod automation;
-
+mod full_auto;
+mod reply_list;
 mod vision;
 
 use crate::ui::palette;
 
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Disableable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -35,6 +36,8 @@ pub struct XAssistantPage {
     status: Option<String>,
     error: Option<String>,
     _reply_task: Task<()>,
+    show_reply_list: bool,
+    reply_list: Entity<reply_list::ReplyListPage>,
 }
 
 impl XAssistantPage {
@@ -48,6 +51,7 @@ impl XAssistantPage {
         });
         let reply_rules_subscription =
             cx.subscribe_in(&reply_rules, window, Self::on_reply_rules_input);
+        let reply_list = cx.new(|cx| reply_list::ReplyListPage::new(window, cx));
 
         Self {
             replying: false,
@@ -63,17 +67,32 @@ impl XAssistantPage {
             status: None,
             error: None,
             _reply_task: Task::ready(()),
+            show_reply_list: false,
+            reply_list,
         }
     }
 
-    fn start_visual_reply(&mut self, hover_only: bool, cx: &mut Context<Self>) {
+    fn start_visual_reply(
+        &mut self,
+        hover_only: bool,
+        stage2_ocr: bool,
+        full_auto: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.replying {
+            return;
+        }
+        if full_auto && !self.auto_send {
+            self.error = Some("全自动回复需要先开启‘自动发送’。".to_string());
+            cx.notify();
             return;
         }
         self.replying = true;
         self.error = None;
         self.cancel_reply.store(false, Ordering::Relaxed);
-        self.status = Some(if hover_only {
+        self.status = Some(if full_auto {
+            "全自动循环已启动；每轮后随机刷新或滚动，点击停止按钮可结束。".to_string()
+        } else if hover_only {
             "5 秒后开始识别并移到回复按钮。AI 识图约需 15~30 秒，请切到 X 浏览器窗口。".to_string()
         } else {
             "5 秒后开始自动回复流程。AI 识图约需 15~30 秒，请确保 X 浏览器处于前台。".to_string()
@@ -87,16 +106,19 @@ impl XAssistantPage {
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    vision::run_visual_reply(
-                        vision::VisionReplyOptions {
-                            api_url: vision::DEFAULT_OLLAMA_URL.to_string(),
-                            model,
-                            auto_send,
-                            hover_only,
-                            reply_rules,
-                        },
-                        &cancel,
-                    )
+                    let options = vision::VisionReplyOptions {
+                        api_url: vision::DEFAULT_OLLAMA_URL.to_string(),
+                        model,
+                        auto_send,
+                        hover_only,
+                        stage2_ocr,
+                        reply_rules,
+                    };
+                    if full_auto {
+                        full_auto::run(options, &cancel)
+                    } else {
+                        vision::run_visual_reply(options, &cancel)
+                    }
                 })
                 .await;
             _ = this.update(cx, |this, cx| {
@@ -106,8 +128,25 @@ impl XAssistantPage {
                         this.screenshots = reply.screenshots;
                         this.selected_screenshot = this.screenshots.len().saturating_sub(1);
                         this.extracted_fields = format!(
-                            "帖子：\n{}\n\n回复：\n{}\n\n{}",
-                            reply.post_text, reply.reply_text, reply.summary
+                            "发送者：{}\n账号：{}\n时间：{}\n\n帖子：\n{}\n\n回复：\n{}\n\n{}",
+                            if reply.author_name.is_empty() {
+                                "未识别"
+                            } else {
+                                &reply.author_name
+                            },
+                            if reply.account_handle.is_empty() {
+                                "未识别"
+                            } else {
+                                &reply.account_handle
+                            },
+                            if reply.posted_at.is_empty() {
+                                "未识别"
+                            } else {
+                                &reply.posted_at
+                            },
+                            reply.post_text,
+                            reply.reply_text,
+                            reply.summary
                         );
                         this.status = Some(if reply.completed {
                             format!("已完成。{}", reply.summary)
@@ -116,17 +155,25 @@ impl XAssistantPage {
                         });
                     }
                     Err(err) => {
-                        let message = format!("{err:#}");
-                        if message.contains("已停止") {
-                            this.status = Some("已停止，AI 识图已中断。".to_string());
-                        } else {
-                            this.error = Some(format!("视觉回复失败：{message}"));
-                        }
+                        this.status = None;
+                        this.error = Some(format!("{err:#}"));
                     }
                 }
                 cx.notify();
             });
         });
+    }
+
+    fn open_reply_list(&mut self, cx: &mut Context<Self>) {
+        self.show_reply_list = true;
+        self.reply_list.update(cx, |page, cx| page.reload(cx));
+        cx.notify();
+    }
+
+    fn show_reply_flow(&mut self, cx: &mut Context<Self>) {
+        self.show_reply_list = false;
+        self.error = None;
+        cx.notify();
     }
 
     fn on_reply_rules_input(
@@ -176,8 +223,42 @@ fn load_reply_rules() -> String {
     })
 }
 
+impl XAssistantPage {
+    fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .gap_2()
+            .child(
+                Button::new("x-assistant-reply-flow-tab")
+                    .label("自动回复")
+                    .when(!self.show_reply_list, |button| button.primary())
+                    .when(self.show_reply_list, |button| button.outline())
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx))),
+            )
+            .child(
+                Button::new("x-assistant-reply-list-tab")
+                    .label("回复列表")
+                    .when(self.show_reply_list, |button| button.primary())
+                    .when(!self.show_reply_list, |button| button.outline())
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| this.open_reply_list(cx))),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for XAssistantPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.show_reply_list {
+            return v_flex()
+                .size_full()
+                .gap_3()
+                .p_3()
+                .child(self.render_page_menu(cx))
+                .child(self.reply_list.clone())
+                .into_any_element();
+        }
+        let menu = self.render_page_menu(cx);
         let theme = cx.theme();
         let selected_image = self.screenshots.get(self.selected_screenshot).cloned();
         let zoom_image = selected_image.clone();
@@ -187,10 +268,16 @@ impl Render for XAssistantPage {
             .relative()
             .gap_3()
             .p_3()
+            .child(menu)
             .child(
                 v_flex()
                     .gap_1()
-                    .child(div().text_size(px(20.)).font_semibold().child("X 辅助"))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(palette::border(theme))
+                    .bg(palette::surface(theme))
+                    .p_3()
+                    .child(div().text_size(px(16.)).font_semibold().child("X 辅助"))
                     .child(
                         div()
                             .text_size(px(12.))
@@ -203,45 +290,70 @@ impl Render for XAssistantPage {
                     .items_center()
                     .flex_wrap()
                     .gap_2()
-                    .rounded(px(8.))
+                    .rounded(px(6.))
                     .border_1()
                     .border_color(theme.border)
                     .bg(palette::surface(theme))
                     .p_2()
                     .child(
                         Button::new("x-assistant-open-x")
+                            .outline()
+                            .small()
                             .label("打开 X")
                             .on_click(|_, _, cx| cx.open_url("https://x.com/home")),
                     )
                     .child(
                         Button::new("x-assistant-visual-reply-hover")
+                            .outline()
+                            .small()
                             .label(if self.replying {
                                 "运行中…"
                             } else {
                                 "移到回复按钮"
                             })
                             .disabled(self.replying)
-                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(true, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(true, false, false, cx))),
                     )
                     .child(
                         Button::new("x-assistant-visual-reply-full")
+                            .outline()
+                            .small()
                             .label(if self.replying {
-                                "自动回复中…"
+                                "自动回复中（视觉 AI 阶段二）…"
                             } else {
-                                "自动回复"
+                                "自动回复（视觉 AI 阶段二）"
                             })
-                            .primary()
                             .disabled(self.replying)
-                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(false, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(false, false, false, cx))),
+                    )
+                    .child(
+                        Button::new("x-assistant-text-ocr-reply")
+                            .label(if self.replying { "自动回复中（文本 AI + OCR）…" } else { "自动回复（文本 AI + OCR 阶段二）" })
+                            .primary()
+                            .small()
+                            .disabled(self.replying)
+                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(false, true, false, cx))),
+                    )
+                    .child(
+                        Button::new("x-assistant-full-auto-reply")
+                            .outline()
+                            .small()
+                            .label(if self.replying { "全自动运行中…" } else { "全自动回复" })
+                            .disabled(self.replying)
+                            .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(false, true, true, cx))),
                     )
                     .child(
                         Button::new("x-assistant-stop-reply")
+                            .outline()
+                            .small()
                             .label("停止")
                             .disabled(!self.replying)
                             .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx))),
                     )
                     .child(
                         Button::new("x-assistant-auto-send")
+                            .outline()
+                            .small()
                             .label(if self.auto_send {
                                 "自动发送：开"
                             } else {
@@ -252,13 +364,20 @@ impl Render for XAssistantPage {
                     )
                     .child(
                         div()
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(palette::border_soft(theme))
+                            .bg(theme.background)
                             .px_2()
-                            .text_size(px(12.))
+                            .py_1()
+                            .text_size(px(11.))
                             .text_color(palette::muted(theme))
                             .child(format!("模型 {}", self.vision_model)),
                     )
                     .child(
                         Button::new("x-assistant-copy-fields")
+                            .ghost()
+                            .xsmall()
                             .label("复制字段")
                             .disabled(self.extracted_fields.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -268,16 +387,21 @@ impl Render for XAssistantPage {
             )
             .child(
                 v_flex()
-                    .gap_1()
+                    .gap_2()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(palette::border(theme))
+                    .bg(palette::surface(theme))
+                    .p_3()
                     .child(div().text_size(px(13.)).font_semibold().child("回复规则"))
                     .child(
                         div()
                             .h(px(92.))
                             .w_full()
-                            .rounded(px(6.))
+                            .rounded(px(4.))
                             .border_1()
-                            .border_color(theme.border)
-                            .bg(palette::surface(theme))
+                            .border_color(palette::border(theme))
+                            .bg(theme.background)
                             .p_2()
                             .child(Input::new(&self.reply_rules).appearance(false)),
                     ),
@@ -286,26 +410,54 @@ impl Render for XAssistantPage {
                 parent.child(
                     div()
                         .w_full()
-                        .rounded(px(6.))
-                        .bg(palette::surface(theme))
-                        .px_3()
-                        .py_2()
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(if self.error.is_some() {
+                            palette::error_border()
+                        } else {
+                            theme.success.opacity(0.35)
+                        })
+                        .bg(if self.error.is_some() {
+                            palette::error_background()
+                        } else {
+                            theme.success.opacity(0.10)
+                        })
+                        .px_2()
+                        .py_1()
                         .text_size(px(12.))
-                        .text_color(palette::muted(theme))
+                        .text_color(if self.error.is_some() {
+                            palette::error_text()
+                        } else {
+                            palette::text(theme)
+                        })
                         .truncate()
                         .child(status),
                 )
             })
             .when_some(self.error.clone(), |parent, error| {
                 parent.child(
-                    div()
+                    v_flex()
                         .w_full()
-                        .rounded(px(6.))
+                        .gap_1()
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(palette::error_border())
                         .bg(palette::error_background())
                         .px_3()
                         .py_2()
-                        .text_color(palette::error_text())
-                        .child(error),
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_semibold()
+                                .text_color(palette::error_text())
+                                .child("自动回复中断"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(palette::error_text())
+                                .child(error),
+                        ),
                 )
             })
             .when_some(
@@ -339,13 +491,13 @@ impl Render for XAssistantPage {
                                             .flex_1()
                                             .min_h_0()
                                             .flex()
-                                            .items_center()
+                                            .items_start()
                                             .justify_center()
                                             .child(
                                                 div()
                                                     .id("x-assistant-image-preview")
                                                     .w(px(520.))
-                                                    .h(px(640.))
+                                                    .h(px(320.))
                                                     .rounded(px(6.))
                                                     .cursor_pointer()
                                                     .on_mouse_down(
@@ -442,5 +594,6 @@ impl Render for XAssistantPage {
                     )
                 })
             })
+            .into_any_element()
     }
 }
