@@ -33,6 +33,7 @@ pub struct XAssistantPage {
     screenshots: Vec<PathBuf>,
     selected_screenshot: usize,
     image_preview_open: bool,
+    show_reply_rules: bool,
     status: Option<String>,
     error: Option<String>,
     _reply_task: Task<()>,
@@ -64,6 +65,7 @@ impl XAssistantPage {
             screenshots: Vec::new(),
             selected_screenshot: 0,
             image_preview_open: false,
+            show_reply_rules: false,
             status: None,
             error: None,
             _reply_task: Task::ready(()),
@@ -387,24 +389,41 @@ impl Render for XAssistantPage {
             )
             .child(
                 v_flex()
-                    .gap_3()
+                    .gap_2()
                     .rounded(px(10.))
                     .border_1()
                     .border_color(palette::border(theme))
                     .bg(palette::surface(theme))
-                    .p_4()
-                    .child(div().text_size(px(14.)).font_semibold().child("回复规则"))
+                    .p_3()
                     .child(
-                        div()
-                            .h(px(92.))
-                            .w_full()
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(palette::border(theme))
-                            .bg(theme.background)
-                            .p_2()
-                            .child(Input::new(&self.reply_rules).appearance(false)),
-                    ),
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_size(px(14.)).font_semibold().child("回复规则"))
+                            .child(
+                                Button::new("x-assistant-toggle-reply-rules")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(if self.show_reply_rules { "收起规则 ▴" } else { "展开规则 ▾" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_reply_rules = !this.show_reply_rules;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .when(self.show_reply_rules, |panel| {
+                        panel.child(
+                            div()
+                                .h(px(120.))
+                                .w_full()
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(palette::border(theme))
+                                .bg(theme.background)
+                                .p_2()
+                                .child(Input::new(&self.reply_rules).appearance(false)),
+                        )
+                    }),
             )
             .when_some(self.status.clone(), |parent, status| {
                 parent.child(
