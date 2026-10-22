@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::{cell::RefCell, path::Path};
+
+use ocr_rs::{OcrEngine, OcrResult, TextBlock, parse_timeline};
 
 #[derive(Debug)]
 struct OcrLine {
@@ -16,25 +18,487 @@ struct OcrDocument {
     scale_y: f32,
 }
 
-#[cfg(windows)]
+pub(super) struct LocalPostIdentification {
+    pub author_name: String,
+    pub account_handle: String,
+    pub posted_at: String,
+    pub post_text: String,
+    pub reply_point: (i32, i32),
+    pub repost_point: (i32, i32),
+    pub like_point: (i32, i32),
+    pub post_text_bottom_y: i32,
+    pub post_bottom_y: i32,
+}
+
+#[derive(Clone)]
+struct MetricCandidate {
+    center_x: u32,
+    center_y: u32,
+    left: u32,
+    relative_x: f32,
+}
+
+pub(super) fn recognize_compose_reply_page(path: &Path) -> anyhow::Result<serde_json::Value> {
+    with_cached_ocr_engine(|engine| engine.recognize_compose_reply_page(path))
+}
+
+pub(super) fn recognize_current_url(path: &Path) -> anyhow::Result<Option<String>> {
+    use image::imageops::crop_imm;
+
+    let image = image::open(path)?.to_rgb8();
+    let crop_top = image.height() * 2 / 100;
+    let crop_bottom = image.height() * 9 / 100;
+    let crop_width = image.width() * 80 / 100;
+    anyhow::ensure!(
+        crop_bottom > crop_top && crop_width > 0,
+        "浏览器地址栏裁剪区域无效"
+    );
+    let mut address_bar =
+        crop_imm(&image, 0, crop_top, crop_width, crop_bottom - crop_top).to_image();
+    address_bar = image::imageops::resize(
+        &address_bar,
+        address_bar.width().saturating_mul(2),
+        address_bar.height().saturating_mul(2),
+        image::imageops::FilterType::Lanczos3,
+    );
+    with_cached_ocr_engine(|engine| {
+        let result = engine.recognize_image_detailed(&address_bar)?;
+        Ok(result
+            .text_blocks
+            .iter()
+            .find_map(|block| extract_x_url(&block.text)))
+    })
+}
+
+pub(super) fn is_x_home_address(address: &str) -> bool {
+    is_x_address_for_path(address, "home")
+}
+
+pub(super) fn is_x_compose_post_address(address: &str) -> bool {
+    is_x_address_for_path(address, "compose/post")
+}
+
+fn is_x_address_for_path(address: &str, expected_path: &str) -> bool {
+    let address = address.trim().to_ascii_lowercase();
+    let address = address.strip_prefix("https://").unwrap_or(&address);
+    let address = address.strip_prefix("www.").unwrap_or(address);
+    let path = address.split(['?', '#']).next().unwrap_or_default();
+    path == format!("x.com/{expected_path}") || path == format!("x.com/{expected_path}/")
+}
+
+fn extract_x_url(text: &str) -> Option<String> {
+    let normalized = text.to_ascii_lowercase();
+    let mut candidates = [normalized.find("https://"), normalized.find("http://")]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    for (index, _) in normalized.match_indices("x.com/") {
+        let valid_boundary = index == 0
+            || !normalized.as_bytes()[index - 1].is_ascii_alphanumeric()
+                && !matches!(normalized.as_bytes()[index - 1], b'.' | b'-');
+        if valid_boundary {
+            candidates.push(index);
+        }
+    }
+    let start = candidates.into_iter().min()?;
+    Some(
+        text[start..]
+            .split_whitespace()
+            .next()?
+            .trim_matches(|ch: char| matches!(ch, '\"' | '\'' | '(' | ')' | ',' | ';'))
+            .trim_end_matches('.')
+            .to_string(),
+    )
+}
+
+struct ComposeDialogCrop {
+    image: image::RgbaImage,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+}
+
+fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
+    use image::imageops::crop_imm;
+
+    let image = image::open(path)?.to_rgba8();
+    let left = image.width() * 28 / 100;
+    let right = image.width() * 72 / 100;
+    let top = image.height() * 10 / 100;
+    let bottom = image.height() * 72 / 100;
+    anyhow::ensure!(right > left && bottom > top, "回复弹窗 OCR 裁剪区域无效");
+    let crop_image = crop_imm(&image, left, top, right - left, bottom - top).to_image();
+    Ok(ComposeDialogCrop {
+        image: crop_image,
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalPostIdentification> {
+    let source = image::open(path)?.to_rgb8();
+    with_cached_ocr_engine(|engine| {
+        let (result, page_json) = engine.recognize_path_with_action_coordinates(path)?;
+        super::automation::log_event(&format!(
+            "阶段 1/3：截图后当前地址与时间线 PP-OCR JSON：{}",
+            serde_json::to_string(&serde_json::json!({
+                "current_url": page_json["current_url"],
+                "timeline": page_json["timeline"],
+            }))?
+        ));
+        let parsed = parse_timeline(&result.text_blocks, &source);
+        let post = parsed
+            .timeline
+            .posts
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到时间线帖子"))?;
+        let author_name = post
+            .author_name
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子作者"))?;
+        let account_handle = post
+            .account
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子账号"))?;
+        let posted_at = post
+            .timestamp
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子发布时间"))?;
+        anyhow::ensure!(!post.text.trim().is_empty(), "PP-OCR 识别到的帖子正文为空");
+
+        let account_token = account_handle.trim_start_matches('@');
+        let header_y = result
+            .text_blocks
+            .iter()
+            .filter(|block| block.text.contains(account_token) && block.text.contains(&posted_at))
+            .filter_map(text_block_bounds)
+            .map(|bounds| bounds.1)
+            .min()
+            .ok_or_else(|| anyhow::anyhow!("未能定位 PP-OCR 识别到的帖子头部"))?;
+
+        let next_header_y = parsed
+            .timeline
+            .posts
+            .get(1)
+            .and_then(|next_post| next_post.account.as_deref())
+            .map(|next_account| next_account.trim_start_matches('@'))
+            .and_then(|next_account| {
+                result
+                    .text_blocks
+                    .iter()
+                    .filter(|block| block.text.contains(next_account))
+                    .filter_map(text_block_bounds)
+                    .map(|bounds| bounds.1)
+                    .filter(|&y| y > header_y)
+                    .min()
+            })
+            .unwrap_or(source.height());
+        let mut counts = result
+            .text_blocks
+            .iter()
+            .filter_map(|block| {
+                let text = block.text.trim();
+                if !is_numeric_count(text) {
+                    return None;
+                }
+                let (left, top, right, bottom) = text_block_bounds(block)?;
+                let center_x = (left + right) / 2;
+                let center_y = (top + bottom) / 2;
+                let relative_x = center_x as f32 / source.width().max(1) as f32;
+                (center_y > header_y
+                    && center_y < next_header_y
+                    && relative_x >= 0.30
+                    && relative_x <= 0.68)
+                    .then_some(MetricCandidate {
+                        center_x,
+                        center_y,
+                        left,
+                        relative_x,
+                    })
+            })
+            .collect::<Vec<_>>();
+        counts.sort_by_key(|candidate| (candidate.center_y, candidate.center_x));
+        let reply_fallback = counts
+            .iter()
+            .filter(|candidate| (0.30..0.40).contains(&candidate.relative_x))
+            .max_by_key(|candidate| candidate.center_y)
+            .cloned();
+        let view_fallback = counts
+            .iter()
+            .filter(|candidate| (0.48..=0.68).contains(&candidate.relative_x))
+            .max_by_key(|candidate| candidate.center_y)
+            .cloned();
+
+        let mut rows: Vec<Vec<MetricCandidate>> = Vec::new();
+        for candidate in counts {
+            if let Some(row) = rows.last_mut()
+                && candidate.center_y.saturating_sub(row[0].center_y) <= 12
+            {
+                row.push(candidate);
+            } else {
+                rows.push(vec![candidate]);
+            }
+        }
+        let mut action_row = rows
+            .into_iter()
+            .filter(|row| {
+                row.len() >= 3
+                    && row.iter().any(|item| item.relative_x < 0.40)
+                    && row
+                        .iter()
+                        .any(|item| (0.45..0.53).contains(&item.relative_x))
+                    && row
+                        .iter()
+                        .any(|item| (0.52..0.63).contains(&item.relative_x))
+            })
+            .min_by_key(|row| row[0].center_y);
+
+        let (reply_x, repost_x, like_x, action_y) = if let Some(mut action_row) = action_row.take()
+        {
+            action_row.sort_by_key(|item| item.center_x);
+            let comment = &action_row[0];
+            let like = &action_row[action_row.len() - 2];
+            let repost = (action_row.len() >= 4).then(|| &action_row[1]);
+            let icon_offset = (source.width() as f32 * 0.009).round() as u32;
+            let reply_x = comment.left.saturating_add(icon_offset) as i32;
+            let like_x = like.left.saturating_add(icon_offset) as i32;
+            let repost_x = repost
+                .map(|item| item.left.saturating_add(icon_offset) as i32)
+                .unwrap_or((reply_x + like_x) / 2);
+            (
+                reply_x,
+                repost_x,
+                like_x,
+                ((comment.center_y + like.center_y) / 2) as i32,
+            )
+        } else if let Some(reply) = reply_fallback {
+            let icon_offset = (source.width() as f32 * 0.009).round() as u32;
+            let reply_x = reply.left.saturating_add(icon_offset) as i32;
+            let slot = (source.width() as f32 * 0.061).round() as i32;
+            (
+                reply_x,
+                reply_x + slot,
+                reply_x + 2 * slot,
+                reply.center_y as i32,
+            )
+        } else {
+            let view = view_fallback.ok_or_else(|| {
+                anyhow::anyhow!("PP-OCR 未识别到回复数量或浏览数量，无法推算回复坐标")
+            })?;
+            let slot = (source.width() as f32 * 0.061).round() as i32;
+            let view_icon_x = view.left as i32 + (source.width() as f32 * 0.009).round() as i32;
+            let reply_x = view_icon_x - 3 * slot;
+            (
+                reply_x,
+                reply_x + slot,
+                reply_x + 2 * slot,
+                view.center_y as i32,
+            )
+        };
+        anyhow::ensure!(
+            reply_x < repost_x && repost_x < like_x,
+            "根据互动数位置推算出的回复、转发、点赞图标顺序无效"
+        );
+
+        let post_bottom_y = action_y;
+        let reply_point = (reply_x, action_y);
+        let repost_point = (repost_x, action_y);
+        let like_point = (like_x, action_y);
+
+        let annotated_path = path.with_file_name(format!(
+            "{}-ocr-coordinates.png",
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("screenshot")
+        ));
+        save_action_bar_annotation(
+            &source,
+            &annotated_path,
+            reply_point,
+            repost_point,
+            like_point,
+        )?;
+        super::automation::log_event(&format!(
+            "阶段 1/3：全页 PP-OCR 互动栏候选坐标：回复={reply_point:?}，转发={repost_point:?}，点赞={like_point:?}；已生成标注截图 {}。",
+            annotated_path.display()
+        ));
+        Ok(LocalPostIdentification {
+            author_name,
+            account_handle,
+            posted_at,
+            post_text: post.text.clone(),
+            reply_point,
+            repost_point,
+            like_point,
+            post_text_bottom_y: action_y.saturating_sub(24).max(header_y as i32),
+            post_bottom_y,
+        })
+    })
+}
+
+fn save_action_bar_annotation(
+    source: &image::RgbImage,
+    path: &Path,
+    reply: (i32, i32),
+    repost: (i32, i32),
+    like: (i32, i32),
+) -> anyhow::Result<()> {
+    let mut annotated = source.clone();
+    for (index, (point, color)) in [
+        (reply, image::Rgb([255, 40, 40])),
+        (repost, image::Rgb([255, 190, 0])),
+        (like, image::Rgb([40, 220, 80])),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (center_x, center_y) = (point.0, point.1);
+        for offset in -10..=10 {
+            for (x, y) in [(center_x + offset, center_y), (center_x, center_y + offset)] {
+                if x >= 0
+                    && y >= 0
+                    && (x as u32) < annotated.width()
+                    && (y as u32) < annotated.height()
+                {
+                    annotated.put_pixel(x as u32, y as u32, color);
+                }
+            }
+        }
+        let radius_squared = 9 * 9;
+        for y in (center_y - 11).max(0)..=(center_y + 11).min(annotated.height() as i32 - 1) {
+            for x in (center_x - 11).max(0)..=(center_x + 11).min(annotated.width() as i32 - 1) {
+                let dx = x - center_x;
+                let dy = y - center_y;
+                if (dx * dx + dy * dy - radius_squared).abs() <= 18 {
+                    annotated.put_pixel(x as u32, y as u32, color);
+                }
+            }
+        }
+        let badge_x = center_x + 13;
+        let badge_y = center_y - 13;
+        for y in 0..9 {
+            for x in 0..9 {
+                let px = badge_x + x;
+                let py = badge_y + y;
+                if px >= 0
+                    && py >= 0
+                    && (px as u32) < annotated.width()
+                    && (py as u32) < annotated.height()
+                {
+                    annotated.put_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+        let digit = (index + 1) as u8;
+        for (row, bits) in DIGIT_GLYPHS[digit as usize].iter().enumerate() {
+            for col in 0..5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    let px = badge_x + 2 + col;
+                    let py = badge_y + 1 + row as i32;
+                    if px >= 0
+                        && py >= 0
+                        && (px as u32) < annotated.width()
+                        && (py as u32) < annotated.height()
+                    {
+                        annotated.put_pixel(px as u32, py as u32, image::Rgb([255, 255, 255]));
+                    }
+                }
+            }
+        }
+    }
+    annotated.save(path)?;
+    Ok(())
+}
+
+const DIGIT_GLYPHS: [[u8; 7]; 4] = [
+    [0, 0, 0, 0, 0, 0, 0],
+    [4, 12, 4, 4, 4, 4, 14],
+    [14, 17, 1, 2, 4, 8, 31],
+    [30, 1, 1, 14, 1, 1, 30],
+];
+
+pub(super) fn locate_new_posts_notice(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
+    let doc = recognize_document(path)?;
+    let (width, height) = image::image_dimensions(path)?;
+    let expected = normalize_text("显示帖子");
+    Ok(doc
+        .lines
+        .iter()
+        .filter_map(|line| {
+            let x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            let normalized = normalize_text(&line.text);
+            (text_match_ratio(&normalized, &expected) >= 0.75
+                && x >= width as f32 * 0.20
+                && x <= width as f32 * 0.80
+                && y <= height as f32 * 0.40)
+                .then_some((x.round() as i32, y.round() as i32))
+        })
+        .next())
+}
+
+pub(super) fn reply_composer_is_open(path: &Path) -> anyhow::Result<bool> {
+    let crop = crop_compose_dialog(path)?;
+    let doc = recognize_document_image(
+        &image::DynamicImage::ImageRgba8(crop.image.clone()),
+        4,
+        3,
+        Some(200),
+    )?;
+    let expected = normalize_text("发布你的回复");
+    Ok(doc
+        .lines
+        .iter()
+        .any(|line| text_match_ratio(&normalize_text(&line.text), &expected) >= 0.75))
+}
+
 pub(super) fn recognize_sent_toast(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(contains_sent_confirmation(&doc.text))
 }
 
-#[cfg(windows)]
+pub(super) fn recognize_save_draft_confirmation(path: &Path) -> anyhow::Result<bool> {
+    let doc = recognize_document(path)?;
+    Ok(doc.lines.iter().any(|line| {
+        text_match_ratio(&normalize_text(&line.text), &normalize_text("保存帖子")) >= 0.75
+    }))
+}
+
+pub(super) fn locate_discard_draft_button(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
+    let doc = recognize_document(path)?;
+    let has_save_confirmation = doc.lines.iter().any(|line| {
+        text_match_ratio(&normalize_text(&line.text), &normalize_text("保存帖子")) >= 0.75
+    });
+    if !has_save_confirmation {
+        return Ok(None);
+    }
+
+    Ok(doc.lines.iter().find_map(|line| {
+        (text_match_ratio(&normalize_text(&line.text), &normalize_text("放弃")) >= 0.75).then_some(
+            (
+                ((line.left + line.right) * 0.5 / doc.scale_x).round() as i32,
+                ((line.top + line.bottom) * 0.5 / doc.scale_y).round() as i32,
+            ),
+        )
+    }))
+}
+
 pub(super) fn recognize_reload_confirmation(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(contains_reload_confirmation(&doc.text))
 }
 
-#[cfg(windows)]
 pub(super) fn recognize_rate_limit(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(contains_rate_limit(&doc.text))
 }
 
-#[cfg(windows)]
 pub(super) fn recognize_retryable_send_error(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     let expected = normalize_text("出错了别担心让我们再试一次");
@@ -46,7 +510,6 @@ pub(super) fn recognize_retryable_send_error(path: &Path) -> anyhow::Result<bool
             .any(|line| text_match_ratio(&normalize_text(&line.text), &expected) >= 0.86))
 }
 
-#[cfg(windows)]
 pub(super) fn verify_reply_tooltip(
     path: &Path,
     target_x: i32,
@@ -79,11 +542,11 @@ pub(super) fn verify_reply_tooltip(
     )
     .to_image()
     .save(&crop_path)?;
+
     let modes = [
         (3, 1, None, "局部 3 倍灰度"),
         (4, 1, Some(200), "局部 4 倍阈值 200"),
     ];
-
     for (scale_num, scale_den, threshold, mode) in modes {
         let doc = recognize_document_with_options(&crop_path, scale_num, scale_den, threshold)?;
         let nearby = doc
@@ -92,23 +555,22 @@ pub(super) fn verify_reply_tooltip(
             .filter_map(|line| {
                 let x = (line.left + line.right) * 0.5 / doc.scale_x + crop_left as f32;
                 let y = (line.top + line.bottom) * 0.5 / doc.scale_y + crop_top as f32;
-                let normalized = normalize_text(&line.text);
                 ((x - target_x as f32).abs() <= 120.0
                     && y >= target_y as f32 - 90.0
                     && y <= target_y as f32 + 90.0)
-                    .then_some((line.text.as_str(), normalized, x, y))
+                    .then_some((line.text.as_str(), x, y))
             })
             .collect::<Vec<_>>();
         let verified = nearby
             .iter()
-            .any(|(text, _, x, y)| reply_tooltip_matches_target(text, *x, *y, target_x, target_y));
+            .any(|(text, x, y)| reply_tooltip_matches_target(text, *x, *y, target_x, target_y));
         let nearby_text = nearby
             .iter()
-            .map(|(text, _, x, y)| format!("{text}@({x:.0},{y:.0})"))
+            .map(|(text, x, y)| format!("{text}@({x:.0},{y:.0})"))
             .collect::<Vec<_>>()
             .join(" | ");
         super::automation::log_event(&format!(
-            "悬停回复图标 OCR 校验（{mode}）：目标=({target_x},{target_y})，识别到‘回复’提示={verified}；附近文字：{nearby_text}；裁剪图={}。",
+            "悬停回复图标 PP-OCR 校验（{mode}）：目标=({target_x},{target_y})，识别到‘回复’提示={verified}；附近文字：{nearby_text}；裁剪图={}。",
             crop_path.display()
         ));
         if verified {
@@ -125,21 +587,19 @@ fn reply_tooltip_matches_target(
     target_x: i32,
     target_y: i32,
 ) -> bool {
-    let normalized = normalize_text(text);
-    normalized == normalize_text("回复")
+    normalize_text(text) == normalize_text("回复")
         && (center_x - target_x as f32).abs() <= 120.0
         && center_y >= target_y as f32 - 90.0
         && center_y <= target_y as f32 + 90.0
 }
 
-#[cfg(windows)]
 pub(super) fn locate_reply_input(
     path: &Path,
-    screenshot_width: u32,
-    screenshot_height: u32,
+    _screenshot_width: u32,
+    _screenshot_height: u32,
 ) -> anyhow::Result<Option<(i32, i32)>> {
+    let crop = crop_compose_dialog(path)?;
     let expected = normalize_text("发布你的回复");
-    // 先跑当前方案，只有未匹配时才尝试其他预处理，避免每次识别都增加耗时。
     let modes = [
         (4, 3, Some(200), "原始阈值 200"),
         (2, 1, None, "2 倍灰度"),
@@ -148,7 +608,12 @@ pub(super) fn locate_reply_input(
     ];
 
     for (attempt, (scale_num, scale_den, threshold, mode_name)) in modes.iter().enumerate() {
-        let doc = recognize_document_with_options(path, *scale_num, *scale_den, *threshold)?;
+        let doc = recognize_document_image(
+            &image::DynamicImage::ImageRgba8(crop.image.clone()),
+            *scale_num,
+            *scale_den,
+            *threshold,
+        )?;
         let all_lines = doc
             .lines
             .iter()
@@ -156,14 +621,14 @@ pub(super) fn locate_reply_input(
                 format!(
                     "{}@({:.0},{:.0})",
                     line.text,
-                    (line.left + line.right) * 0.5 / doc.scale_x,
-                    (line.top + line.bottom) * 0.5 / doc.scale_y
+                    (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
+                    (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32
                 )
             })
             .collect::<Vec<_>>()
             .join(" | ");
         super::automation::log_event(&format!(
-            "阶段 2/3：全屏 OCR（{mode_name}）共 {} 行。全文：\n{}\n全部识别行及坐标：{}",
+            "阶段 2/3：回复弹窗局部 OCR（{mode_name}）共 {} 行。全文：\n{}\n弹窗识别行及屏幕坐标：{}",
             doc.lines.len(),
             doc.text,
             all_lines
@@ -179,10 +644,10 @@ pub(super) fn locate_reply_input(
                 let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
                 if line_len < 4
                     || line_len > 28
-                    || center_x < screenshot_width as f32 * 0.25
-                    || center_x > screenshot_width as f32 * 0.75
-                    || center_y < screenshot_height as f32 * 0.20
-                    || center_y > screenshot_height as f32 * 0.75
+                    || center_x < crop.width as f32 * 0.10
+                    || center_x > crop.width as f32 * 0.90
+                    || center_y < crop.height as f32 * 0.10
+                    || center_y > crop.height as f32 * 0.90
                 {
                     return None;
                 }
@@ -194,27 +659,35 @@ pub(super) fn locate_reply_input(
         if let Some((line, center_x, center_y, score)) = best {
             if attempt > 0 {
                 super::automation::log_event(&format!(
-                    "阶段 2/3：通过备用 OCR 模式‘{mode_name}’识别到回复输入占位文字；识别行‘{}’，匹配度 {:.0}%。",
+                    "阶段 2/3：通过备用 PP-OCR 模式‘{mode_name}’识别到回复输入占位文字；识别行‘{}’，匹配度 {:.0}%。",
                     line.text,
                     score * 100.0
                 ));
             }
-            return Ok(Some((center_x.round() as i32, center_y.round() as i32)));
+            return Ok(Some((
+                center_x.round() as i32 + crop.left as i32,
+                center_y.round() as i32 + crop.top as i32,
+            )));
         }
     }
 
-    super::automation::log_event("阶段 2/3：所有整屏 OCR 预处理方案均未匹配回复输入占位文字。");
+    super::automation::log_event("阶段 2/3：所有 PP-OCR 预处理方案均未匹配回复输入占位文字。");
     Ok(None)
 }
 
-#[cfg(windows)]
 pub(super) fn locate_reply_submit_button(
     path: &Path,
     reply_text: &str,
-    screenshot_width: u32,
-    screenshot_height: u32,
+    _screenshot_width: u32,
+    _screenshot_height: u32,
 ) -> anyhow::Result<Option<(i32, i32)>> {
-    let doc = recognize_document(path)?;
+    let crop = crop_compose_dialog(path)?;
+    let doc = recognize_document_image(
+        &image::DynamicImage::ImageRgba8(crop.image.clone()),
+        4,
+        3,
+        Some(200),
+    )?;
     let reply_text = normalize_text(reply_text);
     let matching_lines = doc
         .lines
@@ -224,10 +697,10 @@ pub(super) fn locate_reply_submit_button(
             let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
             let recognized = normalize_text(&line.text);
             text_match_ratio(&recognized, &reply_text) >= 0.80
-                && center_x >= screenshot_width as f32 * 0.28
-                && center_x <= screenshot_width as f32 * 0.72
-                && center_y >= screenshot_height as f32 * 0.25
-                && center_y <= screenshot_height as f32 * 0.65
+                && center_x >= crop.width as f32 * 0.10
+                && center_x <= crop.width as f32 * 0.90
+                && center_y >= crop.height as f32 * 0.10
+                && center_y <= crop.height as f32 * 0.90
         })
         .collect::<Vec<_>>();
     if matching_lines.is_empty() {
@@ -237,58 +710,60 @@ pub(super) fn locate_reply_submit_button(
             .filter(|line| {
                 let x = (line.left + line.right) * 0.5 / doc.scale_x;
                 let y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-                x >= screenshot_width as f32 * 0.25
-                    && x <= screenshot_width as f32 * 0.75
-                    && y >= screenshot_height as f32 * 0.25
-                    && y <= screenshot_height as f32 * 0.65
+                x >= crop.width as f32 * 0.10
+                    && x <= crop.width as f32 * 0.90
+                    && y >= crop.height as f32 * 0.10
+                    && y <= crop.height as f32 * 0.90
             })
             .map(|line| {
                 format!(
                     "{}({:.0},{:.0})",
                     line.text,
-                    (line.left + line.right) * 0.5 / doc.scale_x,
-                    (line.top + line.bottom) * 0.5 / doc.scale_y
+                    (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
+                    (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32
                 )
             })
             .take(30)
             .collect::<Vec<_>>()
             .join(" | ");
         super::automation::log_event(&format!(
-            "阶段 2/3：提交前 OCR 未匹配回复文本‘{reply_text}’。输入区域识别行：{candidates}"
+            "阶段 2/3：提交前 PP-OCR 未匹配回复文本‘{reply_text}’。输入区域识别行：{candidates}"
         ));
         return Ok(None);
     }
 
-    match find_dark_submit_button(path, screenshot_width, screenshot_height)? {
-        Some(point) => Ok(Some(point)),
+    let crop_rgb = image::DynamicImage::ImageRgba8(crop.image.clone()).to_rgb8();
+    match find_dark_submit_button(&crop_rgb, crop.width, crop.height)? {
+        Some((x, y)) => Ok(Some((x + crop.left as i32, y + crop.top as i32))),
         None => {
             super::automation::log_event(
-                "阶段 2/3：OCR 已匹配回复文本，但本地图像检测未找到符合尺寸的深色提交按钮。",
+                "阶段 2/3：PP-OCR 已匹配回复文本，但本地图像检测未找到符合尺寸的深色提交按钮。",
             );
             Ok(None)
         }
     }
 }
 
-#[cfg(windows)]
 fn recognize_document(path: &Path) -> anyhow::Result<OcrDocument> {
     recognize_document_with_options(path, 4, 3, Some(200))
 }
 
-#[cfg(windows)]
 fn recognize_document_with_options(
     path: &Path,
     scale_num: u32,
     scale_den: u32,
     threshold: Option<u8>,
 ) -> anyhow::Result<OcrDocument> {
-    use std::io::Cursor;
-    use windows::{
-        Graphics::Imaging::BitmapDecoder,
-        Storage::Streams::{DataWriter, InMemoryRandomAccessStream},
-    };
+    recognize_document_image(&image::open(path)?, scale_num, scale_den, threshold)
+}
 
-    let source = image::open(path)?;
+fn recognize_document_image(
+    source: &image::DynamicImage,
+    scale_num: u32,
+    scale_den: u32,
+    threshold: Option<u8>,
+) -> anyhow::Result<OcrDocument> {
+    anyhow::ensure!(scale_den > 0, "OCR 缩放比例的分母不能为零");
     let grayscale = source.to_luma8();
     let mut enlarged = image::imageops::resize(
         &grayscale,
@@ -301,74 +776,43 @@ fn recognize_document_with_options(
             pixel.0[0] = if pixel.0[0] < threshold { 0 } else { 255 };
         }
     }
-    let mut encoded = Vec::new();
-    image::DynamicImage::ImageLuma8(enlarged.clone())
-        .write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Png)?;
-
+    let scale_x = enlarged.width() as f32 / source.width() as f32;
+    let scale_y = enlarged.height() as f32 / source.height() as f32;
+    let rgb = image::DynamicImage::ImageLuma8(enlarged).to_rgb8();
     with_cached_ocr_engine(|engine| {
-        let stream = InMemoryRandomAccessStream::new()?;
-        let writer = DataWriter::CreateDataWriter(&stream)?;
-        writer.WriteBytes(&encoded)?;
-        writer.StoreAsync()?.get()?;
-        writer.FlushAsync()?.get()?;
-        writer.DetachStream()?;
-        stream.Seek(0)?;
-
-        let decoder = BitmapDecoder::CreateAsync(&stream)?.get()?;
-        let bitmap = decoder.GetSoftwareBitmapAsync()?.get()?;
-        let result = engine.RecognizeAsync(&bitmap)?.get()?;
-        document_from_result(
-            &result,
-            enlarged.width() as f32 / source.width() as f32,
-            enlarged.height() as f32 / source.height() as f32,
-        )
+        let result = engine.recognize_image_detailed(&rgb)?;
+        document_from_result(&result, scale_x, scale_y)
     })
 }
 
-#[cfg(windows)]
 fn document_from_result(
-    result: &windows::Media::Ocr::OcrResult,
+    result: &OcrResult,
     scale_x: f32,
     scale_y: f32,
 ) -> anyhow::Result<OcrDocument> {
-    let mut lines = Vec::new();
-    for line in result.Lines()? {
-        let mut text = String::new();
-        let mut left = f32::INFINITY;
-        let mut top = f32::INFINITY;
-        let mut right = f32::NEG_INFINITY;
-        let mut bottom = f32::NEG_INFINITY;
-        for word in line.Words()? {
-            if !text.is_empty() {
-                text.push(' ');
-            }
-            text.push_str(&word.Text()?.to_string());
-            let rect = word.BoundingRect()?;
-            left = left.min(rect.X);
-            top = top.min(rect.Y);
-            right = right.max(rect.X + rect.Width);
-            bottom = bottom.max(rect.Y + rect.Height);
-        }
-        if !text.is_empty() {
-            lines.push(OcrLine {
-                text,
-                left,
-                top,
-                right,
-                bottom,
-            });
-        }
-    }
-    let text = result.Text()?.to_string();
-    let text = if text.trim().is_empty() {
-        lines
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        text
-    };
+    let lines = result
+        .text_blocks
+        .iter()
+        .filter_map(|block| {
+            let left = block.box_points.iter().map(|point| point.x).min()?;
+            let right = block.box_points.iter().map(|point| point.x).max()?;
+            let top = block.box_points.iter().map(|point| point.y).min()?;
+            let bottom = block.box_points.iter().map(|point| point.y).max()?;
+            Some(OcrLine {
+                text: block.text.clone(),
+                left: left as f32,
+                top: top as f32,
+                right: right as f32,
+                bottom: bottom as f32,
+            })
+        })
+        .collect::<Vec<_>>();
+    let text = result
+        .text_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(OcrDocument {
         text,
         lines,
@@ -377,45 +821,20 @@ fn document_from_result(
     })
 }
 
-#[cfg(windows)]
 fn with_cached_ocr_engine<T>(
-    operation: impl FnOnce(&windows::Media::Ocr::OcrEngine) -> anyhow::Result<T>,
+    operation: impl FnOnce(&mut OcrEngine) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    use std::cell::RefCell;
-    use windows::{
-        Media::Ocr::OcrEngine,
-        Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
-    };
-
     thread_local! {
-        static OCR_ENGINE: RefCell<Option<CachedOcrEngine>> = const { RefCell::new(None) };
+        static OCR_ENGINE: RefCell<Option<OcrEngine>> = const { RefCell::new(None) };
     }
 
     OCR_ENGINE.with(|cached| {
         let mut cached = cached.borrow_mut();
         if cached.is_none() {
-            unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
-            match OcrEngine::TryCreateFromUserProfileLanguages() {
-                Ok(engine) => *cached = Some(CachedOcrEngine(Some(engine))),
-                Err(error) => {
-                    unsafe { windows::Win32::System::WinRT::RoUninitialize() };
-                    return Err(error.into());
-                }
-            }
+            *cached = Some(OcrEngine::new()?);
         }
-        operation(cached.as_ref().unwrap().0.as_ref().unwrap())
+        operation(cached.as_mut().expect("OCR engine initialized"))
     })
-}
-
-#[cfg(windows)]
-struct CachedOcrEngine(Option<windows::Media::Ocr::OcrEngine>);
-
-#[cfg(windows)]
-impl Drop for CachedOcrEngine {
-    fn drop(&mut self) {
-        self.0.take();
-        unsafe { windows::Win32::System::WinRT::RoUninitialize() };
-    }
 }
 
 fn normalize_text(text: &str) -> String {
@@ -464,11 +883,10 @@ fn contains_sent_confirmation(text: &str) -> bool {
 }
 
 fn find_dark_submit_button(
-    path: &Path,
+    image: &image::RgbImage,
     screenshot_width: u32,
     screenshot_height: u32,
 ) -> anyhow::Result<Option<(i32, i32)>> {
-    let image = image::open(path)?.to_rgb8();
     let width = image.width() as usize;
     let x_start = screenshot_width as usize * 45 / 100;
     let x_end = (screenshot_width as usize * 82 / 100).min(width);
@@ -530,19 +948,34 @@ fn find_dark_submit_button(
                 && (1.2..=5.0).contains(&aspect)
                 && area >= 400
             {
-                let center_x = (left + right) as i32 / 2;
-                let center_y = (top + bottom) as i32 / 2;
-                candidates.push((center_x, center_y));
+                candidates.push(((left + right) as i32 / 2, (top + bottom) as i32 / 2));
             }
         }
     }
 
     candidates.sort_by_key(|(x, y)| {
-        let dx = (*x - (screenshot_width as i32 * 63 / 100)).abs();
-        let dy = (*y - (screenshot_height as i32 * 58 / 100)).abs();
+        let dx = (*x - screenshot_width as i32 * 63 / 100).abs();
+        let dy = (*y - screenshot_height as i32 * 58 / 100).abs();
         dx + dy
     });
     Ok(candidates.into_iter().next())
+}
+
+fn text_block_bounds(block: &TextBlock) -> Option<(u32, u32, u32, u32)> {
+    Some((
+        block.box_points.iter().map(|point| point.x).min()?,
+        block.box_points.iter().map(|point| point.y).min()?,
+        block.box_points.iter().map(|point| point.x).max()?,
+        block.box_points.iter().map(|point| point.y).max()?,
+    ))
+}
+
+fn is_numeric_count(text: &str) -> bool {
+    text.split_whitespace().last().is_some_and(|token| {
+        !token.is_empty()
+            && token.chars().any(|ch| ch.is_ascii_digit())
+            && token.chars().all(|ch| ch.is_ascii_digit() || ch == ',')
+    })
 }
 
 fn text_match_ratio(recognized: &str, expected: &str) -> f32 {
@@ -573,47 +1006,60 @@ fn is_dark_pixel(image: &image::RgbImage, x: usize, y: usize) -> bool {
     red < 55 && green < 60 && blue < 65
 }
 
-#[cfg(not(windows))]
-pub(super) fn recognize_sent_toast(_: &Path) -> anyhow::Result<bool> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
-#[cfg(not(windows))]
-pub(super) fn recognize_reload_confirmation(_: &Path) -> anyhow::Result<bool> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
-#[cfg(not(windows))]
-pub(super) fn recognize_rate_limit(_: &Path) -> anyhow::Result<bool> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
-#[cfg(not(windows))]
-pub(super) fn recognize_retryable_send_error(_: &Path) -> anyhow::Result<bool> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
-#[cfg(not(windows))]
-pub(super) fn locate_reply_input(_: &Path, _: u32, _: u32) -> anyhow::Result<Option<(i32, i32)>> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
-#[cfg(not(windows))]
-pub(super) fn locate_reply_submit_button(
-    _: &Path,
-    _: &str,
-    _: u32,
-    _: u32,
-) -> anyhow::Result<Option<(i32, i32)>> {
-    anyhow::bail!("Windows OCR 仅支持 Windows")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         contains_rate_limit, contains_reload_confirmation, contains_sent_confirmation,
+        extract_x_url, identify_post_and_action_bar, is_x_compose_post_address, is_x_home_address,
         reply_tooltip_matches_target, text_match_ratio,
     };
+    use std::{env, path::Path};
+
+    #[test]
+    fn identifies_configured_timeline_post_with_local_ocr() {
+        let Some(path) = env::var_os("OCR_TEST_IMAGE") else {
+            return;
+        };
+        let post = identify_post_and_action_bar(Path::new(&path))
+            .expect("local OCR failed to identify the configured timeline post");
+        assert!(!post.author_name.trim().is_empty());
+        assert!(!post.account_handle.trim().is_empty());
+        assert!(!post.posted_at.trim().is_empty());
+        assert!(!post.post_text.trim().is_empty());
+        assert!(post.reply_point.0 < post.repost_point.0);
+        assert!(post.repost_point.0 < post.like_point.0);
+        assert!((post.reply_point.1 - post.like_point.1).abs() <= 8);
+    }
+
+    #[test]
+    fn accepts_only_x_home_as_safe_reply_target() {
+        assert!(is_x_home_address("https://x.com/home"));
+        assert!(is_x_home_address("https://x.com/home?tab=following"));
+        assert!(is_x_home_address("x.com/home"));
+        assert!(!is_x_home_address("http://x.com/home"));
+        assert!(!is_x_home_address("https://x.com/home/other"));
+        assert!(!is_x_home_address("https://example.com/home"));
+        assert!(is_x_compose_post_address("https://x.com/compose/post"));
+        assert!(is_x_compose_post_address("x.com/compose/post"));
+        assert!(!is_x_compose_post_address("https://x.com/compose/tweet"));
+        assert!(!is_x_compose_post_address("http://x.com/compose/post"));
+        assert!(!is_x_home_address("https://evilx.com/home"));
+        assert!(!is_x_home_address("https://x.com.evil.test/home"));
+    }
+
+    #[test]
+    fn extracts_http_urls_without_accepting_host_substrings() {
+        assert_eq!(
+            extract_x_url("http://x.com/home"),
+            Some("http://x.com/home".into())
+        );
+        assert_eq!(
+            extract_x_url("https://x.com/home"),
+            Some("https://x.com/home".into())
+        );
+        assert_eq!(extract_x_url("x.com/home"), Some("x.com/home".into()));
+        assert_eq!(extract_x_url("evilx.com/home"), None);
+    }
 
     #[test]
     fn rejects_chat_navigation_label_as_reply_tooltip() {

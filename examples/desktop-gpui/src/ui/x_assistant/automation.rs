@@ -1,7 +1,9 @@
 use std::{fs, io::Write, path::PathBuf};
 
 pub(super) fn log_event(message: &str) {
-    let path = PathBuf::from("data")
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("data")
         .join("x_assistant")
         .join("mouse-click.log");
     if let Some(parent) = path.parent() {
@@ -301,8 +303,11 @@ pub(super) mod native {
                 },
             },
         };
-        let sent = unsafe { SendInput(&[key(false), key(true)], size_of::<INPUT>() as i32) };
-        anyhow::ensure!(sent == 2, "发送 Escape 键失败，无法关闭回复弹窗");
+        let sent_down = unsafe { SendInput(&[key(false)], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent_down == 1, "按下 Escape 键失败，无法关闭回复弹窗");
+        thread::sleep(Duration::from_millis(100));
+        let sent_up = unsafe { SendInput(&[key(true)], size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent_up == 1, "释放 Escape 键失败，无法关闭回复弹窗");
         Ok(())
     }
 

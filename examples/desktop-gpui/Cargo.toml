@@ -20,6 +20,7 @@ icons = ["assets/app.ico"]
 anyhow = "1.0"
 binance_tools = { path = "../.." }
 evm-wallet = { path = "../../crates/evm-wallet" }
+ocr-rs = { path = "../../crates/ocr-rs" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png"] }
 
@@ -38,11 +39,4 @@ windows = { version = "0.61.3", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
-    "Foundation",
-    "Globalization",
-    "Graphics_Imaging",
-    "Media_Ocr",
-    "Storage",
-    "Storage_Streams",
-    "Win32_System_WinRT",
 ] }

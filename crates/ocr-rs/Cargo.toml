@@ -1,0 +1,15 @@
+[package]
+name = "ocr-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Chinese-capable local OCR crate backed by PP-OCRv6"
+
+[lib]
+name = "ocr_rs"
+
+[dependencies]
+anyhow = "1.0"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+ppocr-rs = { version = "0.8.4", features = ["fetch-models", "test-binaries"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
