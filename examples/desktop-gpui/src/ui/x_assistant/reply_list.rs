@@ -13,6 +13,7 @@ use binance_tools::db::x_assistant::XAssistantReplyRecord;
 
 pub(super) struct ReplyListPage {
     table: Entity<TableState<ReplyRecordsTableDelegate>>,
+    stats: binance_tools::db::x_assistant::XAssistantReplyStats,
     error: Option<String>,
 }
 
@@ -110,13 +111,21 @@ impl ReplyListPage {
                 .col_movable(false)
                 .row_selectable(true)
         });
-        let mut page = Self { table, error: None };
+        let mut page = Self {
+            table,
+            stats: Default::default(),
+            error: None,
+        };
         page.reload(cx);
         page
     }
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.error = None;
+        match binance_tools::db::x_assistant::reply_stats_blocking() {
+            Ok(stats) => self.stats = stats,
+            Err(error) => self.error = Some(format!("读取回复统计失败：{error:#}")),
+        }
         match binance_tools::db::x_assistant::list_reply_records_blocking() {
             Ok(records) => self.table.update(cx, |table, cx| {
                 table.delegate_mut().set_records(records);
@@ -175,6 +184,62 @@ impl Render for ReplyListPage {
                                     .small()
                                     .label("刷新")
                                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(palette::border(theme))
+                            .bg(palette::surface(theme))
+                            .px_3()
+                            .py_2()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(palette::muted(theme))
+                                            .child("近 1 小时"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .font_semibold()
+                                            .child(format!("{} 条", self.stats.last_hour)),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(palette::border(theme))
+                            .bg(palette::surface(theme))
+                            .px_3()
+                            .py_2()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(palette::muted(theme))
+                                            .child("今日"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .font_semibold()
+                                            .child(format!("{} 条", self.stats.today)),
+                                    ),
                             ),
                     ),
             )

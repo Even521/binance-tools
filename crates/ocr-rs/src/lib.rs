@@ -263,6 +263,9 @@ fn find_x_url_start(normalized: &str) -> Option<usize> {
         .collect::<Vec<_>>();
     for (index, _) in normalized.match_indices("x.com/") {
         let valid_boundary = index == 0
+            || index == 1
+                && normalized.as_bytes()[0].is_ascii_digit()
+                && normalized.as_bytes().get(1) == Some(&b'x')
             || !normalized.as_bytes()[index - 1].is_ascii_alphanumeric()
                 && !matches!(normalized.as_bytes()[index - 1], b'.' | b'-');
         if valid_boundary {

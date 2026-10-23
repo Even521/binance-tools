@@ -167,6 +167,22 @@ pub(super) fn scroll_to_next_post(cancel: &AtomicBool, reason: &str) -> anyhow::
 
 pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
     check_cancel(cancel)?;
+    if reason.contains("报错") {
+        automation::native::activate_browser()?;
+        let dir = PathBuf::from("data")
+            .join("x_assistant")
+            .join("screenshots");
+        fs::create_dir_all(&dir)?;
+        let id = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
+        let mut screenshots = Vec::new();
+        let check_shot =
+            capture_desktop(&dir, &id, "full-auto-error-state-check", &mut screenshots)?;
+        let current_url = ocr::recognize_current_url(&check_shot.png)?;
+        anyhow::ensure!(
+            current_url.as_deref().is_some_and(ocr::is_x_home_address),
+            "错误恢复前未能确认页面已回到 x.com/home（当前地址：{current_url:?}）；可能仍有回复或草稿弹窗，停止自动刷新/滚动，请先手动关闭弹窗"
+        );
+    }
     let seed = next_random_u64();
     if seed % 2 == 0 {
         automation::native::activate_browser()?;
@@ -255,7 +271,7 @@ fn run_visual_reply_inner(
     automation::log_event("========== X 辅助回复流程开始 ==========");
     wait_cancel(cancel, Duration::from_secs(5))?;
     native::activate_browser()?;
-    wait_cancel(cancel, Duration::from_millis(800))?;
+    wait_cancel(cancel, Duration::from_millis(250))?;
 
     let dir = PathBuf::from("data")
         .join("x_assistant")
@@ -707,9 +723,9 @@ fn run_visual_reply_inner(
     );
     native::move_cursor_to_reply(input_point.x, input_point.y)?;
     native::click_at_client_position(input_point.x, input_point.y)?;
-    thread::sleep(Duration::from_millis(250));
+    thread::sleep(Duration::from_millis(100));
     native::type_text(&reply_text)?;
-    thread::sleep(Duration::from_millis(400));
+    thread::sleep(Duration::from_millis(200));
 
     automation::log_event("阶段 2/3：回复已输入，截图核对后识别带‘回复’文字的提交按钮。");
     let typed = capture(&dir, &id, "03-typed", &mut screenshots)?;

@@ -94,6 +94,9 @@ fn extract_x_url(text: &str) -> Option<String> {
         .collect::<Vec<_>>();
     for (index, _) in normalized.match_indices("x.com/") {
         let valid_boundary = index == 0
+            || index == 1
+                && normalized.as_bytes()[0].is_ascii_digit()
+                && normalized.as_bytes().get(1) == Some(&b'x')
             || !normalized.as_bytes()[index - 1].is_ascii_alphanumeric()
                 && !matches!(normalized.as_bytes()[index - 1], b'.' | b'-');
         if valid_boundary {
@@ -142,6 +145,12 @@ pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalP
     let source = image::open(path)?.to_rgb8();
     with_cached_ocr_engine(|engine| {
         let (result, page_json) = engine.recognize_path_with_action_coordinates(path)?;
+        anyhow::ensure!(
+            page_json["current_url"]
+                .as_str()
+                .is_some_and(is_x_home_address),
+            "当前地址不是 x.com/home，可能已有回复/发帖弹窗遮挡时间线；停止帖子解析"
+        );
         super::automation::log_event(&format!(
             "阶段 1/3：截图后当前地址与时间线 PP-OCR JSON：{}",
             serde_json::to_string(&serde_json::json!({
@@ -703,7 +712,10 @@ pub(super) fn locate_reply_submit_button(
                 && center_y <= crop.height as f32 * 0.90
         })
         .collect::<Vec<_>>();
-    if matching_lines.is_empty() {
+    let normalized_document = normalize_text(&doc.text);
+    let reply_text_verified =
+        !matching_lines.is_empty() || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
+    if !reply_text_verified {
         let candidates = doc
             .lines
             .iter()
@@ -730,6 +742,32 @@ pub(super) fn locate_reply_submit_button(
             "阶段 2/3：提交前 PP-OCR 未匹配回复文本‘{reply_text}’。输入区域识别行：{candidates}"
         ));
         return Ok(None);
+    }
+
+    let ocr_button = doc
+        .lines
+        .iter()
+        .filter_map(|line| {
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            (normalize_text(&line.text) == normalize_text("回复")
+                && center_x >= crop.width as f32 * 0.60
+                && center_x <= crop.width as f32 * 0.98
+                && center_y >= crop.height as f32 * 0.55
+                && center_y <= crop.height as f32 * 0.98)
+                .then_some((center_x, center_y))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1));
+    if let Some((x, y)) = ocr_button {
+        let point = (
+            x.round() as i32 + crop.left as i32,
+            y.round() as i32 + crop.top as i32,
+        );
+        super::automation::log_event(&format!(
+            "阶段 2/3：弹窗 OCR 直接识别到右下方‘回复’提交按钮，坐标=({}, {})。",
+            point.0, point.1
+        ));
+        return Ok(Some(point));
     }
 
     let crop_rgb = image::DynamicImage::ImageRgba8(crop.image.clone()).to_rgb8();
@@ -1058,6 +1096,10 @@ mod tests {
             Some("https://x.com/home".into())
         );
         assert_eq!(extract_x_url("x.com/home"), Some("x.com/home".into()));
+        assert_eq!(
+            extract_x_url("6x.com/compose/post"),
+            Some("x.com/compose/post".into())
+        );
         assert_eq!(extract_x_url("evilx.com/home"), None);
     }
 

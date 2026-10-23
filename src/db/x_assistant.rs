@@ -1,6 +1,12 @@
 use anyhow::ensure;
 use rusqlite::{Connection, params};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct XAssistantReplyStats {
+    pub last_hour: u64,
+    pub today: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct XAssistantReplyRecord {
     pub run_id: String,
@@ -11,6 +17,28 @@ pub struct XAssistantReplyRecord {
     pub reply_text: String,
     pub completed_last_step: bool,
     pub created_at: String,
+}
+
+pub fn reply_stats_blocking() -> anyhow::Result<XAssistantReplyStats> {
+    let connection = super::open_default_connection()?;
+    connection
+        .query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN completed_at >= datetime('now', '-1 hour')
+                          AND completed_at <= datetime('now') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN date(completed_at, 'localtime') = date('now', 'localtime')
+                         THEN 1 ELSE 0 END), 0)
+             FROM x_assistant_reply_records
+             WHERE completed_last_step = 1 AND completed_at IS NOT NULL",
+            [],
+            |row| {
+                Ok(XAssistantReplyStats {
+                    last_hour: row.get::<_, i64>(0)?.max(0) as u64,
+                    today: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            },
+        )
+        .map_err(Into::into)
 }
 
 pub fn list_reply_records_blocking() -> anyhow::Result<Vec<XAssistantReplyRecord>> {

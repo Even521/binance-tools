@@ -13,6 +13,10 @@ fn extracts_http_urls_without_accepting_host_substrings() {
         Some("https://x.com/home".into())
     );
     assert_eq!(extract_x_url("x.com/home"), Some("x.com/home".into()));
+    assert_eq!(
+        extract_x_url("6x.com/compose/post"),
+        Some("x.com/compose/post".into())
+    );
     assert_eq!(extract_x_url("evilx.com/home"), None);
 }
 

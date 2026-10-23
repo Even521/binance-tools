@@ -179,7 +179,7 @@ pub(super) mod native {
         value ^= value << 13;
         value ^= value >> 7;
         value ^= value << 17;
-        200 + value % 801
+        60 + value % 141
     }
 
     pub fn type_text(text: &str) -> anyhow::Result<()> {
