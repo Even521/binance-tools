@@ -1,0 +1,29 @@
+ppocr-rs
+Copyright 2026 Dario Finardi
+
+This product includes software developed as a derivative work of the
+following projects, all licensed under the Apache License, Version 2.0.
+Their copyright notices are preserved in the headers of the vendored
+source files.
+
+  - mg-chao/paddle-ocr-rs
+    https://github.com/mg-chao/paddle-ocr-rs
+    Original Rust port of the PaddleOCR inference pipeline.
+
+  - meibel-ai/paddle-ocr-rs (branch ort-rc11)
+    https://github.com/meibel-ai/paddle-ocr-rs
+    Intermediate fork this crate derives from.
+
+Vendored, derived from the projects above:
+  src/db_net.rs, src/crnn_net.rs, src/angle_net.rs,
+  src/ocr_utils.rs, src/scale_param.rs
+
+Original to this crate:
+  src/layout.rs, src/cell_detection.rs, src/table_classifier.rs,
+  src/table_structure.rs, src/doc_unwarp.rs, src/formula_rec.rs,
+  src/model_hub.rs, src/compat.rs
+
+The ONNX model weights are NOT distributed with this crate. They are
+downloaded at runtime from their respective publishers (PaddlePaddle on
+HuggingFace, kreuzberg-dev/paddle-to-onnx, jingsongliujing/OnnxOCR) and
+remain subject to their own licences — see "Model sources" in README.md.

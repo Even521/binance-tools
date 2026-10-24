@@ -1,0 +1,123 @@
+[package]
+name        = "ppocr-rs"
+version     = "0.8.5"
+edition     = "2021"
+description = "Pure-Rust document OCR pipeline on ort 2.0.0-rc.13: PP-OCRv6 (50 languages) + PP-DocLayoutV3 layout analysis + SLANet_plus table structure + RT-DETR-L cell detection + PP-LCNet page orientation. Fork of meibel-ai/paddle-ocr-rs (Apache-2.0). Requires ONNX Runtime 1.28."
+license     = "Apache-2.0"
+authors     = ["Dario Finardi <df@dariofinardi.it>"]
+repository  = "https://github.com/dariofinardi/df-ppocr-rs"
+keywords    = ["ocr", "paddleocr", "onnx", "document", "layout"]
+categories  = ["computer-vision", "science"]
+exclude     = ["docs/", "tools/", "tests/", "ocr_test/", ".env", ".env.*"]
+
+# Crediti upstream:
+#   - meibel-ai/paddle-ocr-rs (branch ort-rc11) — Apache-2.0
+#   - mg-chao/paddle-ocr-rs (upstream originale) — Apache-2.0
+# Codice del db_net/crnn_net/cls_net/ocr_utils/scale_param porta avanti la
+# Apache-2.0 e l'attribuzione nei header dei file vendorati.
+
+[dependencies]
+# ─── ONNX Runtime — pinned 2.0.0-rc.13 ──────────────────────────────────────
+# Pinnato esatto (=) e non con un range: fra le rc l'API cambia in modo
+# incompatibile, quindi salire deve essere una scelta e non l'effetto
+# collaterale di un `cargo update`. Il tipo di ritorno di
+# `try_extract_tensor` è cambiato di nuovo in rc.13 (vedi src/compat.rs).
+# Richiede ONNX Runtime 1.28: con una DLL più vecchia si ottiene
+# `BadVersion` al caricamento del primo modello.
+# QNN escluso: bench su Snapdragon X Elite mostra che PP-OCRv6 non
+# beneficia di Hexagon NPU (postprocessing CPU-bound + shape dinamiche).
+ort        = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray"], optional = true }  # EP nelle sezioni [target.*] in fondo
+ort-sys    = { version = "=2.0.0-rc.13", optional = true }
+
+# ─── Numerica & immagini ───
+# ndarray 0.17 — la versione su cui si appoggia ort rc.13. Va tenuta
+# allineata: se in albero finiscono due ndarray diverse, i tensor non
+# implementano IntoValueTensor e l'errore che si legge non parla di
+# versioni. Verificare con `cargo tree -i ndarray`.
+ndarray    = { version = "0.17", optional = true }
+image      = { version = "0.25", optional = true }
+imageproc  = { version = "0.25", optional = true }
+
+# ─── Polygon offset (Vatti unclip) — pure Rust + cc per Clipper C++ ───
+# Come paddle-ocr-rs upstream, niente system OpenCV.
+geo-types     = { version = "0.7", optional = true }
+geo-clipper   = { version = "0.9", optional = true }
+clipper-sys   = { version = "0.8", optional = true }
+
+# ─── Errori ───
+thiserror  = { version = "2", optional = true }
+
+# ─── Helper ───
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+
+# ─── Download modelli (feature-gated) ───
+# ureq 2.x: HTTP sync senza tokio. TLS via rustls (no OpenSSL).
+# Usato solo da `model_hub` per scaricare ONNX da HuggingFace.
+ureq = { version = "2", features = ["tls"], optional = true }
+
+[build-dependencies]
+cc = "1"
+
+[features]
+default = ["native"]
+# Backend nativo: ort + image + FFI. Senza, resta il solo nucleo puro
+# (src/core/), che e' quello che compila su wasm32-unknown-unknown.
+native = [
+    "dep:ort", "dep:ort-sys", "dep:ndarray", "dep:image", "dep:imageproc",
+    "dep:geo-types", "dep:geo-clipper", "dep:clipper-sys",
+    "dep:thiserror", "dep:serde_json",
+]
+# Abilita ort/download-binaries — solo per test crate-side che linkano il
+# binario di test (cargo test --lib --features test-binaries). Edge non
+# usa questa feature: ha già il proprio onnxruntime.dll bundleato.
+test-binaries = ["ort/download-binaries", "ort/tls-rustls"]
+# Abilita ort/load-dynamic per gli example che usano dlopen al runtime
+# invece del link statico. Necessario su ARM64 Windows dove pyke.io
+# fornisce solo binari x64 per la rc pinnata — load-dynamic carica la
+# `onnxruntime.dll` di Edge (ARM64-native, bundled in
+# Pseudo-Edge/src-tauri/target/debug/binaries/). Set ORT_DYLIB_PATH
+# alla DLL prima del run.
+example-dynamic = ["ort/load-dynamic"]
+# Abilita download automatico dei modelli ONNX da HuggingFace.
+# Aggiunge dipendenza `ureq` (HTTP sync, ~200 kB). Non incluso di default
+# per tenere il grafo di dipendenze minimale quando i modelli sono già
+# disponibili localmente (es. deployment Edge).
+fetch-models = ["dep:ureq"]
+
+[[bin]]
+name = "ppocr-cli"
+path = "src/bin/ppocr_cli.rs"
+required-features = ["native"]
+
+[dev-dependencies]
+# Per esempi e test
+anyhow = "1"
+# Serve ai test di round-trip del nucleo puro, che girano anche senza la
+# feature `native`: come dipendenza normale è opzionale (la usa
+# formula_rec), qui deve esserci sempre.
+serde_json = "1"
+# Multi-page TIFF decoder per gli example che usano fixture TIFF reali.
+# `image` crate (TiffDecoder) espone solo single-frame; `tiff` direct
+# permette di iterare su tutte le pagine via `Decoder::next_image()`.
+tiff = "0.10"
+
+# ─── Profilo ottimizzato ───
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# ─── Execution provider per piattaforma (ort rc.13) ──────────────────────────
+# Da rc.13 il download dei binari prebuilt richiede una corrispondenza ESATTA
+# del set di feature: per ogni target esiste una sola combinazione pubblicata
+# (ARM64 Windows → solo `directml`). Dichiararli qui evita il fallimento
+# "no builds available that satisfy the requested feature set".
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["directml"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["coreml"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["cuda"], optional = true }
