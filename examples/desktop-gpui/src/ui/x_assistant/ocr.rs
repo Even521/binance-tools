@@ -129,7 +129,7 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
     let left = image.width() * 28 / 100;
     let right = image.width() * 72 / 100;
     let top = image.height() * 10 / 100;
-    let bottom = image.height() * 72 / 100;
+    let bottom = image.height() * 82 / 100;
     anyhow::ensure!(right > left && bottom > top, "回复弹窗 OCR 裁剪区域无效");
     let crop_image = crop_imm(&image, left, top, right - left, bottom - top).to_image();
     Ok(ComposeDialogCrop {
@@ -142,6 +142,13 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
 }
 
 pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalPostIdentification> {
+    identify_post_and_action_bar_at(path, 0)
+}
+
+pub(super) fn identify_post_and_action_bar_at(
+    path: &Path,
+    post_index: usize,
+) -> anyhow::Result<LocalPostIdentification> {
     let source = image::open(path)?.to_rgb8();
     with_cached_ocr_engine(|engine| {
         let (result, page_json) = engine.recognize_path_with_action_coordinates(path)?;
@@ -159,11 +166,40 @@ pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalP
             }))?
         ));
         let parsed = parse_timeline(&result.text_blocks, &source);
-        let post = parsed
+        let complete_post_indices = parsed
             .timeline
             .posts
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到时间线帖子"))?;
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                let has_identity = candidate
+                    .author_name
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+                    && candidate
+                        .account
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    && candidate
+                        .timestamp
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty());
+                let has_text_and_action_row = !candidate.text.trim().is_empty()
+                    && (candidate.metrics.comments.is_some() || candidate.metrics.views.is_some());
+                (has_identity && has_text_and_action_row).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let selected_index = complete_post_indices
+            .get(post_index)
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "PP-OCR 未识别到第 {} 条完整时间线帖子（当前完整帖子数：{}）",
+                    post_index + 1,
+                    complete_post_indices.len()
+                )
+            })?;
+        let post = &parsed.timeline.posts[selected_index];
         let author_name = post
             .author_name
             .clone()
@@ -194,7 +230,7 @@ pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalP
         let next_header_y = parsed
             .timeline
             .posts
-            .get(1)
+            .get(post_index + 1)
             .and_then(|next_post| next_post.account.as_deref())
             .map(|next_account| next_account.trim_start_matches('@'))
             .and_then(|next_account| {
@@ -480,22 +516,54 @@ pub(super) fn recognize_save_draft_confirmation(path: &Path) -> anyhow::Result<b
 }
 
 pub(super) fn locate_discard_draft_button(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
-    let doc = recognize_document(path)?;
-    let has_save_confirmation = doc.lines.iter().any(|line| {
-        text_match_ratio(&normalize_text(&line.text), &normalize_text("保存帖子")) >= 0.75
-    });
-    if !has_save_confirmation {
-        return Ok(None);
-    }
+    use image::imageops::crop_imm;
 
-    Ok(doc.lines.iter().find_map(|line| {
-        (text_match_ratio(&normalize_text(&line.text), &normalize_text("放弃")) >= 0.75).then_some(
-            (
-                ((line.left + line.right) * 0.5 / doc.scale_x).round() as i32,
-                ((line.top + line.bottom) * 0.5 / doc.scale_y).round() as i32,
-            ),
-        )
-    }))
+    let screenshot = image::open(path)?.to_rgb8();
+    let crop_left = screenshot.width() * 30 / 100;
+    let crop_right = screenshot.width() * 70 / 100;
+    let crop_top = screenshot.height() * 32 / 100;
+    let crop_bottom = screenshot.height() * 76 / 100;
+    anyhow::ensure!(
+        crop_right > crop_left && crop_bottom > crop_top,
+        "草稿确认框 OCR 裁剪区域无效"
+    );
+    let crop = crop_imm(
+        &screenshot,
+        crop_left,
+        crop_top,
+        crop_right - crop_left,
+        crop_bottom - crop_top,
+    )
+    .to_image();
+    let crop = image::DynamicImage::ImageRgb8(crop);
+
+    for (scale_num, threshold) in [(2, Some(200)), (3, None)] {
+        let doc = recognize_document_image(&crop, scale_num, 1, threshold)?;
+        let save_prompt = doc.lines.iter().any(|line| {
+            text_match_ratio(&normalize_text(&line.text), &normalize_text("保存帖子")) >= 0.75
+        });
+        if !save_prompt {
+            continue;
+        }
+
+        let discard_button = doc.lines.iter().find_map(|line| {
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            (text_match_ratio(&normalize_text(&line.text), &normalize_text("放弃")) >= 0.75
+                && center_x >= (crop_right - crop_left) as f32 * 0.25
+                && center_x <= (crop_right - crop_left) as f32 * 0.75
+                && center_y >= (crop_bottom - crop_top) as f32 * 0.50
+                && center_y <= (crop_bottom - crop_top) as f32 * 0.95)
+                .then_some((
+                    (center_x + crop_left as f32).round() as i32,
+                    (center_y + crop_top as f32).round() as i32,
+                ))
+        });
+        if discard_button.is_some() {
+            return Ok(discard_button);
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn recognize_reload_confirmation(path: &Path) -> anyhow::Result<bool> {
@@ -510,13 +578,11 @@ pub(super) fn recognize_rate_limit(path: &Path) -> anyhow::Result<bool> {
 
 pub(super) fn recognize_retryable_send_error(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
-    let expected = normalize_text("出错了别担心让我们再试一次");
-    let normalized = normalize_text(&doc.text);
-    Ok(normalized.contains(&expected)
+    Ok(contains_retryable_send_error(&doc.text)
         || doc
             .lines
             .iter()
-            .any(|line| text_match_ratio(&normalize_text(&line.text), &expected) >= 0.86))
+            .any(|line| contains_retryable_send_error(&line.text)))
 }
 
 pub(super) fn verify_reply_tooltip(
@@ -901,6 +967,16 @@ fn contains_reload_confirmation(text: &str) -> bool {
         && normalized.contains(&normalize_text("系统可能不会保存你所做的更改"))
 }
 
+fn contains_retryable_send_error(text: &str) -> bool {
+    let normalized = normalize_text(text);
+    [
+        "出错了别担心让我们再试一次",
+        "出错了请稍后再尝试发送你的帖子",
+    ]
+    .iter()
+    .any(|message| normalized.contains(&normalize_text(message)))
+}
+
 fn contains_sent_confirmation(text: &str) -> bool {
     let normalized = normalize_text(text).to_lowercase();
     if ["yourpostwassent", "yourreplywassent"]
@@ -1047,11 +1123,23 @@ fn is_dark_pixel(image: &image::RgbImage, x: usize, y: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_rate_limit, contains_reload_confirmation, contains_sent_confirmation,
-        extract_x_url, identify_post_and_action_bar, is_x_compose_post_address, is_x_home_address,
+        contains_rate_limit, contains_reload_confirmation, contains_retryable_send_error,
+        contains_sent_confirmation, extract_x_url, identify_post_and_action_bar,
+        is_x_compose_post_address, is_x_home_address, locate_discard_draft_button,
         reply_tooltip_matches_target, text_match_ratio,
     };
     use std::{env, path::Path};
+
+    #[test]
+    fn locates_discard_button_in_configured_draft_confirmation() {
+        let Some(path) = env::var_os("OCR_DRAFT_TEST_IMAGE") else {
+            return;
+        };
+        let point = locate_discard_draft_button(Path::new(&path))
+            .expect("local OCR failed to inspect the draft confirmation");
+        assert!(point.is_some(), "OCR did not locate the discard button");
+        eprintln!("discard button point: {point:?}");
+    }
 
     #[test]
     fn identifies_configured_timeline_post_with_local_ocr() {
@@ -1145,6 +1233,17 @@ mod tests {
         assert!(contains_rate_limit("请求过于频繁，请稍后再试"));
         assert!(contains_rate_limit("Too many requests"));
         assert!(!contains_rate_limit("出错了，别担心，让我们再试一次"));
+    }
+
+    #[test]
+    fn recognizes_x_network_send_error_messages() {
+        assert!(contains_retryable_send_error(
+            "出错了，别担心，让我们再试一次。"
+        ));
+        assert!(contains_retryable_send_error(
+            "出错了！请稍后再尝试发送你的帖子。"
+        ));
+        assert!(!contains_retryable_send_error("你的回复已发送。"));
     }
 
     #[test]

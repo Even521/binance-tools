@@ -93,7 +93,8 @@ impl XAssistantPage {
         self.error = None;
         self.cancel_reply.store(false, Ordering::Relaxed);
         self.status = Some(if full_auto {
-            "全自动循环已启动；每轮后随机刷新或滚动，点击停止按钮可结束。".to_string()
+            "全自动循环已启动；每轮完成后随机距离滚动，异常时按安全流程恢复，点击停止可结束。"
+                .to_string()
         } else if hover_only {
             "5 秒后开始识别并移到回复按钮。AI 识图约需 15~30 秒，请切到 X 浏览器窗口。".to_string()
         } else {

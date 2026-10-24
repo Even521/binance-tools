@@ -4706,6 +4706,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "image",
+ "ort",
  "ppocr-rs",
  "serde",
  "serde_json",

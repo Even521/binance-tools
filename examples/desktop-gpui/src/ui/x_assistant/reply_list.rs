@@ -15,6 +15,7 @@ pub(super) struct ReplyListPage {
     table: Entity<TableState<ReplyRecordsTableDelegate>>,
     stats: binance_tools::db::x_assistant::XAssistantReplyStats,
     error: Option<String>,
+    confirm_prune: bool,
 }
 
 #[derive(Clone)]
@@ -115,6 +116,7 @@ impl ReplyListPage {
             table,
             stats: Default::default(),
             error: None,
+            confirm_prune: false,
         };
         page.reload(cx);
         page
@@ -122,6 +124,7 @@ impl ReplyListPage {
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.error = None;
+        self.confirm_prune = false;
         match binance_tools::db::x_assistant::reply_stats_blocking() {
             Ok(stats) => self.stats = stats,
             Err(error) => self.error = Some(format!("读取回复统计失败：{error:#}")),
@@ -135,6 +138,33 @@ impl ReplyListPage {
         }
         cx.notify();
     }
+}
+
+fn stat_tile(theme: &gpui_component::Theme, label: &str, value: u64) -> impl IntoElement {
+    div()
+        .flex_1()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(palette::border(theme))
+        .bg(palette::surface(theme))
+        .px_3()
+        .py_2()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(palette::muted(theme))
+                        .child(label.to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(18.))
+                        .font_semibold()
+                        .child(value.to_string()),
+                ),
+        )
 }
 
 impl Render for ReplyListPage {
@@ -179,68 +209,55 @@ impl Render for ReplyListPage {
                                     ),
                             )
                             .child(
-                                Button::new("x-assistant-reply-list-refresh")
-                                    .outline()
-                                    .small()
-                                    .label("刷新")
-                                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                            ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(palette::border(theme))
-                            .bg(palette::surface(theme))
-                            .px_3()
-                            .py_2()
-                            .child(
-                                v_flex()
-                                    .gap_1()
+                                h_flex()
+                                    .gap_2()
                                     .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(palette::muted(theme))
-                                            .child("近 1 小时"),
+                                        Button::new("x-assistant-reply-list-prune")
+                                            .outline()
+                                            .small()
+                                            .label(if self.confirm_prune {
+                                                "确认删除三天前数据"
+                                            } else {
+                                                "删除三天前数据"
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if !this.confirm_prune {
+                                                    this.confirm_prune = true;
+                                                    cx.notify();
+                                                    return;
+                                                }
+                                                match binance_tools::db::x_assistant::delete_reply_records_older_than_three_days_blocking() {
+                                                    Ok(_) => this.reload(cx),
+                                                    Err(error) => {
+                                                        this.confirm_prune = false;
+                                                        this.error = Some(format!("删除旧回复记录失败：{error:#}"));
+                                                    }
+                                                }
+                                                cx.notify();
+                                            })),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .font_semibold()
-                                            .child(format!("{} 条", self.stats.last_hour)),
+                                        Button::new("x-assistant-reply-list-refresh")
+                                            .outline()
+                                            .small()
+                                            .label("刷新")
+                                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                                     ),
                             ),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(palette::border(theme))
-                            .bg(palette::surface(theme))
-                            .px_3()
-                            .py_2()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(palette::muted(theme))
-                                            .child("今日"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .font_semibold()
-                                            .child(format!("{} 条", self.stats.today)),
-                                    ),
-                            ),
+                        h_flex()
+                            .gap_2()
+                            .child(stat_tile(theme, "近 1 小时总数", self.stats.last_hour_total))
+                            .child(stat_tile(theme, "成功", self.stats.last_hour_success))
+                            .child(stat_tile(theme, "失败", self.stats.last_hour_failed)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(stat_tile(theme, "今日总数", self.stats.today_total))
+                            .child(stat_tile(theme, "成功", self.stats.today_success))
+                            .child(stat_tile(theme, "失败", self.stats.today_failed)),
                     ),
             )
             .when_some(self.error.clone(), |parent, error| {

@@ -64,6 +64,113 @@ fn recognize_configured_compose_reply_page() {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn benchmark_cpu_vs_directml_on_configured_image() {
+    use std::time::{Duration, Instant};
+
+    let Some(image_path) = env::var_os("OCR_TEST_IMAGE") else {
+        eprintln!("skipped: set OCR_TEST_IMAGE to a screenshot for the CPU/GPU benchmark");
+        return;
+    };
+    let image_path = PathBuf::from(image_path)
+        .canonicalize()
+        .expect("benchmark image path does not exist");
+    const ITERATIONS: usize = 5;
+
+    let cpu_init_started = Instant::now();
+    let mut cpu = OcrEngine::new().expect("failed to initialize CPU PP-OCRv6 Tiny");
+    let cpu_init = cpu_init_started.elapsed();
+    let cpu_warmup = cpu
+        .recognize_path_detailed(&image_path)
+        .expect("CPU OCR warmup failed");
+    assert!(
+        !cpu_warmup.text_blocks.is_empty(),
+        "CPU OCR returned no text"
+    );
+    let cpu_text = cpu_warmup
+        .text_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>();
+    let mut cpu_times = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let started = Instant::now();
+        let result = cpu
+            .recognize_path_detailed(&image_path)
+            .expect("CPU OCR iteration failed");
+        cpu_times.push(started.elapsed());
+        assert!(!result.text_blocks.is_empty(), "CPU OCR returned no text");
+    }
+    let average = |times: &[Duration]| {
+        Duration::from_secs_f64(
+            times.iter().map(Duration::as_secs_f64).sum::<f64>() / times.len() as f64,
+        )
+    };
+    let cpu_average = average(&cpu_times);
+    eprintln!(
+        "CPU OCR benchmark image={} warmup=1 iterations={} init={:?} times={:?} avg={:?}",
+        image_path.display(),
+        ITERATIONS,
+        cpu_init,
+        cpu_times,
+        cpu_average
+    );
+
+    let gpu_init_started = Instant::now();
+    let mut directml = match OcrEngine::new_directml() {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("DirectML initialization failed: {error:#}");
+            return;
+        }
+    };
+    let gpu_init = gpu_init_started.elapsed();
+    let gpu_warmup = match directml.recognize_path_detailed(&image_path) {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("DirectML OCR warmup failed after {gpu_init:?} initialization: {error:#}");
+            return;
+        }
+    };
+    assert!(
+        !gpu_warmup.text_blocks.is_empty(),
+        "DirectML OCR returned no text"
+    );
+    let gpu_text = gpu_warmup
+        .text_blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>();
+    let mut gpu_times = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let started = Instant::now();
+        let result = directml
+            .recognize_path_detailed(&image_path)
+            .expect("DirectML OCR iteration failed");
+        gpu_times.push(started.elapsed());
+        assert!(
+            !result.text_blocks.is_empty(),
+            "DirectML OCR returned no text"
+        );
+    }
+
+    let gpu_average = average(&gpu_times);
+    eprintln!(
+        "OCR benchmark image={} iterations={} cpu_init={:?} directml_init={:?} cpu_times={:?} directml_times={:?} cpu_avg={:?} directml_avg={:?} speedup={:.2}x text_equal={}",
+        image_path.display(),
+        ITERATIONS,
+        cpu_init,
+        gpu_init,
+        cpu_times,
+        gpu_times,
+        cpu_average,
+        gpu_average,
+        cpu_average.as_secs_f64() / gpu_average.as_secs_f64(),
+        cpu_text == gpu_text,
+    );
+}
+
 #[test]
 fn recognize_configured_image_and_print_result() {
     let image_path = if let Some(image_path) = env::var_os("OCR_TEST_IMAGE") {

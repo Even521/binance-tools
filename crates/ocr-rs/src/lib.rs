@@ -31,7 +31,26 @@ impl OcrEngine {
 
         let mut engine = OcrLite::new();
         engine.init_models_no_angle(&detection_model, &recognition_model, &dictionary, 4)?;
+        Ok(Self { engine })
+    }
 
+    /// Loads PP-OCRv6 Tiny and uses Windows DirectML for GPU inference.
+    #[cfg(target_os = "windows")]
+    pub fn new_directml() -> Result<Self> {
+        let model_hub = ModelHub::with_default_cache()?;
+        let models = model_hub.ensure(PpOcrVersion::V6Tiny)?;
+        let detection_model = models.det_onnx.to_string_lossy();
+        let recognition_model = models.rec_onnx.to_string_lossy();
+        let dictionary = models.dict_txt.to_string_lossy();
+
+        let mut engine = OcrLite::new();
+        engine.init_models_no_angle_with_builder(
+            &detection_model,
+            &recognition_model,
+            &dictionary,
+            4,
+            directml_session_builder,
+        )?;
         Ok(Self { engine })
     }
 
@@ -136,7 +155,7 @@ impl OcrEngine {
         let dialog_left = width * 28 / 100;
         let dialog_right = width * 72 / 100;
         let dialog_top = height * 10 / 100;
-        let dialog_bottom = height * 72 / 100;
+        let dialog_bottom = height * 82 / 100;
         anyhow::ensure!(
             dialog_right > dialog_left && dialog_bottom > dialog_top,
             "reply composer crop is invalid"
@@ -254,6 +273,16 @@ impl OcrEngine {
         let result = self.recognize_image_detailed(&image)?;
         Ok(join_text_blocks(&result))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn directml_session_builder(
+    builder: ort::session::builder::SessionBuilder,
+) -> std::result::Result<ort::session::builder::SessionBuilder, ort::Error> {
+    let builder = builder
+        .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Disable)?
+        .with_memory_pattern(false)?;
+    Ok(builder.with_execution_providers([ort::ep::DirectML::default().build()])?)
 }
 
 fn find_x_url_start(normalized: &str) -> Option<usize> {

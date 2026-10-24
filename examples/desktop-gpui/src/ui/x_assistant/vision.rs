@@ -162,7 +162,7 @@ struct Shot {
 }
 
 pub(super) fn scroll_to_next_post(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    scroll_down_for_random_duration(cancel, 3, 10, reason)
+    scroll_down_in_small_steps(cancel, reason)
 }
 
 pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
@@ -177,10 +177,42 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
         let mut screenshots = Vec::new();
         let check_shot =
             capture_desktop(&dir, &id, "full-auto-error-state-check", &mut screenshots)?;
-        let current_url = ocr::recognize_current_url(&check_shot.png)?;
+        let mut current_url = ocr::recognize_current_url(&check_shot.png)?;
+        if current_url
+            .as_deref()
+            .is_some_and(ocr::is_x_compose_post_address)
+        {
+            automation::log_event(
+                "全自动恢复：发现回复弹窗仍打开；不重新发送，尝试按 Escape 关闭并核验页面。",
+            );
+            native::press_escape()?;
+            wait_cancel(cancel, Duration::from_millis(900))?;
+            let after_escape = capture_desktop(
+                &dir,
+                &id,
+                "full-auto-error-state-after-escape",
+                &mut screenshots,
+            )?;
+            if let Some((discard_x, discard_y)) =
+                ocr::locate_discard_draft_button(&after_escape.png)?
+            {
+                automation::log_event("全自动恢复：发现草稿确认框，点击‘放弃’以关闭未发送回复。");
+                native::click_at_client_position(discard_x, discard_y)?;
+                wait_cancel(cancel, Duration::from_millis(700))?;
+                let after_discard = capture_desktop(
+                    &dir,
+                    &id,
+                    "full-auto-error-state-after-discard",
+                    &mut screenshots,
+                )?;
+                current_url = ocr::recognize_current_url(&after_discard.png)?;
+            } else {
+                current_url = ocr::recognize_current_url(&after_escape.png)?;
+            }
+        }
         anyhow::ensure!(
             current_url.as_deref().is_some_and(ocr::is_x_home_address),
-            "错误恢复前未能确认页面已回到 x.com/home（当前地址：{current_url:?}）；可能仍有回复或草稿弹窗，停止自动刷新/滚动，请先手动关闭弹窗"
+            "错误恢复前未能确认页面已回到 x.com/home（当前地址：{current_url:?}）；未进行刷新或滚动，请手动检查并关闭回复弹窗"
         );
     }
     let seed = next_random_u64();
@@ -223,8 +255,49 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
         automation::log_event("全自动恢复：F5 刷新检查完成。");
         check_cancel(cancel)
     } else {
-        scroll_down_for_random_duration(cancel, 3, 10, reason)
+        scroll_down_in_small_steps(cancel, reason)
     }
+}
+
+fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
+    scroll_down_random_steps(cancel, reason, 4, 10)
+}
+
+pub(super) fn scroll_down_to_complete_post(
+    cancel: &AtomicBool,
+    reason: &str,
+) -> anyhow::Result<()> {
+    scroll_down_random_steps(cancel, reason, 1, 3)
+}
+
+fn scroll_down_random_steps(
+    cancel: &AtomicBool,
+    reason: &str,
+    min_steps: usize,
+    max_steps: usize,
+) -> anyhow::Result<()> {
+    let scroll_steps = min_steps + (next_random_u64() as usize % (max_steps - min_steps + 1));
+    automation::native::activate_browser()?;
+    automation::log_event(&format!(
+        "全自动准备：{reason}；本次滚动 {scroll_steps} 格，步间节奏随机。"
+    ));
+    for step in 0..scroll_steps {
+        check_cancel(cancel)?;
+        automation::native::scroll_down_once()?;
+        if step + 1 < scroll_steps {
+            let pause_ms = 160 + next_random_u64() % 541;
+            wait_cancel(cancel, Duration::from_millis(pause_ms))?;
+            if next_random_u64() % 4 == 0 {
+                wait_cancel(cancel, Duration::from_millis(350 + next_random_u64() % 651))?;
+            }
+        }
+    }
+    let settle_ms = 350 + next_random_u64() % 651;
+    wait_cancel(cancel, Duration::from_millis(settle_ms))?;
+    automation::log_event(&format!(
+        "全自动准备：随机小步滚动完成（{scroll_steps} 格，停稳 {settle_ms} ms），等待下一轮完整帖子识别。"
+    ));
+    check_cancel(cancel)
 }
 
 fn scroll_down_for_random_duration(
@@ -326,7 +399,31 @@ fn run_visual_reply_inner(
             ),
         });
     }
-    let post = identify_post_for_mode(&options, &feed, cancel)?;
+    let mut post = if options.stage2_ocr {
+        const MAX_INCOMPLETE_POST_RETRIES: usize = 2;
+        let mut retry = 0;
+        loop {
+            match identify_post_for_mode(&options, &feed, cancel) {
+                Ok(post) => break post,
+                Err(error)
+                    if retry < MAX_INCOMPLETE_POST_RETRIES && is_incomplete_post_error(&error) =>
+                {
+                    retry += 1;
+                    automation::log_event(&format!(
+                        "阶段 1/3：第 {} 次 OCR 未获得完整帖子（{error:#}）；短距离补滚 1–3 格后重新截图识别（最多重试 {MAX_INCOMPLETE_POST_RETRIES} 次）。",
+                        retry
+                    ));
+                    scroll_down_to_complete_post(cancel, "当前画面没有完整可识别的帖子")?;
+                    move_cursor_to_safe_blank_area(feed.width, feed.height)?;
+                    let stage = format!("01-complete-post-retry-{retry}");
+                    feed = capture(&dir, &id, &stage, &mut screenshots)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    } else {
+        identify_post_for_mode(&options, &feed, cancel)?
+    };
     let mut post_text = post.post_text.trim().to_string();
     let mut author_name = post.author_name.trim().to_string();
     let mut account_handle = post.account_handle.trim().to_string();
@@ -343,6 +440,70 @@ fn run_visual_reply_inner(
             "发布时间未识别；跳过当前帖子并滚动后重新截图",
         );
     }
+    let first_is_duplicate =
+        binance_tools::db::x_assistant::replied_to_account_within_day_blocking(&account_handle)?;
+    if first_is_duplicate {
+        automation::log_event(&format!(
+            "首条可见帖子账号 {} 过去 24 小时已回复；尝试识别同一截图中的第二条完整帖子。",
+            account_handle
+        ));
+        if options.stage2_ocr {
+            match ocr::identify_post_and_action_bar_at(&feed.png, 1) {
+                Ok(second_post) => {
+                    let second_account = second_post.account_handle.trim().to_string();
+                    if !binance_tools::db::x_assistant::replied_to_account_within_day_blocking(
+                        &second_account,
+                    )? {
+                        post = decision_from_local_post(second_post);
+                        post_text = post.post_text.trim().to_string();
+                        author_name = post.author_name.trim().to_string();
+                        account_handle = post.account_handle.trim().to_string();
+                        posted_at = post.posted_at.trim().to_string();
+                        automation::log_event(&format!(
+                            "已跳过已回复账号，改选第二条完整帖子：作者={}，账号={}，时间={}。",
+                            author_name, account_handle, posted_at
+                        ));
+                    } else {
+                        automation::log_event(&format!(
+                            "第二条完整帖子账号 {} 过去 24 小时也已回复。",
+                            second_account
+                        ));
+                        return Ok(duplicate_post_result(
+                            screenshots,
+                            author_name,
+                            account_handle,
+                            posted_at,
+                            post_text,
+                            "当前截图中的前两条完整帖子账号均已回复，已跳过。",
+                        ));
+                    }
+                }
+                Err(error) => {
+                    automation::log_event(&format!(
+                        "未能安全识别第二条完整帖子，保持跳过行为：{error:#}"
+                    ));
+                    return Ok(duplicate_post_result(
+                        screenshots,
+                        author_name,
+                        account_handle,
+                        posted_at,
+                        post_text,
+                        "首条可见帖子已回复，但第二条帖子未能安全识别；已跳过当前截图。",
+                    ));
+                }
+            }
+        } else {
+            return Ok(duplicate_post_result(
+                screenshots,
+                author_name,
+                account_handle,
+                posted_at,
+                post_text,
+                "首条可见帖子账号过去 24 小时已回复；视觉 AI 模式不自动切换到第二条帖子。",
+            ));
+        }
+    }
+
     let mut reply_button = match validate_or_refind_action_targets(&options, &feed, &post, cancel) {
         Ok(point) => point,
         Err(error) => {
@@ -524,24 +685,7 @@ fn run_visual_reply_inner(
         );
     }
 
-    if binance_tools::db::x_assistant::replied_to_account_within_day_blocking(&account_handle)? {
-        automation::log_event(&format!(
-            "过去 24 小时已回复过该用户（账号 {}），跳过本次回复流程。",
-            account_handle
-        ));
-        return Ok(VisionReplyResult {
-            screenshots,
-            author_name,
-            account_handle,
-            posted_at,
-            post_text,
-            reply_text: String::new(),
-            completed: false,
-            skipped_duplicate: true,
-            summary: "过去 24 小时已回复过该用户，已跳过。".to_string(),
-        });
-    }
-    automation::log_event("过去 24 小时没有该用户的已完成回复记录，继续回复流程。");
+    automation::log_event("当前选中账号过去 24 小时没有已完成回复记录，继续回复流程。");
     let address_check = capture(&dir, &id, "01-before-reply-click", &mut screenshots)?;
     anyhow::ensure!(
         target_region_unchanged(&feed, &address_check, &reply_button, "回复按钮")?,
@@ -991,11 +1135,8 @@ fn run_visual_reply_inner(
             automation::log_event(
                 "阶段 3/3：唯一一次重试后仍检测到发送错误；按要求放弃并发送 Escape 关闭回复弹窗。",
             );
-            let close_result = native::press_escape();
-            if let Err(error) = close_result {
-                automation::log_event(&format!("关闭回复弹窗失败：{error:#}"));
-            }
-            anyhow::bail!("发送重试后仍出现网络错误，已放弃并关闭回复弹窗");
+            close_reply_composer_after_send_error(&dir, &id, &mut screenshots, cancel)?;
+            anyhow::bail!("发送重试后仍出现网络错误，已放弃并确认关闭回复弹窗");
         }
     }
 
@@ -1037,6 +1178,61 @@ fn run_visual_reply_inner(
         skipped_duplicate: false,
         summary: "截图确认回复已发送。".to_string(),
     })
+}
+
+fn close_reply_composer_after_send_error(
+    dir: &Path,
+    id: &impl std::fmt::Display,
+    screenshots: &mut Vec<PathBuf>,
+    cancel: &AtomicBool,
+) -> anyhow::Result<()> {
+    for attempt in 0..2 {
+        native::press_escape()?;
+        wait_cancel(cancel, Duration::from_millis(700))?;
+        let shot = capture(
+            dir,
+            id,
+            &format!("05-network-error-close-{}", attempt + 1),
+            screenshots,
+        )?;
+
+        if let Some((discard_x, discard_y)) = ocr::locate_discard_draft_button(&shot.png)? {
+            automation::log_event(&format!(
+                "阶段 3/3：网络错误后识别到草稿确认框，点击‘放弃’关闭未发送回复 ({discard_x}, {discard_y})。"
+            ));
+            native::click_at_client_position(discard_x, discard_y)?;
+            wait_cancel(cancel, Duration::from_millis(700))?;
+            let after_discard = capture(
+                dir,
+                id,
+                &format!("05-network-error-discard-{}", attempt + 1),
+                screenshots,
+            )?;
+            if !ocr::reply_composer_is_open(&after_discard.png)? {
+                automation::log_event("阶段 3/3：草稿已放弃，确认回复窗口关闭。");
+                return Ok(());
+            }
+        } else if ocr::recognize_save_draft_confirmation(&shot.png)? {
+            anyhow::bail!(
+                "网络错误重试失败；发现草稿确认框但无法安全定位‘放弃’按钮，停止操作，请手动关闭回复页面"
+            );
+        } else if !ocr::reply_composer_is_open(&shot.png)? {
+            automation::log_event("阶段 3/3：确认网络错误后的回复窗口已关闭。");
+            return Ok(());
+        }
+
+        if attempt == 0 {
+            let dismiss_x = (shot.width as f32 * 0.23).round() as i32;
+            let dismiss_y = (shot.height as f32 * 0.50).round() as i32;
+            automation::log_event(
+                "阶段 3/3：Escape 后回复窗口仍打开；点击窗口外安全区域，再尝试关闭一次。",
+            );
+            native::click_at_client_position(dismiss_x, dismiss_y)?;
+            wait_cancel(cancel, Duration::from_millis(400))?;
+        }
+    }
+
+    anyhow::bail!("网络错误重试失败；两次关闭尝试后回复窗口仍未关闭，已停止自动操作")
 }
 
 fn identify_post_for_mode(
@@ -1259,6 +1455,74 @@ fn skip_post_and_scroll(
         skipped_duplicate: false,
         summary,
     })
+}
+
+pub(super) fn is_incomplete_post_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    [
+        "未识别到时间线帖子",
+        "未识别到帖子作者",
+        "未识别到帖子账号",
+        "未识别到帖子发布时间",
+        "帖子正文为空",
+        "未识别到回复数量或浏览数量",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
+}
+
+fn decision_from_local_post(post: ocr::LocalPostIdentification) -> VisionDecision {
+    VisionDecision {
+        ok: true,
+        reason: "本地 OCR 识别的第二条完整帖子".to_string(),
+        post_text: post.post_text,
+        author_name: post.author_name,
+        account_handle: post.account_handle,
+        posted_at: post.posted_at,
+        reply_text: String::new(),
+        point: None,
+        reply_point: Some(Point {
+            x: post.reply_point.0,
+            y: post.reply_point.1,
+        }),
+        repost_point: Some(Point {
+            x: post.repost_point.0,
+            y: post.repost_point.1,
+        }),
+        like_point: Some(Point {
+            x: post.like_point.0,
+            y: post.like_point.1,
+        }),
+        post_text_bottom_y: Some(post.post_text_bottom_y),
+        post_bottom_y: Some(post.post_bottom_y),
+        refresh_posts: false,
+        composer_open: false,
+        text_matches: false,
+        reply_field_matches: false,
+        poll_mode: false,
+        completed: false,
+    }
+}
+
+fn duplicate_post_result(
+    screenshots: Vec<PathBuf>,
+    author_name: String,
+    account_handle: String,
+    posted_at: String,
+    post_text: String,
+    summary: &str,
+) -> VisionReplyResult {
+    VisionReplyResult {
+        screenshots,
+        author_name,
+        account_handle,
+        posted_at,
+        post_text,
+        reply_text: String::new(),
+        completed: false,
+        skipped_duplicate: true,
+        summary: summary.to_string(),
+    }
 }
 
 fn capture_desktop(

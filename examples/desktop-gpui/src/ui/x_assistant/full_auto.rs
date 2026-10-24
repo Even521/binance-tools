@@ -93,9 +93,9 @@ pub fn run(options: VisionReplyOptions, cancel: &AtomicBool) -> anyhow::Result<V
                 }
                 last_result = Some(result);
 
-                // 每轮结束后随机 F5 刷新或滚动，再开始下一轮。
+                // 正常完成后只滚动查找下一帖，避免每轮 F5 和全桌面刷新检查的额外开销。
                 if let Err(error) =
-                    vision::randomized_recovery(cancel, "本轮处理结束，准备开始下一轮")
+                    vision::scroll_to_next_post(cancel, "本轮处理结束，向下查找下一条帖子")
                 {
                     if cancel.load(Ordering::Relaxed) {
                         return stopped_result(last_result, completed_count);
@@ -126,9 +126,12 @@ pub fn run(options: VisionReplyOptions, cancel: &AtomicBool) -> anyhow::Result<V
                 automation::log_event(&format!(
                     "全自动：本轮报错（连续失败 {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}）：{error:#}"
                 ));
-                if let Err(recovery_error) =
+                let recovery = if vision::is_incomplete_post_error(&error) {
+                    vision::scroll_down_to_complete_post(cancel, "帖子信息不完整，短距离补滚后重试")
+                } else {
                     vision::randomized_recovery(cancel, "本轮报错，尝试刷新或滚动后恢复")
-                {
+                };
+                if let Err(recovery_error) = recovery {
                     if cancel.load(Ordering::Relaxed) {
                         return stopped_result(last_result, completed_count);
                     }

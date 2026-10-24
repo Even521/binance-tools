@@ -3,8 +3,12 @@ use rusqlite::{Connection, params};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct XAssistantReplyStats {
-    pub last_hour: u64,
-    pub today: u64,
+    pub last_hour_total: u64,
+    pub last_hour_success: u64,
+    pub last_hour_failed: u64,
+    pub today_total: u64,
+    pub today_success: u64,
+    pub today_failed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -24,19 +28,42 @@ pub fn reply_stats_blocking() -> anyhow::Result<XAssistantReplyStats> {
     connection
         .query_row(
             "SELECT
-                COALESCE(SUM(CASE WHEN completed_at >= datetime('now', '-1 hour')
-                          AND completed_at <= datetime('now') THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN date(completed_at, 'localtime') = date('now', 'localtime')
-                         THEN 1 ELSE 0 END), 0)
-             FROM x_assistant_reply_records
-             WHERE completed_last_step = 1 AND completed_at IS NOT NULL",
+                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '-1 hour')
+                          AND created_at <= datetime('now') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '-1 hour')
+                          AND created_at <= datetime('now') AND completed_last_step = 1
+                          THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN date(created_at, 'localtime') = date('now', 'localtime')
+                         THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN date(created_at, 'localtime') = date('now', 'localtime')
+                          AND completed_last_step = 1 THEN 1 ELSE 0 END), 0)
+             FROM x_assistant_reply_records",
             [],
             |row| {
+                let last_hour_total = row.get::<_, i64>(0)?.max(0) as u64;
+                let last_hour_success = row.get::<_, i64>(1)?.max(0) as u64;
+                let today_total = row.get::<_, i64>(2)?.max(0) as u64;
+                let today_success = row.get::<_, i64>(3)?.max(0) as u64;
                 Ok(XAssistantReplyStats {
-                    last_hour: row.get::<_, i64>(0)?.max(0) as u64,
-                    today: row.get::<_, i64>(1)?.max(0) as u64,
+                    last_hour_total,
+                    last_hour_success,
+                    last_hour_failed: last_hour_total.saturating_sub(last_hour_success),
+                    today_total,
+                    today_success,
+                    today_failed: today_total.saturating_sub(today_success),
                 })
             },
+        )
+        .map_err(Into::into)
+}
+
+pub fn delete_reply_records_older_than_three_days_blocking() -> anyhow::Result<usize> {
+    let connection = super::open_default_connection()?;
+    connection
+        .execute(
+            "DELETE FROM x_assistant_reply_records
+             WHERE created_at < datetime('now', '-3 days')",
+            [],
         )
         .map_err(Into::into)
 }
