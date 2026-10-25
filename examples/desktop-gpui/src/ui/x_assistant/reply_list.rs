@@ -15,7 +15,7 @@ pub(super) struct ReplyListPage {
     table: Entity<TableState<ReplyRecordsTableDelegate>>,
     stats: binance_tools::db::x_assistant::XAssistantReplyStats,
     error: Option<String>,
-    confirm_prune: bool,
+    status: Option<String>,
 }
 
 #[derive(Clone)]
@@ -116,7 +116,7 @@ impl ReplyListPage {
             table,
             stats: Default::default(),
             error: None,
-            confirm_prune: false,
+            status: None,
         };
         page.reload(cx);
         page
@@ -124,7 +124,7 @@ impl ReplyListPage {
 
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
         self.error = None;
-        self.confirm_prune = false;
+        self.status = None;
         match binance_tools::db::x_assistant::reply_stats_blocking() {
             Ok(stats) => self.stats = stats,
             Err(error) => self.error = Some(format!("读取回复统计失败：{error:#}")),
@@ -140,10 +140,16 @@ impl ReplyListPage {
     }
 }
 
-fn stat_tile(theme: &gpui_component::Theme, label: &str, value: u64) -> impl IntoElement {
+fn stat_tile(
+    theme: &gpui_component::Theme,
+    label: &str,
+    value: u64,
+    value_color: gpui::Hsla,
+) -> impl IntoElement {
     div()
         .flex_1()
-        .rounded(px(6.))
+        .min_w_0()
+        .rounded(px(7.))
         .border_1()
         .border_color(palette::border(theme))
         .bg(palette::surface(theme))
@@ -154,14 +160,16 @@ fn stat_tile(theme: &gpui_component::Theme, label: &str, value: u64) -> impl Int
                 .gap_1()
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(px(10.))
                         .text_color(palette::muted(theme))
+                        .truncate()
                         .child(label.to_string()),
                 )
                 .child(
                     div()
-                        .text_size(px(18.))
+                        .text_size(px(17.))
                         .font_semibold()
+                        .text_color(value_color)
                         .child(value.to_string()),
                 ),
         )
@@ -215,21 +223,18 @@ impl Render for ReplyListPage {
                                         Button::new("x-assistant-reply-list-prune")
                                             .outline()
                                             .small()
-                                            .label(if self.confirm_prune {
-                                                "确认删除三天前数据"
-                                            } else {
-                                                "删除三天前数据"
-                                            })
+                                            .label("删除三天前数据")
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                if !this.confirm_prune {
-                                                    this.confirm_prune = true;
-                                                    cx.notify();
-                                                    return;
-                                                }
                                                 match binance_tools::db::x_assistant::delete_reply_records_older_than_three_days_blocking() {
-                                                    Ok(_) => this.reload(cx),
+                                                    Ok(deleted) => {
+                                                        this.reload(cx);
+                                                        this.status = Some(if deleted == 0 {
+                                                            "没有创建时间超过三天的回复记录。".to_string()
+                                                        } else {
+                                                            format!("已删除 {deleted} 条三天前的回复记录。")
+                                                        });
+                                                    }
                                                     Err(error) => {
-                                                        this.confirm_prune = false;
                                                         this.error = Some(format!("删除旧回复记录失败：{error:#}"));
                                                     }
                                                 }
@@ -248,17 +253,51 @@ impl Render for ReplyListPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(stat_tile(theme, "近 1 小时总数", self.stats.last_hour_total))
-                            .child(stat_tile(theme, "成功", self.stats.last_hour_success))
-                            .child(stat_tile(theme, "失败", self.stats.last_hour_failed)),
+                            .child(stat_tile(
+                                theme,
+                                "近 1 小时总数",
+                                self.stats.last_hour_total,
+                                palette::text(theme),
+                            ))
+                            .child(stat_tile(
+                                theme,
+                                "近 1 小时成功",
+                                self.stats.last_hour_success,
+                                theme.success,
+                            ))
+                            .child(stat_tile(
+                                theme,
+                                "近 1 小时失败",
+                                self.stats.last_hour_failed,
+                                palette::error_text(),
+                            ))
+                            .child(stat_tile(
+                                theme,
+                                "今日总数",
+                                self.stats.today_total,
+                                palette::text(theme),
+                            ))
+                            .child(stat_tile(
+                                theme,
+                                "今日成功",
+                                self.stats.today_success,
+                                theme.success,
+                            ))
+                            .child(stat_tile(
+                                theme,
+                                "今日失败",
+                                self.stats.today_failed,
+                                palette::error_text(),
+                            )),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(stat_tile(theme, "今日总数", self.stats.today_total))
-                            .child(stat_tile(theme, "成功", self.stats.today_success))
-                            .child(stat_tile(theme, "失败", self.stats.today_failed)),
-                    ),
+                    .when_some(self.status.clone(), |parent, status| {
+                        parent.child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(palette::muted(theme))
+                                .child(status),
+                        )
+                    }),
             )
             .when_some(self.error.clone(), |parent, error| {
                 parent.child(

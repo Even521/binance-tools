@@ -508,6 +508,11 @@ pub(super) fn recognize_sent_toast(path: &Path) -> anyhow::Result<bool> {
     Ok(contains_sent_confirmation(&doc.text))
 }
 
+pub(super) fn recognize_already_sent_toast(path: &Path) -> anyhow::Result<bool> {
+    let doc = recognize_document(path)?;
+    Ok(contains_already_sent_confirmation(&doc.text))
+}
+
 pub(super) fn recognize_save_draft_confirmation(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(doc.lines.iter().any(|line| {
@@ -977,6 +982,18 @@ fn contains_retryable_send_error(text: &str) -> bool {
     .any(|message| normalized.contains(&normalize_text(message)))
 }
 
+fn contains_already_sent_confirmation(text: &str) -> bool {
+    let normalized = normalize_text(text).to_lowercase();
+    [
+        "你已经发送过了",
+        "你已经发送过这条",
+        "youvealreadysent",
+        "youalreadysent",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(&normalize_text(phrase).to_lowercase()))
+}
+
 fn contains_sent_confirmation(text: &str) -> bool {
     let normalized = normalize_text(text).to_lowercase();
     if ["yourpostwassent", "yourreplywassent"]
@@ -1123,10 +1140,10 @@ fn is_dark_pixel(image: &image::RgbImage, x: usize, y: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_rate_limit, contains_reload_confirmation, contains_retryable_send_error,
-        contains_sent_confirmation, extract_x_url, identify_post_and_action_bar,
-        is_x_compose_post_address, is_x_home_address, locate_discard_draft_button,
-        reply_tooltip_matches_target, text_match_ratio,
+        contains_already_sent_confirmation, contains_rate_limit, contains_reload_confirmation,
+        contains_retryable_send_error, contains_sent_confirmation, extract_x_url,
+        identify_post_and_action_bar, is_x_compose_post_address, is_x_home_address,
+        locate_discard_draft_button, reply_tooltip_matches_target, text_match_ratio,
     };
     use std::{env, path::Path};
 
@@ -1252,5 +1269,14 @@ mod tests {
         assert!(contains_sent_confirmation("你的回复已发送。查看"));
         assert!(!contains_sent_confirmation("草稿内容仍在编辑框中"));
         assert!(!contains_sent_confirmation("帖子发送失败"));
+    }
+
+    #[test]
+    fn detects_platform_duplicate_send_warning() {
+        assert!(contains_already_sent_confirmation("哇哦！你已经发送过了。"));
+        assert!(contains_already_sent_confirmation(
+            "You've already sent that."
+        ));
+        assert!(!contains_already_sent_confirmation("出错了，请再试一次"));
     }
 }
