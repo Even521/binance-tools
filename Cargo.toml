@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs"]
+members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs","crates/crypto-rss"]
 default-members = ["."]
 resolver = "3"
 
@@ -27,4 +27,3 @@ zstd = "0.13"
 
 [patch.crates-io]
 ppocr-rs = { path = "crates/vendor/dariofinardi/df-ppocr-rs" }
-

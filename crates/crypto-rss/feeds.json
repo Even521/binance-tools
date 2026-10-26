@@ -1,0 +1,70 @@
+[
+  {
+    "name": "PANews",
+    "url": "https://rss.panewslab.com/zh/tvsq/rss"
+  },
+  {
+    "name": "Odaily-快讯",
+    "url": "https://rss.odaily.news/rss/newsflash"
+  },
+  {
+    "name": "Odaily-文章",
+    "url": "https://rss.odaily.news/rss/post"
+  },
+  {
+    "name": "Cointelegraph",
+    "url": "https://cointelegraph.com/rss"
+  },
+  {
+    "name": "CoinDesk",
+    "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml"
+  },
+  {
+    "name": "BlockBeats-快讯",
+    "url": "https://api.theblockbeats.news/v2/rss/newsflash"
+  },
+  {
+    "name": "BlockBeats-文章",
+    "url": "https://api.theblockbeats.news/v2/rss/article"
+  },
+  {
+    "name": "ChainCatcher-链捕手",
+    "url": "https://www.chaincatcher.com/rss/clist"
+  },
+  {
+    "name": "The Block",
+    "url": "https://www.theblock.co/rss.xml"
+  },
+  {
+    "name": "Decrypt",
+    "url": "https://decrypt.co/feed"
+  },
+  {
+    "name": "CryptoSlate",
+    "url": "https://cryptoslate.com/feed/"
+  },
+  {
+    "name": "Bitcoin Magazine",
+    "url": "https://bitcoinmagazine.com/feed"
+  },
+  {
+    "name": "Bitcoin.com News",
+    "url": "https://news.bitcoin.com/feed/"
+  },
+  {
+    "name": "NewsBTC",
+    "url": "https://www.newsbtc.com/feed/"
+  },
+  {
+    "name": "CryptoPotato",
+    "url": "https://cryptopotato.com/feed/"
+  },
+  {
+    "name": "Ethereum 官方博客",
+    "url": "https://blog.ethereum.org/feed.xml"
+  },
+  {
+    "name": "The Defiant-DeFi",
+    "url": "https://thedefiant.io/feed/"
+  }
+]
