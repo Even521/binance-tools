@@ -820,7 +820,7 @@ pub(super) fn locate_reply_submit_button(
         .iter()
         .filter_map(|line| {
             let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            let center_y = ((line.top + line.bottom) * 0.5 - 3.0) / doc.scale_y;
             (normalize_text(&line.text) == normalize_text("回复")
                 && center_x >= crop.width as f32 * 0.60
                 && center_x <= crop.width as f32 * 0.98
@@ -980,6 +980,22 @@ fn contains_retryable_send_error(text: &str) -> bool {
     ]
     .iter()
     .any(|message| normalized.contains(&normalize_text(message)))
+}
+
+fn contains_post_unavailable_error(text: &str) -> bool {
+    let normalized = normalize_text(text);
+    ["已被删除", "不可见", "不可用", "此帖子", "找不到"]
+        .iter()
+        .any(|message| normalized.contains(&normalize_text(message)))
+}
+
+pub(super) fn recognize_post_unavailable_error(path: &Path) -> anyhow::Result<bool> {
+    let doc = recognize_document(path)?;
+    Ok(contains_post_unavailable_error(&doc.text)
+        || doc
+            .lines
+            .iter()
+            .any(|line| contains_post_unavailable_error(&line.text)))
 }
 
 fn contains_already_sent_confirmation(text: &str) -> bool {
