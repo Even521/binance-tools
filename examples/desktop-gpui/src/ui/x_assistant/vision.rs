@@ -783,6 +783,13 @@ fn run_visual_reply_inner(
     let (input_point, reply_text) = if options.stage2_ocr {
         let ocr_started = std::time::Instant::now();
         let compose_page = ocr::recognize_compose_reply_page(&composer.png)?;
+
+        automation::log_event(&format!(
+            "回复弹窗 OCR 调试：target={:?}, text={}",
+            compose_page["reply_target_account"],
+            compose_page["dialog_text"].as_str().unwrap_or("")
+        ));
+
         automation::log_event(&format!(
             "阶段 2/3：回复页面局部 OCR JSON（地址栏及弹窗）：{}",
             serde_json::to_string(&compose_page)?
@@ -792,9 +799,27 @@ fn run_visual_reply_inner(
             current_url.is_some_and(ocr::is_x_compose_post_address),
             "当前地址不是 https://x.com/compose/post（或 OCR 无法确认），停止识别和回复"
         );
-        automation::log_event(
-            "阶段 2/3：地址确认是 x.com/compose/post；回复弹窗文字已由 ocr-rs 一次识别。",
+        let expected_account = account_handle.trim().trim_start_matches('@');
+
+        let actual_account = compose_page["reply_target_account"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('@');
+
+        anyhow::ensure!(
+            !expected_account.is_empty()
+                && !actual_account.is_empty()
+                && expected_account.eq_ignore_ascii_case(actual_account),
+            "回复对象不匹配：预期 @{}，实际 @{}，禁止发送",
+            expected_account,
+            actual_account
         );
+
+        automation::log_event(&format!(
+            "阶段 2/3：回复对象验证通过，预期 @{}，实际 @{}",
+            expected_account, actual_account
+        ));
         let api_input_point = compose_page["reply_input"].as_object().and_then(|point| {
             Some((
                 i32::try_from(point.get("x")?.as_i64()?).ok()?,

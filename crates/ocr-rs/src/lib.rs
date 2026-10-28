@@ -201,12 +201,32 @@ impl OcrEngine {
                 }))
             })
             .collect::<Vec<_>>();
+
         let dialog_text = dialog_result
             .text_blocks
             .iter()
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+
+        let reply_target_account = dialog_result.text_blocks.iter().find_map(|block| {
+            let text = block.text.trim();
+
+            let marker = text
+                .find("回复给")
+                .or_else(|| text.find("回复@"))
+                .or_else(|| text.find("Replying to"))?;
+
+            let suffix = &text[marker..];
+            let at = suffix.find('@')?;
+
+            let account: String = suffix[at + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+
+            (!account.is_empty() && account.len() <= 15).then_some(account)
+        });
 
         Ok(serde_json::json!({
             "image": path.display().to_string(),
@@ -223,6 +243,7 @@ impl OcrEngine {
             "dialog_text_block_count": dialog_text_blocks.len(),
             "dialog_text_blocks": dialog_text_blocks,
             "reply_input": reply_input,
+            "reply_target_account": reply_target_account,
         }))
     }
 

@@ -303,6 +303,13 @@ pub(super) fn identify_post_and_action_bar_at(
         }
 
         action_row.sort_by_key(|item| item.center_x);
+        anyhow::ensure!(
+            action_row.iter().all(|item| {
+                let y = item.center_y as i32;
+                y > header_y as i32 && y < next_header_y as i32
+            }),
+            "互动栏包含其他帖子的坐标，禁止点击回复"
+        );
 
         let comment = &action_row[0];
         let like = &action_row[action_row.len() - 2];
@@ -315,10 +322,13 @@ pub(super) fn identify_post_and_action_bar_at(
             .map(|item| item.left.saturating_add(icon_offset) as i32)
             .unwrap_or((reply_x + like_x) / 2);
         let action_y = ((comment.center_y + like.center_y) / 2) as i32;
-
         anyhow::ensure!(
-            reply_x < repost_x && repost_x < like_x,
-            "根据互动数位置推算出的回复、转发、点赞图标顺序无效"
+            action_y > header_y as i32 && action_y < next_header_y as i32,
+            "互动栏不属于目标帖子 @{}：Y={}，帖子范围={}..{}",
+            account_token,
+            action_y,
+            header_y,
+            next_header_y
         );
 
         let post_bottom_y = action_y;
