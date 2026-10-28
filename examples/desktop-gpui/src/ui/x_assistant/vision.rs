@@ -346,7 +346,9 @@ fn run_visual_reply_inner(
     native::activate_browser()?;
     wait_cancel(cancel, Duration::from_millis(250))?;
 
-    let dir = PathBuf::from("data")
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("data")
         .join("x_assistant")
         .join("screenshots");
     fs::create_dir_all(&dir)?;
@@ -1651,12 +1653,24 @@ fn capture(
     let image = image::open(&bmp)?;
     let png = bmp.with_extension("png");
     image.save(&png)?;
+    let elapsed_ms = capture_started.elapsed().as_millis();
+    let file_size = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+
+    automation::log_event(&format!(
+        "截图保存验证：工作目录={}，目标绝对路径={}，文件存在={}，文件大小={} bytes，耗时={} ms",
+        std::env::current_dir()?.display(),
+        std::path::absolute(&png)?.display(),
+        png.is_file(),
+        file_size,
+        elapsed_ms
+    ));
+
     automation::log_event(&format!(
         "阶段截图采集完成：{}，尺寸 {}x{}，耗时 {} ms",
         png.display(),
         image.width(),
         image.height(),
-        capture_started.elapsed().as_millis()
+        elapsed_ms
     ));
     screenshots.push(png.clone());
     Ok(Shot {

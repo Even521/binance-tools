@@ -300,7 +300,18 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
                 .text
                 .iter()
                 .filter(|item| {
-                    media.is_none_or(|(media_x, media_y)| !(item.x >= media_x && item.y >= media_y))
+                    // 排除媒体区域内的文字
+                    let outside_media = media
+                        .is_none_or(|(media_x, media_y)| !(item.x >= media_x && item.y >= media_y));
+
+                    // 排除与操作栏数字处于同一行的图标 OCR 结果
+                    let action_row_tolerance = (height * 2 / 100).max(8);
+                    let outside_action_row = !post
+                        .metric_candidates
+                        .iter()
+                        .any(|candidate| item.y.abs_diff(candidate.y) <= action_row_tolerance);
+
+                    outside_media && outside_action_row
                 })
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>()
