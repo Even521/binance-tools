@@ -79,7 +79,13 @@ fn send_text_request(
         "model": model,
         "stream": false,
         "think": think,
-        "options": {"temperature": 0.2, "num_predict": 256, "num_ctx": 8192, "seed": 42},
+        "options": {
+            "temperature": 0.55,
+            "top_p": 0.85,
+            "top_k": 30,
+            "repeat_penalty": 1.05,
+            "num_predict": 128,
+            "num_ctx": 8192},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}

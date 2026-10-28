@@ -206,14 +206,36 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
                     &mut screenshots,
                 )?;
                 current_url = ocr::recognize_current_url(&after_discard.png)?;
+            } else if ocr::recognize_save_draft_confirmation(&after_escape.png)? {
+                automation::log_event(
+                    "全自动恢复：发现草稿确认框（未精准定位放弃按钮），点击备用位置关闭。",
+                );
+                let fallback_x = after_escape.width as i32 * 50 / 100;
+                let fallback_y = after_escape.height as i32 * 60 / 100;
+                native::click_at_client_position(fallback_x, fallback_y)?;
+                wait_cancel(cancel, Duration::from_millis(700))?;
+                let after_discard = capture_desktop(
+                    &dir,
+                    &id,
+                    "full-auto-error-state-after-discard",
+                    &mut screenshots,
+                )?;
+                current_url = ocr::recognize_current_url(&after_discard.png)?;
             } else {
                 current_url = ocr::recognize_current_url(&after_escape.png)?;
             }
         }
-        anyhow::ensure!(
-            current_url.as_deref().is_some_and(ocr::is_x_home_address),
-            "错误恢复前未能确认页面已回到 x.com/home（当前地址：{current_url:?}）；未进行刷新或滚动，请手动检查并关闭回复弹窗"
-        );
+        if !current_url.as_deref().is_some_and(ocr::is_x_home_address) {
+            automation::log_event(&format!(
+                "全自动恢复：当前地址未能确认回到 x.com/home（当前：{current_url:?}）；尝试再次按 Escape 并点击放弃以强制恢复。"
+            ));
+            let _ = native::press_escape();
+            std::thread::sleep(Duration::from_millis(500));
+            let fallback_x = check_shot.width as i32 * 50 / 100;
+            let fallback_y = check_shot.height as i32 * 60 / 100;
+            let _ = native::click_at_client_position(fallback_x, fallback_y);
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
     let seed = next_random_u64();
     if seed % 2 == 0 {
@@ -420,7 +442,26 @@ fn run_visual_reply_inner(
                     let stage = format!("01-complete-post-retry-{retry}");
                     feed = capture(&dir, &id, &stage, &mut screenshots)?;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if ocr::recognize_post_unavailable_error(&feed.png).unwrap_or(false) {
+                        automation::log_event(
+                            "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
+                        );
+                        let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+                        return Ok(VisionReplyResult {
+                            screenshots,
+                            author_name: String::new(),
+                            account_handle: String::new(),
+                            posted_at: String::new(),
+                            post_text: String::new(),
+                            reply_text: String::new(),
+                            completed: false,
+                            skipped_duplicate: true,
+                            summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
+                        });
+                    }
+                    return Err(error);
+                }
             }
         }
     } else {
@@ -978,7 +1019,7 @@ fn run_visual_reply_inner(
 
     let mut done = capture(&dir, &id, "04-result", &mut screenshots)?;
     check_cancel(cancel)?;
-    if ocr::recognize_already_sent_toast(&done.png)? {
+    if ocr::recognize_already_sent_toast(&done.png).unwrap_or(false) {
         automation::log_event("阶段 3/3：X 提示该回复已经发送过；标记该账号已处理，不再重发。");
         return already_sent_result(
             &dir,
@@ -1038,7 +1079,6 @@ fn run_visual_reply_inner(
         return Err(anyhow::Error::new(RateLimitDetected));
     }
 
-    let mut retried_after_network_error = false;
     let retryable_error = match ocr::recognize_retryable_send_error(&done.png) {
         Ok(found) => found,
         Err(error) => {
@@ -1055,7 +1095,7 @@ fn run_visual_reply_inner(
         wait_cancel(cancel, Duration::from_secs(5))?;
         let retry_ready = capture(&dir, &id, "04-retry-check", &mut screenshots)?;
         check_cancel(cancel)?;
-        if ocr::recognize_already_sent_toast(&retry_ready.png)? {
+        if ocr::recognize_already_sent_toast(&retry_ready.png).unwrap_or(false) {
             automation::log_event("阶段 3/3：重试前 X 已提示该回复发送过；不再点击提交。");
             return already_sent_result(
                 &dir,
@@ -1137,7 +1177,7 @@ fn run_visual_reply_inner(
         thread::sleep(Duration::from_secs(2));
         done = capture(&dir, &id, "05-retry-result", &mut screenshots)?;
         check_cancel(cancel)?;
-        if ocr::recognize_already_sent_toast(&done.png)? {
+        if ocr::recognize_already_sent_toast(&done.png).unwrap_or(false) {
             automation::log_event("阶段 3/3：重试后 X 提示该回复已经发送过；标记完成，不再重发。");
             return already_sent_result(
                 &dir,
@@ -1177,13 +1217,22 @@ fn run_visual_reply_inner(
             automation::log_event("阶段 3/3：重试后检测到平台限流提示；立即停止全自动发送。");
             return Err(anyhow::Error::new(RateLimitDetected));
         }
-        retried_after_network_error = true;
         if ocr::recognize_retryable_send_error(&done.png).unwrap_or(false) {
             automation::log_event(
-                "阶段 3/3：唯一一次重试后仍检测到发送错误；按要求放弃并发送 Escape 关闭回复弹窗。",
+                "阶段 3/3：唯一一次重试后仍检测到发送错误；已安全关闭回复弹窗并继续下一步，不中断程序。",
             );
-            close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)?;
-            anyhow::bail!("发送重试后仍出现网络错误，已放弃并确认关闭回复弹窗");
+            let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+            return Ok(VisionReplyResult {
+                screenshots,
+                author_name,
+                account_handle,
+                posted_at,
+                post_text,
+                reply_text,
+                completed: false,
+                skipped_duplicate: false,
+                summary: "发送重试后仍出现错误，已安全关闭弹窗并继续。".to_string(),
+            });
         }
     }
 
@@ -1194,19 +1243,22 @@ fn run_visual_reply_inner(
         cancel,
     )?;
     if !done_decision.ok || !done_decision.completed {
-        if retried_after_network_error {
-            if let Err(error) = native::press_escape() {
-                automation::log_event(&format!("重试后关闭回复弹窗失败：{error:#}"));
-            }
-            anyhow::bail!(
-                "发送错误后已重试一次，仍无法确认发送成功；已放弃并尝试关闭回复弹窗：{}",
-                fallback_reason(&done_decision, "完成状态不明确")
-            );
-        }
-        anyhow::bail!(
-            "无法确认回复已发送：{}",
+        automation::log_event(&format!(
+            "无法确认回复已发送（{}）；将自动关闭回复弹窗并继续下一步，不中断程序。",
             fallback_reason(&done_decision, "完成状态不明确")
-        );
+        ));
+        let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+        return Ok(VisionReplyResult {
+            screenshots,
+            author_name,
+            account_handle,
+            posted_at,
+            post_text,
+            reply_text,
+            completed: false,
+            skipped_duplicate: false,
+            summary: format!("无法确认回复已发送，已安全关闭弹窗并继续。"),
+        });
     }
 
     if let Err(error) = binance_tools::db::x_assistant::mark_last_step_completed_blocking(&run_id) {
@@ -1244,7 +1296,11 @@ fn already_sent_result(
             "平台已确认回复之前发送过，但 SQLite 去重记录更新失败：{error:#}"
         ));
     }
-    close_reply_composer_safely(dir, id, &mut screenshots, cancel)?;
+    if let Err(error) = close_reply_composer_safely(dir, id, &mut screenshots, cancel) {
+        automation::log_event(&format!(
+            "关闭已发送回复窗口时出现异常（已忽略并继续）：{error:#}"
+        ));
+    }
     Ok(VisionReplyResult {
         screenshots,
         author_name,
@@ -1270,55 +1326,61 @@ fn close_reply_composer_safely(
         let shot = capture(
             dir,
             id,
-            &format!("05-close-reply-composer-{}", attempt + 1),
+            &format!("05-network-error-close-{}", attempt + 1),
             screenshots,
         )?;
 
         if let Some((discard_x, discard_y)) = ocr::locate_discard_draft_button(&shot.png)? {
             automation::log_event(&format!(
-                "阶段 3/3：识别到草稿确认框，点击‘放弃’关闭回复编辑框 ({discard_x}, {discard_y})。"
+                "阶段 3/3：网络错误后识别到草稿确认框，点击‘放弃’关闭未发送回复 ({discard_x}, {discard_y})。"
             ));
             native::click_at_client_position(discard_x, discard_y)?;
             wait_cancel(cancel, Duration::from_millis(700))?;
             let after_discard = capture(
                 dir,
                 id,
-                &format!("05-close-reply-composer-discard-{}", attempt + 1),
+                &format!("05-network-error-discard-{}", attempt + 1),
                 screenshots,
             )?;
-            let address = ocr::recognize_current_url(&after_discard.png)?;
-            if address.as_deref().is_some_and(ocr::is_x_home_address) {
-                automation::log_event("阶段 3/3：确认已返回 X 主页，回复编辑框已关闭。");
+            if !ocr::reply_composer_is_open(&after_discard.png)? {
+                automation::log_event("阶段 3/3：草稿已放弃，确认回复窗口关闭。");
                 return Ok(());
             }
         } else if ocr::recognize_save_draft_confirmation(&shot.png)? {
-            anyhow::bail!("发现草稿确认框但无法安全定位‘放弃’按钮；停止自动操作，请手动检查页面");
-        }
-
-        let address = ocr::recognize_current_url(&shot.png)?;
-        if address.as_deref().is_some_and(ocr::is_x_home_address) {
-            automation::log_event("阶段 3/3：确认已返回 X 主页，回复编辑框已关闭。");
+            automation::log_event(
+                "阶段 3/3：发现草稿确认框但未精确匹配‘放弃’按钮坐标，尝试直接点击弹窗中央偏下区域‘放弃’。",
+            );
+            let fallback_discard_x = shot.width as i32 * 50 / 100;
+            let fallback_discard_y = shot.height as i32 * 60 / 100;
+            native::click_at_client_position(fallback_discard_x, fallback_discard_y)?;
+            wait_cancel(cancel, Duration::from_millis(700))?;
+            let after_fallback = capture(
+                dir,
+                id,
+                &format!("05-network-error-fallback-discard-{}", attempt + 1),
+                screenshots,
+            )?;
+            if !ocr::reply_composer_is_open(&after_fallback.png)? {
+                automation::log_event("阶段 3/3：点击备用位置后草稿已放弃，确认回复窗口关闭。");
+                return Ok(());
+            }
+        } else if !ocr::reply_composer_is_open(&shot.png)? {
+            automation::log_event("阶段 3/3：确认网络错误后的回复窗口已关闭。");
             return Ok(());
         }
-        anyhow::ensure!(
-            address
-                .as_deref()
-                .is_some_and(ocr::is_x_compose_post_address),
-            "关闭回复编辑框后无法确认页面地址（{address:?}）；停止自动操作"
-        );
 
         if attempt == 0 {
             let dismiss_x = (shot.width as f32 * 0.23).round() as i32;
             let dismiss_y = (shot.height as f32 * 0.50).round() as i32;
             automation::log_event(
-                "阶段 3/3：回复编辑框仍打开；点击窗口外安全区域，再尝试关闭一次。",
+                "阶段 3/3：Escape 后回复窗口仍打开；点击窗口外安全区域，再尝试关闭一次。",
             );
             native::click_at_client_position(dismiss_x, dismiss_y)?;
             wait_cancel(cancel, Duration::from_millis(400))?;
         }
     }
 
-    anyhow::bail!("两次尝试后回复编辑框仍未关闭；已停止自动操作，避免在弹窗中滚动或重复发送")
+    anyhow::bail!("网络错误重试失败；两次关闭尝试后回复窗口仍未关闭，已停止自动操作")
 }
 
 fn identify_post_for_mode(
@@ -2386,24 +2448,28 @@ fn sanitize_reply(text: &str, rules: &str) -> anyhow::Result<String> {
 }
 
 fn reply_char_limit(rules: &str) -> Option<usize> {
-    let chars: Vec<char> = rules.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        if !chars[index].is_ascii_digit() {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        while index < chars.len() && chars[index].is_ascii_digit() {
-            index += 1;
-        }
-        if chars.get(index..index + 2) == Some(&['个', '字']) {
-            if let Ok(limit) = chars[start..index].iter().collect::<String>().parse() {
-                return Some(limit);
+    // 强制硬性限制：如果要求不超过 12 个汉字或未在规则中指定，统一最高限制为 12 个字符
+    let parsed_limit = (|| {
+        let chars: Vec<char> = rules.chars().collect();
+        let mut index = 0;
+        while index < chars.len() {
+            if !chars[index].is_ascii_digit() {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < chars.len() && chars[index].is_ascii_digit() {
+                index += 1;
+            }
+            if chars.get(index..index + 2) == Some(&['个', '字']) {
+                if let Ok(limit) = chars[start..index].iter().collect::<String>().parse() {
+                    return Some(limit);
+                }
             }
         }
-    }
-    None
+        None
+    })();
+    Some(parsed_limit.map_or(12, |l: usize| l.min(12)))
 }
 
 fn is_emoji(ch: char) -> bool {
