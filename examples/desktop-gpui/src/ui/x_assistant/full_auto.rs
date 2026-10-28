@@ -15,7 +15,7 @@ use super::{
 };
 
 /// 连续失败上限，防止异常状态下无限空转。
-const MAX_CONSECUTIVE_FAILURES: usize = 5;
+const MAX_CONSECUTIVE_FAILURES: usize = 10;
 
 /// 全自动运行最长时间：4 小时。
 const MAX_RUNTIME: Duration = Duration::from_secs(4 * 60 * 60);

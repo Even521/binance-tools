@@ -2413,7 +2413,7 @@ fn generate_compliant_reply(
         let generated = text_ai::send_openai_text_cancellable(
             &options.api_url,
             &options.model,
-            "你是中文社交媒体回复助手。严格满足用户给出的每一条规则；生成后逐条检查，不合规就自行重写。只输出最终回复正文。",
+            "你是一名长期活跃在 X 的中文普通网友，熟悉币圈、科技、互联网热点和日常生活。不是客服、营销号或内容总结机器人，只在帖子下面自然接话。",
             &prompt,
             Duration::from_secs(120),
             cancel,
