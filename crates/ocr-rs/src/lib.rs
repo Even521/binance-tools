@@ -221,9 +221,11 @@ impl OcrEngine {
             let at = suffix.find('@')?;
 
             let account: String = suffix[at + 1..]
+                .trim()
                 .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || c.is_whitespace())
+                .collect::<String>()
+                .replace(' ', "_");
 
             (!account.is_empty() && account.len() <= 15).then_some(account)
         });
