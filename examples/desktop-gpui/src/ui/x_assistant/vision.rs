@@ -785,12 +785,6 @@ fn run_visual_reply_inner(
         let compose_page = ocr::recognize_compose_reply_page(&composer.png)?;
 
         automation::log_event(&format!(
-            "回复弹窗 OCR 调试：target={:?}, text={}",
-            compose_page["reply_target_account"],
-            compose_page["dialog_text"].as_str().unwrap_or("")
-        ));
-
-        automation::log_event(&format!(
             "阶段 2/3：回复页面局部 OCR JSON（地址栏及弹窗）：{}",
             serde_json::to_string(&compose_page)?
         ));
