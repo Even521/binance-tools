@@ -230,9 +230,9 @@ pub(super) fn identify_post_and_action_bar_at(
         let next_header_y = parsed
             .timeline
             .posts
-            .get(post_index + 1)
+            .get(selected_index + 1)
             .and_then(|next_post| next_post.account.as_deref())
-            .map(|next_account| next_account.trim_start_matches('@'))
+            .map(|account| account.trim_start_matches('@'))
             .and_then(|next_account| {
                 result
                     .text_blocks
@@ -244,6 +244,7 @@ pub(super) fn identify_post_and_action_bar_at(
                     .min()
             })
             .unwrap_or(source.height());
+
         let mut counts = result
             .text_blocks
             .iter()
@@ -269,17 +270,6 @@ pub(super) fn identify_post_and_action_bar_at(
             })
             .collect::<Vec<_>>();
         counts.sort_by_key(|candidate| (candidate.center_y, candidate.center_x));
-        let reply_fallback = counts
-            .iter()
-            .filter(|candidate| (0.30..0.40).contains(&candidate.relative_x))
-            .max_by_key(|candidate| candidate.center_y)
-            .cloned();
-        let view_fallback = counts
-            .iter()
-            .filter(|candidate| (0.48..=0.68).contains(&candidate.relative_x))
-            .max_by_key(|candidate| candidate.center_y)
-            .cloned();
-
         let mut rows: Vec<Vec<MetricCandidate>> = Vec::new();
         for candidate in counts {
             if let Some(row) = rows.last_mut()
@@ -304,48 +294,28 @@ pub(super) fn identify_post_and_action_bar_at(
             })
             .min_by_key(|row| row[0].center_y);
 
-        let (reply_x, repost_x, like_x, action_y) = if let Some(mut action_row) = action_row.take()
-        {
-            action_row.sort_by_key(|item| item.center_x);
-            let comment = &action_row[0];
-            let like = &action_row[action_row.len() - 2];
-            let repost = (action_row.len() >= 4).then(|| &action_row[1]);
-            let icon_offset = (source.width() as f32 * 0.009).round() as u32;
-            let reply_x = comment.left.saturating_add(icon_offset) as i32;
-            let like_x = like.left.saturating_add(icon_offset) as i32;
-            let repost_x = repost
-                .map(|item| item.left.saturating_add(icon_offset) as i32)
-                .unwrap_or((reply_x + like_x) / 2);
-            (
-                reply_x,
-                repost_x,
-                like_x,
-                ((comment.center_y + like.center_y) / 2) as i32,
-            )
-        } else if let Some(reply) = reply_fallback {
-            let icon_offset = (source.width() as f32 * 0.009).round() as u32;
-            let reply_x = reply.left.saturating_add(icon_offset) as i32;
-            let slot = (source.width() as f32 * 0.061).round() as i32;
-            (
-                reply_x,
-                reply_x + slot,
-                reply_x + 2 * slot,
-                reply.center_y as i32,
-            )
-        } else {
-            let view = view_fallback.ok_or_else(|| {
-                anyhow::anyhow!("PP-OCR 未识别到回复数量或浏览数量，无法推算回复坐标")
-            })?;
-            let slot = (source.width() as f32 * 0.061).round() as i32;
-            let view_icon_x = view.left as i32 + (source.width() as f32 * 0.009).round() as i32;
-            let reply_x = view_icon_x - 3 * slot;
-            (
-                reply_x,
-                reply_x + slot,
-                reply_x + 2 * slot,
-                view.center_y as i32,
-            )
-        };
+        let mut action_row = action_row
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("未识别到完整互动栏，禁止猜测回复坐标"))?;
+
+        if action_row.len() < 3 {
+            anyhow::bail!("互动栏识别结果不足 3 个，禁止猜测回复坐标");
+        }
+
+        action_row.sort_by_key(|item| item.center_x);
+
+        let comment = &action_row[0];
+        let like = &action_row[action_row.len() - 2];
+        let repost = (action_row.len() >= 4).then(|| &action_row[1]);
+
+        let icon_offset = (source.width() as f32 * 0.009).round() as u32;
+        let reply_x = comment.left.saturating_add(icon_offset) as i32;
+        let like_x = like.left.saturating_add(icon_offset) as i32;
+        let repost_x = repost
+            .map(|item| item.left.saturating_add(icon_offset) as i32)
+            .unwrap_or((reply_x + like_x) / 2);
+        let action_y = ((comment.center_y + like.center_y) / 2) as i32;
+
         anyhow::ensure!(
             reply_x < repost_x && repost_x < like_x,
             "根据互动数位置推算出的回复、转发、点赞图标顺序无效"
