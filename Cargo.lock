@@ -1798,6 +1798,7 @@ dependencies = [
  "anyhow",
  "binance_tools",
  "chrono",
+ "crypto-rss",
  "evm-wallet",
  "gpui",
  "gpui-component",
@@ -1808,6 +1809,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "windows 0.61.3",
  "winresource",
 ]

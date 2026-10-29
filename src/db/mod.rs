@@ -11,6 +11,7 @@ pub mod ai;
 pub mod ai_rules;
 pub mod ai_threads;
 pub mod alpha;
+pub mod crypto_news;
 pub mod market;
 pub mod spot;
 pub mod square;
@@ -364,6 +365,25 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
 
             CREATE INDEX IF NOT EXISTS idx_x_assistant_reply_records_created_at
                 ON x_assistant_reply_records(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS crypto_news (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                title TEXT NOT NULL,
+                chinese_title TEXT,
+                url TEXT UNIQUE,
+                summary TEXT,
+                chinese_summary TEXT,
+                published_at TEXT,
+                collected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_crypto_news_source
+                ON crypto_news(source);
+
+            CREATE INDEX IF NOT EXISTS idx_crypto_news_published_at
+                ON crypto_news(published_at DESC);
 
             "#,
         )
