@@ -11,6 +11,7 @@ use crate::ui::{
     alpha_ma_signal::AlphaDailyMaSignalPage,
     backtest::SpotBacktestPage,
     calculator::CalculatorPage,
+    crypto_news::CryptoNewsPage,
     heatmap::{MarketHeatmapEvent, MarketHeatmapPage},
     kline::KlineCandlestickPage,
     ma_signal::{DailyMaSignalEvent, DailyMaSignalPage},
@@ -22,7 +23,7 @@ use crate::ui::{
     task_board::TaskBoardPage,
     title_bar::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
-        OpenAlphaTokens, OpenCalculator, OpenDailyMaSignals, OpenDocumentConvert,
+        OpenAlphaTokens, OpenCalculator, OpenCryptoNews, OpenDailyMaSignals, OpenDocumentConvert,
         OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols,
         OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenStrategyHelp,
         OpenTaskBoard, OpenWalletGenerator, OpenXAssistant,
@@ -58,6 +59,7 @@ pub struct Dashboard {
     square_tasks_page: Option<Entity<SquareTasksPage>>,
     square_send_logs_page: Option<Entity<SquareSendLogsPage>>,
     calculator_page: Option<Entity<CalculatorPage>>,
+    crypto_news_page: Option<Entity<CryptoNewsPage>>,
     document_convert_page: Option<Entity<DocumentConvertPage>>,
     task_board_page: Option<Entity<TaskBoardPage>>,
     strategy_help_page: Option<Entity<StrategyHelpPage>>,
@@ -92,6 +94,7 @@ enum ActivePage {
     SquareTasks,
     SquareSendLogs,
     Calculator,
+    CryptoNews,
     DocumentConvert,
     TaskBoard,
     StrategyHelp,
@@ -135,6 +138,7 @@ impl Dashboard {
             square_tasks_page: None,
             square_send_logs_page: None,
             calculator_page: None,
+            crypto_news_page: None,
             document_convert_page: None,
             task_board_page: None,
             strategy_help_page: None,
@@ -462,6 +466,23 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.open_calculator_page(window, cx);
+    }
+
+    fn on_open_crypto_news(
+        &mut self,
+        _: &OpenCryptoNews,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_crypto_news_page(window, cx);
+    }
+
+    fn open_crypto_news_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.crypto_news_page.is_none() {
+            self.crypto_news_page = Some(cx.new(|cx| CryptoNewsPage::new(window, cx)));
+        }
+        self.activate_page(ActivePage::CryptoNews, cx);
+        cx.notify();
     }
 
     fn on_open_task_board(
@@ -975,6 +996,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::CryptoNews => self
+                .crypto_news_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::DocumentConvert => self
                 .document_convert_page
                 .as_ref()
@@ -1086,6 +1119,7 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_square_tasks))
             .on_action(cx.listener(Self::on_open_square_send_logs))
             .on_action(cx.listener(Self::on_open_calculator))
+            .on_action(cx.listener(Self::on_open_crypto_news))
             .on_action(cx.listener(Self::on_open_document_convert))
             .on_action(cx.listener(Self::on_open_task_board))
             .on_action(cx.listener(Self::on_open_strategy_help))

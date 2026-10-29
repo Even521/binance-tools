@@ -1,0 +1,17 @@
+[package]
+name = "crypto-rss"
+version = "0.1.0"
+edition = "2021"
+description = "RSS-only Chinese crypto news collector"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+feed-rs = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+url = "2"

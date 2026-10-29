@@ -31,6 +31,7 @@ actions!(
         OpenSquareTasks,
         OpenStrategyHelp,
         OpenTaskBoard,
+        OpenCryptoNews,
     ]
 );
 
@@ -249,20 +250,20 @@ impl Render for DesktopTitleBar {
                             }),
                     )
                     .child(
-                        Button::new("wallet-menu")
-                            .label("钱包")
+                        Button::new("news-menu")
+                            .label("新闻")
                             .ghost()
                             .xsmall()
                             .dropdown_menu(|menu, _, _| {
                                 menu.item(
                                     PopupMenuItem::element(|_, _| {
-                                        div().text_size(px(11.)).child("EVM 钱包生成")
+                                        div().text_size(px(11.)).child("加密新闻")
                                     })
                                     .on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(OpenWalletGenerator), cx);
+                                        window.dispatch_action(Box::new(OpenCryptoNews), cx);
                                     }),
                                 )
-                                .min_w(px(150.))
+                                .min_w(px(120.))
                             }),
                     )
                     .child(

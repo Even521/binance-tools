@@ -4,6 +4,7 @@ pub mod alpha_heatmap;
 pub mod alpha_ma_signal;
 pub mod backtest;
 pub mod calculator;
+pub mod crypto_news;
 pub mod dashboard;
 pub mod heatmap;
 pub mod kline;
