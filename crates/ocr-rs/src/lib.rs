@@ -83,7 +83,38 @@ impl OcrEngine {
                 }))
             })
             .collect::<Vec<_>>();
-        let coordinates = action_coordinates(&result, image.width(), image.height());
+        let coordinates = timeline
+            .timeline
+            .posts
+            .first()
+            .map(|post| {
+                let point = |value: &Option<ActionPoint>| {
+                    value.as_ref().map(|p| {
+                        serde_json::json!({
+                            "x": p.x,
+                            "y": p.y
+                        })
+                    })
+                };
+
+                serde_json::json!({
+                    "reply": point(&post.action_coordinates.reply),
+                    "repost": point(&post.action_coordinates.repost),
+                    "like": point(&post.action_coordinates.like),
+                    "views": point(&post.action_coordinates.views),
+                    "coordinate_source": "timeline_first_post"
+                })
+            })
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "reply": null,
+                    "repost": null,
+                    "like": null,
+                    "views": null,
+                    "coordinate_source": "unavailable"
+                })
+            });
+
         let current_url = result.text_blocks.iter().find_map(|block| {
             let text = block.text.trim();
             let normalized = text.to_ascii_lowercase();
@@ -377,7 +408,7 @@ fn action_coordinates(
     let reply_fallback = counts
         .iter()
         .filter(|candidate| candidate.3 >= 0.30 && candidate.3 < 0.40)
-        .max_by_key(|candidate| candidate.1)
+        .max_by_key(|row| row.1)
         .cloned();
     let view_fallback = counts
         .iter()

@@ -117,7 +117,7 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
     positioned.sort_by_key(|(y, x, _)| (*y, *x));
 
     let mut browser = BrowserRegion::default();
-    let mut left_navigation = Vec::new();
+    let left_navigation = Vec::new();
     let mut timeline = TimelineRegion::default();
     let mut right_sidebar = RightSidebar::default();
     let mut post_builders = Vec::<PostBuilder>::new();
