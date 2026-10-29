@@ -1,5 +1,6 @@
 mod automation;
 mod full_auto;
+mod option;
 mod reply_list;
 mod vision;
 

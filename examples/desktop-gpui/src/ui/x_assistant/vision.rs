@@ -364,8 +364,24 @@ fn run_visual_reply_inner(
     current_stage: &mut String,
 ) -> anyhow::Result<VisionReplyResult> {
     automation::log_event("========== X 辅助回复流程开始 ==========");
-    wait_cancel(cancel, Duration::from_secs(5))?;
-    native::activate_browser()?;
+    //wait_cancel(cancel, Duration::from_secs(5))?;
+
+    if native::activate_browser().is_err() {
+        super::option::open_chrome()?;
+        wait_cancel(cancel, Duration::from_secs(2))?;
+    }
+
+    let mut browser_ready = false;
+    for _ in 0..8 {
+        if native::activate_browser().is_ok() {
+            browser_ready = true;
+            break;
+        }
+        wait_cancel(cancel, Duration::from_secs(1))?;
+    }
+
+    anyhow::ensure!(browser_ready, "浏览器启动失败");
+
     wait_cancel(cancel, Duration::from_millis(250))?;
 
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
