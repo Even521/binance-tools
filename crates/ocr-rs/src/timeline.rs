@@ -117,7 +117,7 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
     positioned.sort_by_key(|(y, x, _)| (*y, *x));
 
     let mut browser = BrowserRegion::default();
-    let left_navigation = Vec::new();
+    let mut left_navigation = Vec::new();
     let mut timeline = TimelineRegion::default();
     let mut right_sidebar = RightSidebar::default();
     let mut post_builders = Vec::<PostBuilder>::new();
@@ -149,7 +149,16 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
 
         // 必须先识别帖子作者栏，再判断左导航和右侧栏。
         // 否则靠近区域边界的作者栏可能被错误分类。
-        if let Some((name, account, timestamp, is_ad)) = parse_post_header(text) {
+        let parsed_header = parse_post_header(text);
+        
+        if text.contains('@') {
+            eprintln!(
+                "[OCR-HEADER] y={}, x={}, text={:?}, parsed={:?}",
+                y, x, text, parsed_header
+            );
+        }
+        
+        if let Some((name, account, timestamp, is_ad)) = parsed_header {
             // 取 OCR 文本框的真实左边界，而不是文字中心点。
             let header_left = block
                 .box_points
@@ -196,6 +205,13 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             });
 
             pending_ad_label = false;
+            continue;
+        }
+
+        // 排除左侧导航栏，避免导航文字被追加到帖子正文。
+        // 这里的 x 是 OCR 文本框中心点。
+        if x < width * 28 / 100 {
+            left_navigation.push(item);
             continue;
         }
 
@@ -297,15 +313,29 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
         // 这里再从该帖子的候选数字中选择最完整的一行。
         let action_rows = group_metric_rows(&post.metric_candidates, (height * 12 / 1032).max(8));
 
-        // 优先选择包含数字最多的一行。
-        // 如果数量相同，保留排序后更靠上的一行。
-        // 这比让后续候选数字无条件覆盖之前的数据更可靠。
-        // 选择最靠下且至少包含两个数字的互动行。
-        // 这样可以减少把引用卡片上方的数字混入主帖互动栏的情况。
+        // 只在当前帖子的区域内选互动行，不再无条件选择最靠下的一行。
+        let post_bottom = post_builders
+            .get(index + 1)
+            .map(|next| next.header_y)
+            .unwrap_or(height);
+
+        // 互动栏应位于作者栏下方，并且不能越过下一条顶层帖子的作者栏。
         let selected_row = action_rows
             .iter()
-            .filter(|row| row.len() >= 2)
-            .max_by_key(|row| row.iter().map(|candidate| candidate.y).max().unwrap_or(0));
+            .filter(|row| {
+                if row.len() < 3 {
+                    return false;
+                }
+
+                let row_y = row.iter().map(|candidate| candidate.y).sum::<u32>() / row.len() as u32;
+
+                row_y > post.header_y
+                    && row_y < post_bottom
+                    && row_y.saturating_sub(post.header_y) < height * 55 / 100
+            })
+            .min_by_key(|row| {
+                row.iter().map(|candidate| candidate.y).sum::<u32>() / row.len() as u32
+            });
 
         let selected_action_y = selected_row
             .map(|row| row.iter().map(|candidate| candidate.y).sum::<u32>() / row.len() as u32);
