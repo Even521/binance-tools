@@ -95,6 +95,8 @@ struct PostBuilder {
     is_ad: bool,
     grok: Option<bool>,
     header_y: u32,
+    header_left: u32,   // 新增：作者头部文字的左边界
+    inside_quote: bool, // 新增：是否处于引用卡片内部
     media_start_y: Option<u32>,
     text: Vec<LocatedText>,
     metric_candidates: Vec<LocatedText>,
@@ -145,10 +147,55 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             continue;
         }
 
-        if x < width * 32 / 100 {
-            if !is_ui_control(text) {
-                left_navigation.push(item);
+        // 必须先识别帖子作者栏，再判断左导航和右侧栏。
+        // 否则靠近区域边界的作者栏可能被错误分类。
+        if let Some((name, account, timestamp, is_ad)) = parse_post_header(text) {
+            // 取 OCR 文本框的真实左边界，而不是文字中心点。
+            let header_left = block
+                .box_points
+                .iter()
+                .map(|point| point.x)
+                .min()
+                .unwrap_or(x);
+
+            // 缩进阈值先设为截图宽度的 0.6%，最低 10 像素。
+            // 这是用于当前截图的初步阈值，需要用多张截图验证。
+            let indent_threshold = (width * 6 / 1000).max(10);
+
+            // 判断当前作者栏是否可能属于前一条帖子的引用卡片。
+            let is_nested_header = current_post.as_ref().is_some_and(|post| {
+                let is_indented = header_left > post.header_left.saturating_add(indent_threshold);
+
+                let is_below_current_header = y > post.header_y;
+
+                is_indented && is_below_current_header
+            });
+
+            if is_nested_header {
+                // 引用帖不作为新的顶层帖子。
+                // 只跳过引用作者栏，不要永久忽略主帖后续的互动栏。
+                continue;
             }
+
+            // 当前作者栏被视为新的顶层帖子，先保存前一条帖子。
+            if let Some(post) = current_post.take() {
+                post_builders.push(post);
+            }
+
+            current_post = Some(PostBuilder {
+                author_name: Some(name),
+                account: Some(account),
+                verified: text.contains('✓').then_some(true),
+                timestamp,
+                is_ad: is_ad || pending_ad_label,
+                grok: text.contains("Grok").then_some(true),
+                header_y: y,
+                header_left,
+                inside_quote: false,
+                ..PostBuilder::default()
+            });
+
+            pending_ad_label = false;
             continue;
         }
 
@@ -158,24 +205,6 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             } else {
                 push_sidebar_item(&mut right_sidebar.sections, item);
             }
-            continue;
-        }
-
-        if let Some((name, account, timestamp, is_ad)) = parse_post_header(text) {
-            if let Some(post) = current_post.take() {
-                post_builders.push(post);
-            }
-            current_post = Some(PostBuilder {
-                author_name: Some(name),
-                account: Some(account),
-                verified: text.contains('✓').then_some(true),
-                timestamp,
-                is_ad: is_ad || pending_ad_label,
-                grok: text.contains("Grok").then_some(true),
-                header_y: y,
-                ..PostBuilder::default()
-            });
-            pending_ad_label = false;
             continue;
         }
         if y < height * 15 / 100 {
@@ -263,28 +292,51 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             share: None,
             more: None,
         };
-        for candidate in &post.metric_candidates {
-            let relative_x = candidate.x as f32 / width.max(1) as f32;
-            let point = ActionPoint {
-                x: candidate
-                    .x
-                    .saturating_sub((width as f32 * 0.005).round() as u32),
-                y: candidate.y,
-            };
-            if relative_x < 0.40 {
-                metrics.comments = Some(candidate.text.clone());
-                action_coordinates.reply = Some(point);
-            } else if relative_x < 0.45 {
-                metrics.reposts = Some(candidate.text.clone());
-                action_coordinates.repost = Some(point);
-            } else if relative_x < 0.52 {
-                metrics.likes = Some(candidate.text.clone());
-                action_coordinates.like = Some(point);
-            } else if relative_x < 0.62 {
-                metrics.views = Some(candidate.text.clone());
-                action_coordinates.views = Some(point);
+        // 先把互动数字分成不同的水平行。
+        // 由于每条 PostBuilder 理应只属于一条顶层帖子，
+        // 这里再从该帖子的候选数字中选择最完整的一行。
+        let action_rows = group_metric_rows(&post.metric_candidates, (height * 12 / 1032).max(8));
+
+        // 优先选择包含数字最多的一行。
+        // 如果数量相同，保留排序后更靠上的一行。
+        // 这比让后续候选数字无条件覆盖之前的数据更可靠。
+        // 选择最靠下且至少包含两个数字的互动行。
+        // 这样可以减少把引用卡片上方的数字混入主帖互动栏的情况。
+        let selected_row = action_rows
+            .iter()
+            .filter(|row| row.len() >= 2)
+            .max_by_key(|row| row.iter().map(|candidate| candidate.y).max().unwrap_or(0));
+
+        let selected_action_y = selected_row
+            .map(|row| row.iter().map(|candidate| candidate.y).sum::<u32>() / row.len() as u32);
+        if let Some(row) = selected_row {
+            for candidate in row {
+                let relative_x = candidate.x as f32 / width.max(1) as f32;
+
+                // 注意：这是基于数字位置的估算坐标，不是实际图标中心。
+                let point = ActionPoint {
+                    x: candidate
+                        .x
+                        .saturating_sub((width as f32 * 0.005).round() as u32),
+                    y: candidate.y,
+                };
+
+                if relative_x < 0.40 {
+                    metrics.comments = Some(candidate.text.clone());
+                    action_coordinates.reply = Some(point);
+                } else if relative_x < 0.45 {
+                    metrics.reposts = Some(candidate.text.clone());
+                    action_coordinates.repost = Some(point);
+                } else if relative_x < 0.52 {
+                    metrics.likes = Some(candidate.text.clone());
+                    action_coordinates.like = Some(point);
+                } else if relative_x < 0.62 {
+                    metrics.views = Some(candidate.text.clone());
+                    action_coordinates.views = Some(point);
+                }
             }
         }
+
         if metrics.comments.is_some() && metrics.likes.is_some() && metrics.views.is_some() {
             metrics.reposts.get_or_insert_with(|| "0".to_string());
         }
@@ -301,16 +353,15 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
                 .iter()
                 .filter(|item| {
                     // 排除媒体区域内的文字
-                    let outside_media = media.is_none_or(|(media_x, media_y)| {
-                        !(item.x >= media_x && item.y >= media_y)
-                    });
-            
+                    let outside_media = media
+                        .is_none_or(|(media_x, media_y)| !(item.x >= media_x && item.y >= media_y));
+
                     // 排除与操作栏数字处于同一行的图标 OCR 结果
-                    let action_row_tolerance = (height * 2 / 100).max(8);
-                    let outside_action_row = !post.metric_candidates.iter().any(|candidate| {
-                        item.y.abs_diff(candidate.y) <= action_row_tolerance
-                    });
-            
+                    let action_row_tolerance = (height * 12 / 1032).max(8);
+
+                    let outside_action_row = selected_action_y
+                        .is_none_or(|action_y| item.y.abs_diff(action_y) > action_row_tolerance);
+
                     outside_media && outside_action_row
                 })
                 .map(|item| item.text.as_str())
@@ -483,4 +534,31 @@ fn is_ui_control(text: &str) -> bool {
         ]
         .iter()
         .any(|control| text == *control)
+}
+
+/// 将互动数字按垂直位置分组。
+///
+/// 同一互动行的数字通常具有接近的 Y 坐标。
+/// 这里允许 12 像素的垂直差异；不同截图分辨率下，
+/// 后续可以将这个固定值改成基于图像高度的比例。
+fn group_metric_rows(candidates: &[LocatedText], tolerance: u32) -> Vec<Vec<&LocatedText>> {
+    let mut sorted = candidates.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|candidate| (candidate.y, candidate.x));
+
+    let mut rows: Vec<Vec<&LocatedText>> = Vec::new();
+
+    for candidate in sorted {
+        if let Some(row) = rows.last_mut() {
+            // 使用当前行第一个数字的 Y 坐标作为行基准，
+            // 防止多个小偏差累积后把相邻两行合并。
+            if candidate.y.abs_diff(row[0].y) <= tolerance {
+                row.push(candidate);
+                continue;
+            }
+        }
+
+        rows.push(vec![candidate]);
+    }
+
+    rows
 }
