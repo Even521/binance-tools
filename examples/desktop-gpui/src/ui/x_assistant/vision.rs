@@ -227,18 +227,61 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
         }
         if !current_url.as_deref().is_some_and(ocr::is_x_home_address) {
             automation::log_event(&format!(
-                "全自动恢复：当前地址未能确认回到 x.com/home（当前：{current_url:?}）；尝试再次按 Escape 并点击放弃以强制恢复。"
+                "全自动恢复：当前地址未能确认回到 x.com/home（当前：{current_url:?}）；\
+                 按 Escape 后重新截图检查，不再盲目点击屏幕中心。"
             ));
+
             let _ = native::press_escape();
-            std::thread::sleep(Duration::from_millis(500));
-            let fallback_x = check_shot.width as i32 * 50 / 100;
-            let fallback_y = check_shot.height as i32 * 60 / 100;
-            let _ = native::click_at_client_position(fallback_x, fallback_y);
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(Duration::from_millis(800));
+
+            let after_escape = capture_desktop(
+                &dir,
+                &id,
+                "full-auto-error-state-safe-check",
+                &mut screenshots,
+            )?;
+
+            current_url = ocr::recognize_current_url(&after_escape.png)?;
+
+            if current_url.as_deref().is_some_and(ocr::is_x_home_address) {
+                automation::log_event("全自动恢复：按 Escape 后已确认回到 x.com/home。");
+            } else if let Some((discard_x, discard_y)) =
+                ocr::locate_discard_draft_button(&after_escape.png)?
+            {
+                automation::log_event("全自动恢复：识别到草稿放弃按钮，点击识别到的按钮坐标。");
+
+                native::click_at_client_position(discard_x, discard_y)?;
+                std::thread::sleep(Duration::from_millis(700));
+
+                let after_discard = capture_desktop(
+                    &dir,
+                    &id,
+                    "full-auto-error-state-safe-after-discard",
+                    &mut screenshots,
+                )?;
+
+                current_url = ocr::recognize_current_url(&after_discard.png)?;
+
+                if current_url.as_deref().is_some_and(ocr::is_x_home_address) {
+                    automation::log_event("全自动恢复：点击放弃后已确认回到 x.com/home。");
+                } else {
+                    automation::log_event(&format!(
+                        "全自动恢复：点击放弃后仍未确认首页，当前地址：{current_url:?}；\
+                         不再执行盲目点击。"
+                    ));
+                }
+            } else {
+                automation::log_event(&format!(
+                    "全自动恢复：未识别到可靠的放弃按钮，当前地址：{current_url:?}；\
+                     为避免误点，不执行屏幕中心点击。"
+                ));
+            }
         }
     }
     let seed = next_random_u64();
-    if seed % 2 == 0 {
+    // 普通报错优先小步滚动，不随机刷新页面。
+    // 只有非报错场景才保留原来的随机刷新策略。
+    if !reason.contains("报错") && seed % 2 == 0 {
         automation::native::activate_browser()?;
         automation::log_event(&format!("全自动恢复：{reason}；随机选择 F5 刷新页面。"));
         automation::native::press_f5()?;
@@ -368,7 +411,7 @@ fn run_visual_reply_inner(
 
     if native::activate_browser().is_err() {
         super::option::open_chrome()?;
-        wait_cancel(cancel, Duration::from_secs(2))?;
+        wait_cancel(cancel, Duration::from_secs(5))?;
     }
 
     let mut browser_ready = false;

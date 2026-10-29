@@ -3,8 +3,8 @@
     "enabled": true,
     "version": 2,
     "default_model": {
-      "provider": "deepseek-ai",
-      "model": "deepseek-ai/deepseek-v4-pro"
+      "provider": "ollama",
+      "model": "qwen3.5:4b"
     },
     "inline_assistant_model": null,
     "commit_message_model": null,
@@ -152,8 +152,8 @@
       "api_format": "open_ai_chat",
       "available_models": [
         {
-          "name": "qwen2.5:3b",
-          "display_name": "qwen2.5:3b",
+          "name": "qwen3.5:4b",
+          "display_name": "qwen3.5:4b",
           "max_tokens": 32768,
           "max_output_tokens": null,
           "max_completion_tokens": null,

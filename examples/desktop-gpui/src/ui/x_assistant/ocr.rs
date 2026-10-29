@@ -166,6 +166,24 @@ pub(super) fn identify_post_and_action_bar_at(
             }))?
         ));
         let parsed = parse_timeline(&result.text_blocks, &source);
+        super::automation::log_event(&format!(
+            "OCR诊断：文本框数量={}，解析帖子数量={}",
+            result.text_blocks.len(),
+            parsed.timeline.posts.len()
+        ));
+
+        for (index, candidate) in parsed.timeline.posts.iter().enumerate() {
+            super::automation::log_event(&format!(
+                "OCR诊断：候选#{} 作者={:?} 账号={:?} 时间={:?} 正文长度={} 评论={:?} 浏览量={:?}",
+                index + 1,
+                candidate.author_name,
+                candidate.account,
+                candidate.timestamp,
+                candidate.text.trim().chars().count(),
+                candidate.metrics.comments,
+                candidate.metrics.views,
+            ));
+        }
         let complete_post_indices = parsed
             .timeline
             .posts
