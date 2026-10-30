@@ -1,6 +1,7 @@
 use std::{cell::RefCell, path::Path};
 
 use ocr_rs::{OcrEngine, OcrResult, TextBlock};
+use std::time::Instant;
 
 #[derive(Debug)]
 pub(super) struct OcrLine {
@@ -938,15 +939,64 @@ fn with_cached_ocr_engine<T>(
     operation: impl FnOnce(&mut OcrEngine) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     thread_local! {
-        static OCR_ENGINE: RefCell<Option<OcrEngine>> = const { RefCell::new(None) };
+        static OCR_ENGINE: RefCell<Option<OcrEngine>> = const {
+            RefCell::new(None)
+        };
     }
 
     OCR_ENGINE.with(|cached| {
         let mut cached = cached.borrow_mut();
+
+        // 第一次调用时初始化 OCR 引擎
         if cached.is_none() {
-            *cached = Some(OcrEngine::new()?);
+            let init_start = Instant::now();
+
+            let engine = match OcrEngine::new_directml() {
+                Ok(engine) => {
+                    super::automation::log_event("[OCR] DirectML GPU 初始化成功");
+                    engine
+                }
+                Err(err) => {
+                    super::automation::log_event(&format!(
+                        "[OCR] DirectML 初始化失败，回退 CPU：{:#}",
+                        err
+                    ));
+
+                    let engine = OcrEngine::new()?;
+
+                    super::automation::log_event("[OCR] CPU OCR 初始化成功");
+
+                    engine
+                }
+            };
+
+            let init_ms = init_start.elapsed().as_millis();
+
+            super::automation::log_event(&format!("[OCR] 引擎初始化耗时：{} ms", init_ms));
+
+            *cached = Some(engine);
         }
-        operation(cached.as_mut().expect("OCR engine initialized"))
+
+        // 统计本次 OCR 实际执行耗时
+        let ocr_start = Instant::now();
+
+        let result = operation(cached.as_mut().expect("OCR engine initialized"));
+
+        let ocr_ms = ocr_start.elapsed().as_millis();
+
+        match &result {
+            Ok(_) => {
+                super::automation::log_event(&format!("[OCR] 本次识别完成，耗时：{} ms", ocr_ms));
+            }
+            Err(err) => {
+                super::automation::log_event(&format!(
+                    "[OCR] 本次识别失败，耗时：{} ms，错误：{:#}",
+                    ocr_ms, err
+                ));
+            }
+        }
+
+        result
     })
 }
 
