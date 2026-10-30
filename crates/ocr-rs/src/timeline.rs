@@ -140,6 +140,12 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
     // 下一条顶层作者栏出现时恢复。
     let mut skip_nested_content = false;
 
+    // 是否已经识别到帖子详情弹窗中的引用作者
+    let mut nested_quote_seen = false;
+
+    // 是否忽略弹窗后方的时间线帖子
+    let mut ignore_following_posts = false;
+
     for (y, x, block) in positioned {
         let text = block.text.trim();
 
@@ -153,6 +159,11 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             y,
             confidence: block.text_score,
         };
+
+        // 忽略弹窗后方中央时间线的内容，但不影响浏览器顶部和右侧栏解析。
+        if ignore_following_posts && x >= width * 28 / 100 && x < width * 64 / 100 {
+            continue;
+        }
 
         // 1. 浏览器顶部
         if y <= browser_bottom {
@@ -195,6 +206,7 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             ));
 
             if is_nested_header {
+                nested_quote_seen = true;
                 // 引用卡片中的作者也需要作为评论目标。
                 // 先保存外层帖子，再为引用作者创建独立帖子。
                 if let Some(post) = current_post.take() {
@@ -225,6 +237,30 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
             }
 
             // 新的顶层作者栏：恢复采集。
+            // 已经识别到引用作者时，下一位顶层作者属于弹窗背后的时间线。
+            // 保存当前引用作者，但不把背景帖子加入本次结果。
+            if nested_quote_seen {
+                if let Some(post) = current_post.take() {
+                    ocr_debug(&format!(
+                        "[OCR-POST-SAVE-QUOTE] name={:?}, account={:?}, y={}",
+                        post.author_name, post.account, post.header_y
+                    ));
+
+                    post_builders.push(post);
+                }
+
+                ignore_following_posts = true;
+                skip_nested_content = false;
+
+                ocr_debug(&format!(
+                    "[OCR-BACKGROUND-POST-SKIP] name={:?}, account={:?}, y={}",
+                    name, account, y
+                ));
+
+                continue;
+            }
+
+            // 普通顶层帖子：恢复正文采集。
             skip_nested_content = false;
 
             if let Some(post) = current_post.take() {

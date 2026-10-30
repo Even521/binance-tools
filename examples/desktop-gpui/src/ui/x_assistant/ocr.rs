@@ -151,7 +151,7 @@ pub(super) fn identify_post_and_action_bar_at(
 ) -> anyhow::Result<LocalPostIdentification> {
     let source = image::open(path)?.to_rgb8();
     with_cached_ocr_engine(|engine| {
-        let (result, page_json) = engine.recognize_path_with_action_coordinates(path)?;
+        let (result, page_json) = engine.recognize_image_with_action_coordinates(&source, path)?;
         anyhow::ensure!(
             page_json["current_url"]
                 .as_str()

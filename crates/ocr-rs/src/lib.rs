@@ -55,18 +55,36 @@ impl OcrEngine {
     }
 
     /// Recognizes a full page and returns its OCR details plus timeline/action coordinates as JSON.
+
+    /// 从图片路径读取图片，再执行 OCR 和坐标识别。
+    /// 保留此方法，兼容原有调用。
     pub fn recognize_path_with_action_coordinates(
         &mut self,
         path: impl AsRef<Path>,
     ) -> Result<(OcrResult, serde_json::Value)> {
         let path = path.as_ref();
+
         let image = ImageReader::open(path)
             .with_context(|| format!("failed to open image {}", path.display()))?
             .decode()
             .with_context(|| format!("failed to decode image {}", path.display()))?
             .to_rgb8();
-        let result = self.recognize_image_detailed(&image)?;
-        let timeline = parse_timeline(&result.text_blocks, &image);
+
+        self.recognize_image_with_action_coordinates(&image, path)
+    }
+
+    /// 使用已经解码的图片执行 OCR 和坐标识别。
+    /// 避免调用方已经读取图片后，再次从磁盘解码。
+    pub fn recognize_image_with_action_coordinates(
+        &mut self,
+        image: &image::RgbImage,
+        path: impl AsRef<Path>,
+    ) -> Result<(OcrResult, serde_json::Value)> {
+        let path = path.as_ref();
+
+        let result = self.recognize_image_detailed(image)?;
+        let timeline = parse_timeline(&result.text_blocks, image);
+
         let text_blocks = result
             .text_blocks
             .iter()
@@ -75,14 +93,24 @@ impl OcrEngine {
                 let top = block.box_points.iter().map(|point| point.y).min()?;
                 let right = block.box_points.iter().map(|point| point.x).max()?;
                 let bottom = block.box_points.iter().map(|point| point.y).max()?;
+
                 Some(serde_json::json!({
                     "text": block.text,
-                    "box": { "left": left, "top": top, "right": right, "bottom": bottom },
-                    "center": { "x": (left + right) / 2, "y": (top + bottom) / 2 },
+                    "box": {
+                        "left": left,
+                        "top": top,
+                        "right": right,
+                        "bottom": bottom
+                    },
+                    "center": {
+                        "x": (left + right) / 2,
+                        "y": (top + bottom) / 2
+                    },
                     "confidence": block.text_score,
                 }))
             })
             .collect::<Vec<_>>();
+
         let coordinates = timeline
             .timeline
             .posts
@@ -119,17 +147,22 @@ impl OcrEngine {
             let text = block.text.trim();
             let normalized = text.to_ascii_lowercase();
             let marker = find_x_url_start(&normalized)?;
+
             let url = text[marker..]
                 .split_whitespace()
                 .next()?
-                .trim_matches(|ch: char| matches!(ch, '\"' | '\'' | '(' | ')' | ',' | ';'));
+                .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '(' | ')' | ',' | ';'));
+
             Some(url.trim_end_matches('.').to_string())
         });
+
         let json = serde_json::json!({
             "image": path.display().to_string(),
             "current_url": current_url,
-            "image": path.display().to_string(),
-            "image_size": { "width": image.width(), "height": image.height() },
+            "image_size": {
+                "width": image.width(),
+                "height": image.height()
+            },
             "text_block_count": text_blocks.len(),
             "text_blocks": text_blocks,
             "browser": timeline.browser,
@@ -138,6 +171,7 @@ impl OcrEngine {
             "right_sidebar": timeline.right_sidebar,
             "action_coordinates": coordinates,
         });
+
         Ok((result, json))
     }
 
