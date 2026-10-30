@@ -501,16 +501,6 @@ pub(super) fn reply_composer_is_open(path: &Path) -> anyhow::Result<bool> {
         .any(|line| text_match_ratio(&normalize_text(&line.text), &expected) >= 0.75))
 }
 
-pub(super) fn recognize_sent_toast(path: &Path) -> anyhow::Result<bool> {
-    let doc = recognize_document(path)?;
-    Ok(contains_sent_confirmation(&doc.text))
-}
-
-pub(super) fn recognize_already_sent_toast(path: &Path) -> anyhow::Result<bool> {
-    let doc = recognize_document(path)?;
-    Ok(contains_already_sent_confirmation(&doc.text))
-}
-
 pub(super) fn recognize_save_draft_confirmation(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(doc.lines.iter().any(|line| {
@@ -572,20 +562,6 @@ pub(super) fn locate_discard_draft_button(path: &Path) -> anyhow::Result<Option<
 pub(super) fn recognize_reload_confirmation(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(contains_reload_confirmation(&doc.text))
-}
-
-pub(super) fn recognize_rate_limit(path: &Path) -> anyhow::Result<bool> {
-    let doc = recognize_document(path)?;
-    Ok(contains_rate_limit(&doc.text))
-}
-
-pub(super) fn recognize_retryable_send_error(path: &Path) -> anyhow::Result<bool> {
-    let doc = recognize_document(path)?;
-    Ok(contains_retryable_send_error(&doc.text)
-        || doc
-            .lines
-            .iter()
-            .any(|line| contains_retryable_send_error(&line.text)))
 }
 
 pub(super) fn verify_reply_tooltip(
