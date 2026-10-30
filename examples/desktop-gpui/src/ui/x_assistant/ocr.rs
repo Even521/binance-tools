@@ -47,27 +47,78 @@ pub(super) fn recognize_current_url(path: &Path) -> anyhow::Result<Option<String
     use image::imageops::crop_imm;
 
     let image = image::open(path)?.to_rgb8();
-    let crop_top = image.height() * 2 / 100;
-    let crop_bottom = image.height() * 9 / 100;
-    let crop_width = image.width() * 80 / 100;
-    anyhow::ensure!(
-        crop_bottom > crop_top && crop_width > 0,
-        "浏览器地址栏裁剪区域无效"
-    );
-    let mut address_bar =
-        crop_imm(&image, 0, crop_top, crop_width, crop_bottom - crop_top).to_image();
-    address_bar = image::imageops::resize(
-        &address_bar,
-        address_bar.width().saturating_mul(2),
-        address_bar.height().saturating_mul(2),
-        image::imageops::FilterType::Lanczos3,
-    );
+    let width = image.width();
+    let height = image.height();
+
+    // 通用策略：覆盖浏览器顶部，不依赖屏幕分辨率或设备类型。
+    // 从较窄区域逐步扩大，减少不必要的 OCR 运算。
+    let crop_configs = [
+        (0, 2, 100, 10),
+        (0, 0, 100, 12),
+        (0, 0, 100, 16),
+        (0, 0, 100, 20),
+    ];
+
     with_cached_ocr_engine(|engine| {
-        let result = engine.recognize_image_detailed(&address_bar)?;
-        Ok(result
-            .text_blocks
-            .iter()
-            .find_map(|block| extract_x_url(&block.text)))
+        for (index, &(left_pct, top_pct, right_pct, bottom_pct)) in crop_configs.iter().enumerate()
+        {
+            let left = width * left_pct / 100;
+            let top = height * top_pct / 100;
+            let right = width * right_pct / 100;
+            let bottom = height * bottom_pct / 100;
+
+            if right <= left || bottom <= top {
+                continue;
+            }
+
+            let mut crop = crop_imm(&image, left, top, right - left, bottom - top).to_image();
+
+            crop = image::imageops::resize(
+                &crop,
+                crop.width().saturating_mul(2),
+                crop.height().saturating_mul(2),
+                image::imageops::FilterType::Lanczos3,
+            );
+
+            let result = engine.recognize_image_detailed(&crop)?;
+
+            let recognized = result
+                .text_blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+
+            super::automation::log_event(&format!(
+                "[OCR-地址栏] 第{}次识别，区域={}%-{}%，结果={}",
+                index + 1,
+                top_pct,
+                bottom_pct,
+                recognized
+            ));
+
+            if let Some(url) = result
+                .text_blocks
+                .iter()
+                .find_map(|block| extract_x_url(&block.text))
+            {
+                let normalized = url.to_ascii_lowercase();
+
+                // 只接受 x.com 的 HTTP/HTTPS 地址或裸域名地址。
+                let valid = normalized.starts_with("https://x.com/")
+                    || normalized.starts_with("http://x.com/")
+                    || normalized.starts_with("x.com/");
+
+                if valid {
+                    super::automation::log_event(&format!("[OCR-地址栏] 通用识别成功：{}", url));
+                    return Ok(Some(url));
+                }
+            }
+        }
+
+        super::automation::log_event("[OCR-地址栏] 所有通用裁剪区域均未识别到 X 地址");
+
+        Ok(None)
     })
 }
 
@@ -210,10 +261,11 @@ pub(super) fn identify_post_and_action_bar_at(
                         .as_deref()
                         .is_some_and(|value| !value.trim().is_empty());
 
-                let has_text_and_action_row = !candidate.text.trim().is_empty()
-                    && (candidate.metrics.comments.is_some() || candidate.metrics.views.is_some());
+                // 评论数和浏览量容易因 OCR 漏识别，不应作为帖子完整性的硬性条件。
+                // 互动栏坐标会在后续步骤独立识别并进行结构校验。
+                let has_text = !candidate.text.trim().is_empty();
 
-                (has_identity && has_text_and_action_row).then_some(index)
+                (has_identity && has_text).then_some(index)
             })
             .collect::<Vec<_>>();
 

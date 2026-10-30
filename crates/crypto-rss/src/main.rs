@@ -20,7 +20,10 @@ async fn main() -> Result<()> {
         if let Some(error) = &report.error {
             eprintln!("[FAIL] {}: {}", report.source, error);
         } else {
-            println!("[OK] {}: fetched={}, unique={}", report.source, report.fetched, report.unique);
+            println!(
+                "[OK] {}: fetched={}, unique={}",
+                report.source, report.fetched, report.unique
+            );
         }
     }
 
@@ -32,7 +35,11 @@ async fn main() -> Result<()> {
 
     let path = Path::new(output_path);
     fs::write(path, output).with_context(|| format!("write output: {}", path.display()))?;
-    println!("Collected {} unique items -> {}", items.len(), path.display());
+    println!(
+        "Collected {} unique items -> {}",
+        items.len(),
+        path.display()
+    );
 
     Ok(())
 }

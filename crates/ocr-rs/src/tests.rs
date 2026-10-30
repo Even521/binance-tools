@@ -204,3 +204,36 @@ fn recognize_configured_image_and_print_result() {
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
+
+#[test]
+fn recognize_configured_image_gpu_and_print_result() {
+    let image_path = if let Some(image_path) = env::var_os("OCR_TEST_IMAGE") {
+        PathBuf::from(image_path)
+    } else {
+        eprintln!("skipped: set OCR_TEST_IMAGE to a Chinese or multilingual image file path");
+        return;
+    };
+
+    let image_path = if image_path.is_absolute() || image_path.is_file() {
+        image_path
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(image_path)
+    };
+    let image_path = image_path
+        .canonicalize()
+        .expect("test image path does not exist");
+
+    let mut engine = OcrEngine::new_directml().expect("failed to initialize PP-OCRv6 Tiny");
+
+    let (result, output) = engine
+        .recognize_path_with_action_coordinates(&image_path)
+        .expect("failed to recognize test image and locate action coordinates");
+    assert!(
+        !result.text_blocks.is_empty(),
+        "OCR returned no text; check the image and downloaded models"
+    );
+
+    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
