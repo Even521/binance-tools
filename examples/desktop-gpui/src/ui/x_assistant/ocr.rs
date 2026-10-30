@@ -3,19 +3,19 @@ use std::{cell::RefCell, path::Path};
 use ocr_rs::{OcrEngine, OcrResult, TextBlock, parse_timeline};
 
 #[derive(Debug)]
-struct OcrLine {
-    text: String,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
+pub(super) struct OcrLine {
+    pub(super) text: String,
+    pub(super) left: f32,
+    pub(super) top: f32,
+    pub(super) right: f32,
+    pub(super) bottom: f32,
 }
 
-struct OcrDocument {
-    text: String,
-    lines: Vec<OcrLine>,
-    scale_x: f32,
-    scale_y: f32,
+pub(super) struct OcrDocument {
+    pub(super) text: String,
+    pub(super) lines: Vec<OcrLine>,
+    pub(super) scale_x: f32,
+    pub(super) scale_y: f32,
 }
 
 pub(super) struct LocalPostIdentification {
@@ -851,7 +851,7 @@ pub(super) fn locate_reply_submit_button(
     }
 }
 
-fn recognize_document(path: &Path) -> anyhow::Result<OcrDocument> {
+pub(super) fn recognize_document(path: &Path) -> anyhow::Result<OcrDocument> {
     recognize_document_with_options(path, 4, 3, Some(200))
 }
 
@@ -948,7 +948,7 @@ fn normalize_text(text: &str) -> String {
     text.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
-fn contains_rate_limit(text: &str) -> bool {
+pub(super) fn contains_rate_limit(text: &str) -> bool {
     let normalized = normalize_text(text).to_lowercase();
     [
         "请求过于频繁",
@@ -970,7 +970,7 @@ fn contains_reload_confirmation(text: &str) -> bool {
         && normalized.contains(&normalize_text("系统可能不会保存你所做的更改"))
 }
 
-fn contains_retryable_send_error(text: &str) -> bool {
+pub(super) fn contains_retryable_send_error(text: &str) -> bool {
     let normalized = normalize_text(text);
     [
         "出错了别担心让我们再试一次",
@@ -980,7 +980,7 @@ fn contains_retryable_send_error(text: &str) -> bool {
     .any(|message| normalized.contains(&normalize_text(message)))
 }
 
-fn contains_post_unavailable_error(text: &str) -> bool {
+pub(super) fn contains_post_unavailable_error(text: &str) -> bool {
     let normalized = normalize_text(text);
     ["已被删除", "不可见", "不可用", "此帖子", "找不到"]
         .iter()
@@ -996,7 +996,7 @@ pub(super) fn recognize_post_unavailable_error(path: &Path) -> anyhow::Result<bo
             .any(|line| contains_post_unavailable_error(&line.text)))
 }
 
-fn contains_already_sent_confirmation(text: &str) -> bool {
+pub(super) fn contains_already_sent_confirmation(text: &str) -> bool {
     let normalized = normalize_text(text).to_lowercase();
     [
         "你已经发送过了",
@@ -1008,7 +1008,7 @@ fn contains_already_sent_confirmation(text: &str) -> bool {
     .any(|phrase| normalized.contains(&normalize_text(phrase).to_lowercase()))
 }
 
-fn contains_sent_confirmation(text: &str) -> bool {
+pub(super) fn contains_sent_confirmation(text: &str) -> bool {
     let normalized = normalize_text(text).to_lowercase();
     if ["yourpostwassent", "yourreplywassent"]
         .iter()

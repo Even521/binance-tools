@@ -1,9 +1,10 @@
 mod automation;
 mod full_auto;
+mod ocr;
+mod ocr_status;
 mod option;
 mod reply_list;
 mod vision;
-
 use crate::ui::palette;
 
 use gpui::{prelude::FluentBuilder, *};

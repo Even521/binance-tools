@@ -9,6 +9,7 @@ use std::{
 use serde::{Deserialize, Deserializer};
 
 use super::automation::{self, native};
+use super::ocr_status::recognize_send_status;
 
 #[path = "ocr.rs"]
 mod ocr;
@@ -1097,8 +1098,38 @@ fn run_visual_reply_inner(
 
     let mut done = capture(&dir, &id, "04-result", &mut screenshots)?;
     check_cancel(cancel)?;
-    if ocr::recognize_already_sent_toast(&done.png).unwrap_or(false) {
+
+    // ============================================================
+    // 第一次发送结果检查：同一张截图只执行一次 OCR
+    // ============================================================
+
+    let ocr_started = std::time::Instant::now();
+
+    let status = match recognize_send_status(&done.png) {
+        Ok(status) => {
+            automation::log_event(&format!(
+                "阶段 3/3：ppocr-rs 耗时 {} ms，发送状态识别完成。",
+                ocr_started.elapsed().as_millis()
+            ));
+            status
+        }
+        Err(error) => {
+            automation::log_event(&format!(
+                "阶段 3/3：ppocr-rs 耗时 {} ms，OCR 识别失败：{error:#}；将使用 AI 复核，不自动重试。",
+                ocr_started.elapsed().as_millis()
+            ));
+
+            // OCR 失败时不自动重试，避免重复发送。
+            // 后续继续原有 AI 复核流程。
+            // 此处不提前返回。
+            Default::default()
+        }
+    };
+
+    // 已经发送过
+    if status.already_sent {
         automation::log_event("阶段 3/3：X 提示该回复已经发送过；标记该账号已处理，不再重发。");
+
         return already_sent_result(
             &dir,
             &id,
@@ -1112,69 +1143,72 @@ fn run_visual_reply_inner(
             cancel,
         );
     }
-    let ocr_started = std::time::Instant::now();
-    match ocr::recognize_sent_toast(&done.png) {
-        Ok(confirmed) => {
+
+    // 发送成功
+    if status.sent {
+        automation::log_event("阶段 3/3：PP-OCR 检测到发送成功提示。");
+
+        if let Err(error) =
+            binance_tools::db::x_assistant::mark_last_step_completed_blocking(&run_id)
+        {
             automation::log_event(&format!(
-                "阶段 3/3：ppocr-rs 耗时 {} ms，{}。",
-                ocr_started.elapsed().as_millis(),
-                if confirmed {
-                    "检测到发送成功提示"
-                } else {
-                    "未检测到发送成功提示，将使用 AI 复核"
-                }
+                "回复已确认发送，但 SQLite 完成状态更新失败：{error:#}"
             ));
-            if confirmed {
-                if let Err(error) =
-                    binance_tools::db::x_assistant::mark_last_step_completed_blocking(&run_id)
-                {
-                    automation::log_event(&format!(
-                        "回复已确认发送，但 SQLite 完成状态更新失败：{error:#}"
-                    ));
-                }
-                return Ok(VisionReplyResult {
-                    screenshots,
-                    author_name,
-                    account_handle,
-                    posted_at,
-                    post_text,
-                    reply_text,
-                    completed: true,
-                    skipped_duplicate: false,
-                    summary: "ppocr-rs 检测到发送成功提示。".to_string(),
-                });
-            }
         }
-        Err(error) => automation::log_event(&format!(
-            "阶段 3/3：ppocr-rs 耗时 {} ms，无法使用（{}）；将使用 AI 复核",
-            ocr_started.elapsed().as_millis(),
-            error
-        )),
+
+        return Ok(VisionReplyResult {
+            screenshots,
+            author_name,
+            account_handle,
+            posted_at,
+            post_text,
+            reply_text,
+            completed: true,
+            skipped_duplicate: false,
+            summary: "ppocr-rs 检测到发送成功提示。".to_string(),
+        });
     }
 
-    if ocr::recognize_rate_limit(&done.png).unwrap_or(false) {
+    // 平台限流
+    if status.rate_limited {
         automation::log_event("阶段 3/3：检测到平台限流提示；不重试、不刷新，停止全自动发送。");
+
         return Err(anyhow::Error::new(RateLimitDetected));
     }
 
-    let retryable_error = match ocr::recognize_retryable_send_error(&done.png) {
-        Ok(found) => found,
-        Err(error) => {
-            automation::log_event(&format!(
-                "阶段 3/3：识别发送错误提示失败，暂不自动重试以避免重复发送：{error:#}"
-            ));
-            false
-        }
-    };
+    // 是否存在可重试发送错误
+    let retryable_error = status.retryable_error;
+
     if retryable_error {
-        automation::log_event(
-            "阶段 3/3：截图识别到‘出错了，别担心，让我们再试一次’；等待 5 秒后重新截图并确认发送状态。",
-        );
+        automation::log_event("阶段 3/3：截图识别到发送错误；等待 5 秒后重新截图并确认发送状态。");
+
         wait_cancel(cancel, Duration::from_secs(5))?;
+
         let retry_ready = capture(&dir, &id, "04-retry-check", &mut screenshots)?;
+
         check_cancel(cancel)?;
-        if ocr::recognize_already_sent_toast(&retry_ready.png).unwrap_or(false) {
+
+        // ========================================================
+        // 重试前状态检查：一次 OCR 判断全部状态
+        // ========================================================
+
+        let retry_status = match recognize_send_status(&retry_ready.png) {
+            Ok(status) => status,
+            Err(error) => {
+                automation::log_event(&format!(
+                    "阶段 3/3：重试前 OCR 识别失败：{error:#}；无法确认发送状态，放弃重试。"
+                ));
+
+                let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+
+                anyhow::bail!("重试前无法确认发送状态，已放弃重复提交：{error:#}");
+            }
+        };
+
+        // 已经发送过
+        if retry_status.already_sent {
             automation::log_event("阶段 3/3：重试前 X 已提示该回复发送过；不再点击提交。");
+
             return already_sent_result(
                 &dir,
                 &id,
@@ -1188,14 +1222,20 @@ fn run_visual_reply_inner(
                 cancel,
             );
         }
-        if ocr::recognize_rate_limit(&retry_ready.png).unwrap_or(false) {
+
+        // 限流
+        if retry_status.rate_limited {
             automation::log_event(
                 "阶段 3/3：等待期间检测到平台限流提示；不提交重试，停止全自动发送。",
             );
+
             return Err(anyhow::Error::new(RateLimitDetected));
         }
-        if ocr::recognize_sent_toast(&retry_ready.png).unwrap_or(false) {
+
+        // 已发送成功
+        if retry_status.sent {
             automation::log_event("阶段 3/3：等待期间已出现发送成功提示，不再重复提交。");
+
             if let Err(error) =
                 binance_tools::db::x_assistant::mark_last_step_completed_blocking(&run_id)
             {
@@ -1203,6 +1243,7 @@ fn run_visual_reply_inner(
                     "回复已确认发送，但 SQLite 完成状态更新失败：{error:#}"
                 ));
             }
+
             return Ok(VisionReplyResult {
                 screenshots,
                 author_name,
@@ -1216,6 +1257,22 @@ fn run_visual_reply_inner(
             });
         }
 
+        // 重试前再次检测到发送错误，允许执行唯一一次重试。
+        if !retry_status.retryable_error {
+            automation::log_event(
+                "阶段 3/3：重试前没有检测到明确的发送错误；将使用 AI 复核，不自动重复提交。",
+            );
+
+            // 不能确认失败，就不重复点击。
+            let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+
+            anyhow::bail!("重试前未能确认发送失败，已放弃重复提交，避免重复回复");
+        }
+
+        // ========================================================
+        // 定位重试按钮
+        // ========================================================
+
         let retry_button = match ocr::locate_reply_submit_button(
             &retry_ready.png,
             &reply_text,
@@ -1223,20 +1280,27 @@ fn run_visual_reply_inner(
             retry_ready.height,
         ) {
             Ok(Some((x, y))) => Point { x, y },
+
             Ok(None) => {
                 let _ = native::press_escape();
+
                 anyhow::bail!(
                     "发送错误后 5 秒截图中未能同时确认回复文本和提交按钮；已放弃重试并关闭回复弹窗"
                 );
             }
+
             Err(error) => {
                 let _ = native::press_escape();
+
                 anyhow::bail!(
                     "发送错误后重新识别提交按钮失败：{error:#}；已放弃重试并关闭回复弹窗"
                 );
             }
         };
+
+        // 重试前坐标安全校验
         let retry_pre_submit = capture(&dir, &id, "04-retry-presubmit", &mut screenshots)?;
+
         anyhow::ensure!(
             target_region_unchanged(
                 &retry_ready,
@@ -1246,17 +1310,53 @@ fn run_visual_reply_inner(
             )?,
             "等待重试期间回复弹窗发生变化；已停止，避免点击过期坐标"
         );
+
         native::move_cursor_to_reply(retry_button.x, retry_button.y)?;
+
         automation::log_event(&format!(
             "阶段 3/3：间隔 5 秒后进行唯一一次重试，提交坐标 ({}, {})。",
             retry_button.x, retry_button.y
         ));
+
         native::click_at_client_position(retry_button.x, retry_button.y)?;
+
         thread::sleep(Duration::from_secs(2));
+
         done = capture(&dir, &id, "05-retry-result", &mut screenshots)?;
+
         check_cancel(cancel)?;
-        if ocr::recognize_already_sent_toast(&done.png).unwrap_or(false) {
+
+        // ========================================================
+        // 重试结果检查：一次 OCR 判断全部状态
+        // ========================================================
+
+        let status = match recognize_send_status(&done.png) {
+            Ok(status) => status,
+            Err(error) => {
+                automation::log_event(&format!(
+                    "阶段 3/3：唯一一次重试后 OCR 识别失败：{error:#}；无法确认发送结果。"
+                ));
+
+                let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+
+                return Ok(VisionReplyResult {
+                    screenshots,
+                    author_name,
+                    account_handle,
+                    posted_at,
+                    post_text,
+                    reply_text,
+                    completed: false,
+                    skipped_duplicate: false,
+                    summary: "重试后无法确认发送结果，已停止自动操作。".to_string(),
+                });
+            }
+        };
+
+        // 已经发送过
+        if status.already_sent {
             automation::log_event("阶段 3/3：重试后 X 提示该回复已经发送过；标记完成，不再重发。");
+
             return already_sent_result(
                 &dir,
                 &id,
@@ -1270,8 +1370,11 @@ fn run_visual_reply_inner(
                 cancel,
             );
         }
-        if ocr::recognize_sent_toast(&done.png).unwrap_or(false) {
+
+        // 发送成功
+        if status.sent {
             automation::log_event("阶段 3/3：重试后截图检测到发送成功提示。");
+
             if let Err(error) =
                 binance_tools::db::x_assistant::mark_last_step_completed_blocking(&run_id)
             {
@@ -1279,6 +1382,7 @@ fn run_visual_reply_inner(
                     "回复已确认发送，但 SQLite 完成状态更新失败：{error:#}"
                 ));
             }
+
             return Ok(VisionReplyResult {
                 screenshots,
                 author_name,
@@ -1291,15 +1395,22 @@ fn run_visual_reply_inner(
                 summary: "发送错误后重试一次，已检测到发送成功。".to_string(),
             });
         }
-        if ocr::recognize_rate_limit(&done.png).unwrap_or(false) {
+
+        // 限流
+        if status.rate_limited {
             automation::log_event("阶段 3/3：重试后检测到平台限流提示；立即停止全自动发送。");
+
             return Err(anyhow::Error::new(RateLimitDetected));
         }
-        if ocr::recognize_retryable_send_error(&done.png).unwrap_or(false) {
+
+        // 重试后仍然发送错误
+        if status.retryable_error {
             automation::log_event(
                 "阶段 3/3：唯一一次重试后仍检测到发送错误；已安全关闭回复弹窗并继续下一步，不中断程序。",
             );
+
             let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+
             return Ok(VisionReplyResult {
                 screenshots,
                 author_name,
