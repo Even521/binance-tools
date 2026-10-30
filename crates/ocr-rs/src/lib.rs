@@ -75,16 +75,22 @@ impl OcrEngine {
 
     /// 使用已经解码的图片执行 OCR 和坐标识别。
     /// 避免调用方已经读取图片后，再次从磁盘解码。
-    pub fn recognize_image_with_action_coordinates(
+    /// 使用已经解码的图片执行 OCR、时间线解析和坐标识别。
+    /// OCR 推理和 parse_timeline 都只执行一次。
+    pub fn recognize_image_with_action_coordinates_and_timeline(
         &mut self,
         image: &image::RgbImage,
         path: impl AsRef<Path>,
-    ) -> Result<(OcrResult, serde_json::Value)> {
+    ) -> Result<(OcrResult, TimelineOcrResult, serde_json::Value)> {
         let path = path.as_ref();
 
+        // 1. OCR 推理只执行一次
         let result = self.recognize_image_detailed(image)?;
+
+        // 2. 时间线只解析一次
         let timeline = parse_timeline(&result.text_blocks, image);
 
+        // 3. 构建 OCR 文本框 JSON
         let text_blocks = result
             .text_blocks
             .iter()
@@ -111,6 +117,7 @@ impl OcrEngine {
             })
             .collect::<Vec<_>>();
 
+        // 4. 提取第一条帖子的互动栏坐标
         let coordinates = timeline
             .timeline
             .posts
@@ -143,6 +150,7 @@ impl OcrEngine {
                 })
             });
 
+        // 5. 提取当前浏览器地址
         let current_url = result.text_blocks.iter().find_map(|block| {
             let text = block.text.trim();
             let normalized = text.to_ascii_lowercase();
@@ -156,6 +164,9 @@ impl OcrEngine {
             Some(url.trim_end_matches('.').to_string())
         });
 
+        // 6. 构建 JSON。
+        // 注意这里使用引用，避免移动 timeline 内部字段，
+        // 因为下面还要把 timeline 返回给调用方。
         let json = serde_json::json!({
             "image": path.display().to_string(),
             "current_url": current_url,
@@ -165,12 +176,24 @@ impl OcrEngine {
             },
             "text_block_count": text_blocks.len(),
             "text_blocks": text_blocks,
-            "browser": timeline.browser,
-            "left_navigation": timeline.left_navigation,
-            "timeline": timeline.timeline,
-            "right_sidebar": timeline.right_sidebar,
+            "browser": &timeline.browser,
+            "left_navigation": &timeline.left_navigation,
+            "timeline": &timeline.timeline,
+            "right_sidebar": &timeline.right_sidebar,
             "action_coordinates": coordinates,
         });
+
+        Ok((result, timeline, json))
+    }
+
+    /// 兼容原有调用：只返回 OCR 结果和 JSON。
+    pub fn recognize_image_with_action_coordinates(
+        &mut self,
+        image: &image::RgbImage,
+        path: impl AsRef<Path>,
+    ) -> Result<(OcrResult, serde_json::Value)> {
+        let (result, _timeline, json) =
+            self.recognize_image_with_action_coordinates_and_timeline(image, path)?;
 
         Ok((result, json))
     }

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, path::Path};
 
-use ocr_rs::{OcrEngine, OcrResult, TextBlock, parse_timeline};
+use ocr_rs::{OcrEngine, OcrResult, TextBlock};
 
 #[derive(Debug)]
 pub(super) struct OcrLine {
@@ -150,14 +150,19 @@ pub(super) fn identify_post_and_action_bar_at(
     post_index: usize,
 ) -> anyhow::Result<LocalPostIdentification> {
     let source = image::open(path)?.to_rgb8();
+
     with_cached_ocr_engine(|engine| {
-        let (result, page_json) = engine.recognize_image_with_action_coordinates(&source, path)?;
+        // OCR 和时间线解析一次完成，不再重复 parse_timeline
+        let (result, parsed, page_json) =
+            engine.recognize_image_with_action_coordinates_and_timeline(&source, path)?;
+
         anyhow::ensure!(
             page_json["current_url"]
                 .as_str()
                 .is_some_and(is_x_home_address),
             "当前地址不是 x.com/home，可能已有回复/发帖弹窗遮挡时间线；停止帖子解析"
         );
+
         super::automation::log_event(&format!(
             "阶段 1/3：截图后当前地址与时间线 PP-OCR JSON：{}",
             serde_json::to_string(&serde_json::json!({
@@ -165,7 +170,7 @@ pub(super) fn identify_post_and_action_bar_at(
                 "timeline": page_json["timeline"],
             }))?
         ));
-        let parsed = parse_timeline(&result.text_blocks, &source);
+
         super::automation::log_event(&format!(
             "OCR诊断：文本框数量={}，解析帖子数量={}",
             result.text_blocks.len(),
@@ -184,6 +189,7 @@ pub(super) fn identify_post_and_action_bar_at(
                 candidate.metrics.views,
             ));
         }
+
         let complete_post_indices = parsed
             .timeline
             .posts
@@ -202,11 +208,14 @@ pub(super) fn identify_post_and_action_bar_at(
                         .timestamp
                         .as_deref()
                         .is_some_and(|value| !value.trim().is_empty());
+
                 let has_text_and_action_row = !candidate.text.trim().is_empty()
                     && (candidate.metrics.comments.is_some() || candidate.metrics.views.is_some());
+
                 (has_identity && has_text_and_action_row).then_some(index)
             })
             .collect::<Vec<_>>();
+
         let selected_index = complete_post_indices
             .get(post_index)
             .copied()
@@ -217,25 +226,31 @@ pub(super) fn identify_post_and_action_bar_at(
                     complete_post_indices.len()
                 )
             })?;
+
         let post = &parsed.timeline.posts[selected_index];
+
         let author_name = post
             .author_name
             .clone()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子作者"))?;
+
         let account_handle = post
             .account
             .clone()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子账号"))?;
+
         let posted_at = post
             .timestamp
             .clone()
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("PP-OCR 未识别到帖子发布时间"))?;
+
         anyhow::ensure!(!post.text.trim().is_empty(), "PP-OCR 识别到的帖子正文为空");
 
         let account_token = account_handle.trim_start_matches('@');
+
         let header_y = result
             .text_blocks
             .iter()
@@ -268,13 +283,16 @@ pub(super) fn identify_post_and_action_bar_at(
             .iter()
             .filter_map(|block| {
                 let text = block.text.trim();
+
                 if !is_numeric_count(text) {
                     return None;
                 }
+
                 let (left, top, right, bottom) = text_block_bounds(block)?;
                 let center_x = (left + right) / 2;
                 let center_y = (top + bottom) / 2;
                 let relative_x = center_x as f32 / source.width().max(1) as f32;
+
                 (center_y > header_y
                     && center_y < next_header_y
                     && relative_x >= 0.30
@@ -287,8 +305,11 @@ pub(super) fn identify_post_and_action_bar_at(
                     })
             })
             .collect::<Vec<_>>();
+
         counts.sort_by_key(|candidate| (candidate.center_y, candidate.center_x));
+
         let mut rows: Vec<Vec<MetricCandidate>> = Vec::new();
+
         for candidate in counts {
             if let Some(row) = rows.last_mut()
                 && candidate.center_y.saturating_sub(row[0].center_y) <= 12
@@ -298,6 +319,7 @@ pub(super) fn identify_post_and_action_bar_at(
                 rows.push(vec![candidate]);
             }
         }
+
         let mut action_row = rows
             .into_iter()
             .filter(|row| {
@@ -321,6 +343,7 @@ pub(super) fn identify_post_and_action_bar_at(
         }
 
         action_row.sort_by_key(|item| item.center_x);
+
         anyhow::ensure!(
             action_row.iter().all(|item| {
                 let y = item.center_y as i32;
@@ -334,12 +357,16 @@ pub(super) fn identify_post_and_action_bar_at(
         let repost = (action_row.len() >= 4).then(|| &action_row[1]);
 
         let icon_offset = (source.width() as f32 * 0.009).round() as u32;
+
         let reply_x = comment.left.saturating_add(icon_offset) as i32;
         let like_x = like.left.saturating_add(icon_offset) as i32;
+
         let repost_x = repost
             .map(|item| item.left.saturating_add(icon_offset) as i32)
             .unwrap_or((reply_x + like_x) / 2);
+
         let action_y = ((comment.center_y + like.center_y) / 2) as i32;
+
         anyhow::ensure!(
             action_y > header_y as i32 && action_y < next_header_y as i32,
             "互动栏不属于目标帖子 @{}：Y={}，帖子范围={}..{}",
@@ -360,6 +387,7 @@ pub(super) fn identify_post_and_action_bar_at(
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("screenshot")
         ));
+
         save_action_bar_annotation(
             &source,
             &annotated_path,
@@ -367,10 +395,12 @@ pub(super) fn identify_post_and_action_bar_at(
             repost_point,
             like_point,
         )?;
+
         super::automation::log_event(&format!(
             "阶段 1/3：全页 PP-OCR 互动栏候选坐标：回复={reply_point:?}，转发={repost_point:?}，点赞={like_point:?}；已生成标注截图 {}。",
             annotated_path.display()
         ));
+
         Ok(LocalPostIdentification {
             author_name,
             account_handle,

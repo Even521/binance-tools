@@ -9,10 +9,9 @@ use std::{
 use serde::{Deserialize, Deserializer};
 
 use super::automation::{self, native};
+use super::ocr;
 use super::ocr_status::recognize_send_status;
 
-#[path = "ocr.rs"]
-mod ocr;
 #[path = "text_ai.rs"]
 mod text_ai;
 

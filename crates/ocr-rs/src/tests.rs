@@ -56,6 +56,7 @@ fn recognize_configured_compose_reply_page() {
         .canonicalize()
         .expect("compose-page screenshot path does not exist");
     let mut engine = OcrEngine::new().expect("failed to initialize PP-OCRv6 Tiny");
+
     let output = engine
         .recognize_compose_reply_page(&image_path)
         .expect("failed to recognize compose page");
@@ -192,6 +193,7 @@ fn recognize_configured_image_and_print_result() {
         .expect("test image path does not exist");
 
     let mut engine = OcrEngine::new().expect("failed to initialize PP-OCRv6 Tiny");
+
     let (result, output) = engine
         .recognize_path_with_action_coordinates(&image_path)
         .expect("failed to recognize test image and locate action coordinates");
