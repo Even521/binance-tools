@@ -847,11 +847,31 @@ fn run_visual_reply_inner(
             "阶段 2/3：回复页面局部 OCR JSON（地址栏及弹窗）：{}",
             serde_json::to_string(&compose_page)?
         ));
-        let current_url = compose_page["current_url"].as_str();
+        let mut current_url = compose_page["current_url"].as_str().map(str::to_owned);
 
-        let is_compose_url = current_url.is_some_and(ocr::is_x_compose_post_address);
+        // 局部 OCR 未能识别出有效的 X 页面地址时，使用通用地址栏识别作为备用。
+        // 仍然要求识别到明确的 X 路由，不因地址栏为空而放行。
+        let has_valid_x_route = current_url
+            .as_deref()
+            .is_some_and(|url| ocr::is_x_compose_post_address(url) || ocr::is_x_home_address(url));
 
-        let is_home_url = current_url.is_some_and(ocr::is_x_home_address);
+        if !has_valid_x_route {
+            automation::log_event(
+                "阶段 2/3：局部 OCR 未识别到有效 X 地址，尝试通用地址栏 OCR 备用识别。",
+            );
+
+            current_url = ocr::recognize_current_url(&composer.png)?;
+
+            automation::log_event(&format!(
+                "阶段 2/3：通用地址栏 OCR 备用识别结果：{current_url:?}。",
+            ));
+        }
+
+        let is_compose_url = current_url
+            .as_deref()
+            .is_some_and(ocr::is_x_compose_post_address);
+
+        let is_home_url = current_url.as_deref().is_some_and(ocr::is_x_home_address);
 
         let expected_account = account_handle.trim().trim_start_matches('@');
 
