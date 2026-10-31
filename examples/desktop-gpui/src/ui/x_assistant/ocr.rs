@@ -406,19 +406,35 @@ pub(super) fn identify_post_and_action_bar_at(
         );
 
         let comment = &action_row[0];
-        let like = &action_row[action_row.len() - 2];
-        let repost = (action_row.len() >= 4).then(|| &action_row[1]);
+        let repost = &action_row[1];
+
+        // 3 个数字时，最后一个就是点赞位置；
+        // 4 个及以上时，倒数第二个是点赞位置（最后一个通常是浏览量）。
+        let like = if action_row.len() >= 4 {
+            &action_row[action_row.len() - 2]
+        } else {
+            &action_row[2]
+        };
 
         let icon_offset = (source.width() as f32 * 0.009).round() as u32;
 
         let reply_x = comment.left.saturating_add(icon_offset) as i32;
+        let repost_x = repost.left.saturating_add(icon_offset) as i32;
         let like_x = like.left.saturating_add(icon_offset) as i32;
 
-        let repost_x = repost
-            .map(|item| item.left.saturating_add(icon_offset) as i32)
-            .unwrap_or((reply_x + like_x) / 2);
+        // 三个候选坐标共同确定互动栏高度。
+        let action_y = ((comment.center_y + repost.center_y + like.center_y) / 3) as i32;
 
-        let action_y = ((comment.center_y + like.center_y) / 2) as i32;
+        super::automation::log_event(&format!(
+            "[互动栏坐标诊断] 数字数量={}，回复=({}, {})，转发=({}, {})，点赞=({}, {})",
+            action_row.len(),
+            comment.center_x,
+            comment.center_y,
+            repost.center_x,
+            repost.center_y,
+            like.center_x,
+            like.center_y,
+        ));
 
         anyhow::ensure!(
             action_y > header_y as i32 && action_y < next_header_y as i32,
