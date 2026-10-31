@@ -848,9 +848,36 @@ fn run_visual_reply_inner(
             serde_json::to_string(&compose_page)?
         ));
         let current_url = compose_page["current_url"].as_str();
+
+        let is_compose_url = current_url.is_some_and(ocr::is_x_compose_post_address);
+
+        let is_home_url = current_url.is_some_and(ocr::is_x_home_address);
+
+        let expected_account = account_handle.trim().trim_start_matches('@');
+
+        let actual_account = compose_page["reply_target_account"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('@');
+
+        let reply_input_detected = compose_page["reply_input"].is_object();
+
+        let account_matched = !expected_account.is_empty()
+            && !actual_account.is_empty()
+            && expected_account.eq_ignore_ascii_case(actual_account);
+
+        // compose/post 可以继续；
+        // home 必须同时确认回复输入框和回复对象账号。
+        let composer_confirmed =
+            is_compose_url || (is_home_url && reply_input_detected && account_matched);
+
         anyhow::ensure!(
-            current_url.is_some_and(ocr::is_x_compose_post_address),
-            "当前地址不是 https://x.com/compose/post（或 OCR 无法确认），停止识别和回复"
+            composer_confirmed,
+            "回复弹窗状态无法确认：地址={:?}，输入框识别={}，回复对象匹配={}，停止发送",
+            current_url,
+            reply_input_detected,
+            account_matched
         );
         let expected_account = account_handle.trim().trim_start_matches('@');
 
