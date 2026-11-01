@@ -405,45 +405,97 @@ pub(super) fn identify_post_and_action_bar_at(
             "互动栏包含其他帖子的坐标，禁止点击回复"
         );
 
-        let comment = &action_row[0];
-        let repost = &action_row[1];
+        // 直接复用 timeline.rs 已经识别的互动栏坐标，
+        // 不再从 OCR text_blocks 中重复提取数字和计算坐标。
+        let action_coordinates = &post.action_coordinates;
 
-        // 3 个数字时，最后一个就是点赞位置；
-        // 4 个及以上时，倒数第二个是点赞位置（最后一个通常是浏览量）。
-        let like = if action_row.len() >= 4 {
-            &action_row[action_row.len() - 2]
-        } else {
-            &action_row[2]
-        };
+        let reply = action_coordinates
+            .reply
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("未识别到回复按钮坐标，禁止猜测"))?;
 
-        let icon_offset = (source.width() as f32 * 0.009).round() as u32;
+        let repost = action_coordinates
+            .repost
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("未识别到转发按钮坐标，禁止猜测"))?;
 
-        let reply_x = comment.left.saturating_add(icon_offset) as i32;
-        let repost_x = repost.left.saturating_add(icon_offset) as i32;
-        let like_x = like.left.saturating_add(icon_offset) as i32;
+        let like = action_coordinates
+            .like
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("未识别到点赞按钮坐标，禁止猜测"))?;
 
-        // 三个候选坐标共同确定互动栏高度。
-        let action_y = ((comment.center_y + repost.center_y + like.center_y) / 3) as i32;
+        // 三个坐标必须属于当前目标帖子的范围。
+        let action_y = ((reply.y + repost.y + like.y) / 3) as i32;
+
+        anyhow::ensure!(
+            reply.y > header_y
+                && repost.y > header_y
+                && like.y > header_y
+                && reply.y < next_header_y
+                && repost.y < next_header_y
+                && like.y < next_header_y,
+            "互动栏坐标不属于目标帖子 @{}，禁止点击",
+            account_token
+        );
+
+        anyhow::ensure!(
+            reply.x < source.width()
+                && repost.x < source.width()
+                && like.x < source.width()
+                && action_y > header_y as i32
+                && action_y < next_header_y as i32,
+            "互动栏坐标超出目标帖子有效范围，禁止点击"
+        );
+
+        let reply_point = (reply.x as i32, reply.y as i32);
+        let repost_point = (repost.x as i32, repost.y as i32);
+        let like_point = (like.x as i32, like.y as i32);
+
+        let post_bottom_y = action_y;
 
         super::automation::log_event(&format!(
-            "[互动栏坐标诊断] 数字数量={}，回复=({}, {})，转发=({}, {})，点赞=({}, {})",
-            action_row.len(),
-            comment.center_x,
-            comment.center_y,
-            repost.center_x,
-            repost.center_y,
-            like.center_x,
-            like.center_y,
+            "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
+            author_name,
+            account_handle,
+            reply_point,
+            repost_point,
+            like_point,
         ));
 
         anyhow::ensure!(
-            action_y > header_y as i32 && action_y < next_header_y as i32,
-            "互动栏不属于目标帖子 @{}：Y={}，帖子范围={}..{}",
-            account_token,
-            action_y,
-            header_y,
-            next_header_y
-        );
+                   reply.y > header_y
+                       && repost.y > header_y
+                       && like.y > header_y
+                       && reply.y < next_header_y
+                       && repost.y < next_header_y
+                       && like.y < next_header_y,
+                   "互动栏坐标不属于目标帖子 @{}，禁止点击",
+                   account_token
+               );
+       
+               anyhow::ensure!(
+                   reply.x < source.width()
+                       && repost.x < source.width()
+                       && like.x < source.width()
+                       && action_y > header_y as i32
+                       && action_y < next_header_y as i32,
+                   "互动栏坐标超出目标帖子有效范围，禁止点击"
+               );
+       
+               let reply_point = (reply.x as i32, reply.y as i32);
+               let repost_point = (repost.x as i32, repost.y as i32);
+               let like_point = (like.x as i32, like.y as i32);
+       
+               let post_bottom_y = action_y;
+       
+               super::automation::log_event(&format!(
+                   "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
+                   author_name,
+                   account_handle,
+                   reply_point,
+                   repost_point,
+                   like_point,
+               ));
 
         let post_bottom_y = action_y;
         let reply_point = (reply_x, action_y);
