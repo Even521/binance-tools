@@ -330,12 +330,15 @@ impl OcrEngine {
             let suffix = &text[marker..];
             let at = suffix.find('@')?;
 
+            // 提取回复目标账号。
+            // OCR 可能在账号字符之间产生空格，但空格不是 X 账号的合法字符。
+            // 只删除 OCR 插入的空白，不把空白转换成下划线。
             let account: String = suffix[at + 1..]
                 .trim()
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || c.is_whitespace())
-                .collect::<String>()
-                .replace(' ', "_");
+                .filter(|c| !c.is_whitespace())
+                .collect();
 
             (!account.is_empty() && account.len() <= 15).then_some(account)
         });
