@@ -113,6 +113,19 @@ fn ocr_debug(message: &str) {
 }
 
 pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> TimelineOcrResult {
+    parse_timeline_inner(blocks, image, false)
+}
+
+/// 专门解析局部裁剪图
+pub fn parse_timeline_for_crop(blocks: &[TextBlock], image: &image::RgbImage) -> TimelineOcrResult {
+    parse_timeline_inner(blocks, image, true)
+}
+
+fn parse_timeline_inner(
+    blocks: &[TextBlock],
+    image: &image::RgbImage,
+    crop_mode: bool,
+) -> TimelineOcrResult {
     let width = image.width();
     let height = image.height();
     let browser_bottom = height * 11 / 100;
