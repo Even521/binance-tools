@@ -446,12 +446,13 @@ fn run_visual_reply_inner(
 
     *current_stage = "阶段 1/3（识别帖子并定位回复按钮）".to_string();
     automation::log_event("========== 阶段 1/3：定位并点击帖子回复图标 ==========");
-    let feed_before_cursor_move =
-        capture(&dir, &id, "01-feed-before-cursor-move", &mut screenshots)?;
-    move_cursor_to_safe_blank_area(
-        feed_before_cursor_move.width,
-        feed_before_cursor_move.height,
-    )?;
+    // 直接获取浏览器客户区尺寸，不再为了获取宽高额外采集截图。
+    let (window_width, window_height) = native::get_window_client_size()?;
+
+    // 保持原有鼠标避让逻辑，避免鼠标遮挡帖子文字和互动按钮。
+    move_cursor_to_safe_blank_area(window_width, window_height)?;
+
+    // 鼠标移动完成后，采集正式用于帖子识别的截图。
     let mut feed = capture(&dir, &id, "01-feed", &mut screenshots)?;
     if options.hover_only {
         automation::log_event("阶段 1/3：仅移动鼠标，不点击。");

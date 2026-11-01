@@ -398,6 +398,34 @@ pub(super) mod native {
         click_current_position()
     }
 
+    /// 获取当前浏览器客户区尺寸，不采集截图。
+    ///
+    /// 用于鼠标定位等只需要窗口宽高的场景，
+    /// 避免为了获取截图尺寸而额外采集、解码和保存图片。
+    pub fn get_window_client_size() -> anyhow::Result<(u32, u32)> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "请将 Chrome、Edge 或 Firefox 浏览器置于前台后再操作"
+        );
+
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rect)? };
+
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+
+        anyhow::ensure!(width > 0 && height > 0, "浏览器客户区尺寸无效");
+
+        Ok((width as u32, height as u32))
+    }
+
     pub fn capture_window(path: &Path) -> anyhow::Result<()> {
         let hwnd = unsafe { GetForegroundWindow() };
         anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
@@ -539,6 +567,10 @@ pub(super) mod native {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn type_text(_: &str) -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    /// 非 Windows 平台不支持获取浏览器客户区尺寸。
+    pub fn get_window_client_size() -> anyhow::Result<(u32, u32)> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn capture_window(_: &Path) -> anyhow::Result<()> {
