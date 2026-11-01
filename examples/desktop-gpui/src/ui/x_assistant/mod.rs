@@ -1,4 +1,5 @@
 mod automation;
+mod crop;
 mod full_auto;
 mod ocr;
 mod ocr_status;
