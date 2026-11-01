@@ -380,11 +380,28 @@ pub(super) fn identify_post_and_action_bar_at(
             // 1. 裁剪目标帖子区域。
             let crop = super::crop::crop_post_action_region(&source, header_y, next_header_y)?;
 
+            // 保存局部裁剪图片，方便检查互动栏是否被裁掉。
+            let crop_debug_path = path.with_file_name(format!(
+                "{}-post-action-crop.png",
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("screenshot")
+            ));
+
+            crop.image.save(&crop_debug_path)?;
+
             super::automation::log_event(&format!(
-                "[互动栏恢复] 裁剪区域：top={} height={} width={}",
+                "[互动栏恢复] 目标账号={} 发布时间={} 原图={}x{} header_y={} next_header_y={} crop_top={} crop_height={} crop_width={} 裁剪图片={}",
+                account_handle,
+                posted_at,
+                source.width(),
+                source.height(),
+                header_y,
+                next_header_y,
                 crop.top,
                 crop.image.height(),
                 crop.image.width(),
+                crop_debug_path.display(),
             ));
 
             // 2. 使用当前缓存的 OCR 引擎识别裁剪图。
