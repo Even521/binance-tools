@@ -324,51 +324,180 @@ pub(super) fn identify_post_and_action_bar_at(
             .unwrap_or(source.height());
 
         // 直接复用 timeline.rs 已经识别的
+
+        // 保存目标帖子正文，避免后续局部 OCR 时继续依赖原始借用。
+        let post_text = post.text.clone();
+
+        // 优先使用整页 OCR 的回复坐标。
+        // 只有回复坐标缺失或不属于目标帖子时，才启动局部 OCR。
         let action_coordinates = &post.action_coordinates;
 
-        // 回复坐标是唯一必需坐标，缺失时禁止猜测。
-        let reply = action_coordinates
-            .reply
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("未识别到回复按钮坐标，禁止猜测"))?;
-
-        let action_y = reply.y as i32;
-
-        // 回复坐标必须位于当前帖子范围内。
-        anyhow::ensure!(
-            reply.x < source.width()
-                && reply.y < source.height()
-                && reply.y > header_y
-                && reply.y < next_header_y,
-            "回复按钮坐标不属于目标帖子 @{}，禁止点击",
-            account_token
-        );
-
-        // 转发和点赞坐标只作为辅助信息。
-        // 如果坐标越界、超出当前帖子范围或与回复按钮不在同一行，就忽略。
-        let is_valid_optional_point = |point: &ActionPoint| {
-            point.x > reply.x
-                && point.x < source.width()
+        let is_valid_reply = |point: &ActionPoint| {
+            point.x < source.width()
                 && point.y < source.height()
                 && point.y > header_y
                 && point.y < next_header_y
-                && point.y.abs_diff(reply.y) <= 8
         };
 
-        let repost = action_coordinates
-            .repost
-            .as_ref()
-            .filter(|point| is_valid_optional_point(*point));
+        let (reply_point, repost_point, like_point, action_y) = if let Some(reply) =
+            action_coordinates
+                .reply
+                .as_ref()
+                .filter(|point| is_valid_reply(point))
+        {
+            // 正常情况：继续使用原来的整页 OCR 坐标。
+            let is_valid_optional_point = |point: &ActionPoint| {
+                point.x > reply.x
+                    && point.x < source.width()
+                    && point.y < source.height()
+                    && point.y > header_y
+                    && point.y < next_header_y
+                    && point.y.abs_diff(reply.y) <= 8
+            };
 
-        let repost_point = repost.map(|point| (point.x as i32, point.y as i32));
+            let repost = action_coordinates
+                .repost
+                .as_ref()
+                .filter(|point| is_valid_optional_point(point));
 
-        let like = action_coordinates.like.as_ref().filter(|point| {
-            is_valid_optional_point(*point)
-                && repost_point.is_none_or(|repost| point.x as i32 > repost.0)
-        });
+            let repost_point = repost.map(|point| (point.x as i32, point.y as i32));
 
-        let reply_point = (reply.x as i32, reply.y as i32);
-        let like_point = like.map(|point| (point.x as i32, point.y as i32));
+            let like = action_coordinates.like.as_ref().filter(|point| {
+                is_valid_optional_point(point)
+                    && repost_point.is_none_or(|repost| point.x as i32 > repost.0)
+            });
+
+            let reply_point = (reply.x as i32, reply.y as i32);
+            let like_point = like.map(|point| (point.x as i32, point.y as i32));
+
+            super::automation::log_event("[互动栏恢复] 整页 OCR 坐标有效，跳过局部 OCR");
+
+            (reply_point, repost_point, like_point, reply.y as i32)
+        } else {
+            // 异常情况：整页 OCR 没有得到有效回复坐标。
+            super::automation::log_event("[互动栏恢复] 整页回复坐标缺失或越界，启动局部 OCR");
+
+            // 1. 裁剪目标帖子区域。
+            let crop = super::crop::crop_post_action_region(&source, header_y, next_header_y)?;
+
+            super::automation::log_event(&format!(
+                "[互动栏恢复] 裁剪区域：top={} height={} width={}",
+                crop.top,
+                crop.image.height(),
+                crop.image.width(),
+            ));
+
+            // 2. 使用当前缓存的 OCR 引擎识别裁剪图。
+            // 不重新初始化引擎，也不重新识别整页。
+            let crop_start = Instant::now();
+
+            let (_crop_result, crop_parsed, _crop_json) =
+                engine.recognize_image_with_action_coordinates_and_timeline(&crop.image, path)?;
+
+            super::automation::log_event(&format!(
+                "[互动栏恢复] 局部 OCR 耗时：{} ms",
+                crop_start.elapsed().as_millis()
+            ));
+
+            // 3. 必须匹配同一个账号和发布时间。
+            // 不允许使用裁剪区域中其他帖子的互动栏。
+            let recovered_post = crop_parsed
+                .timeline
+                .posts
+                .iter()
+                .find(|candidate| {
+                    let same_account = candidate.account.as_deref().is_some_and(|account| {
+                        account
+                            .trim_start_matches('@')
+                            .eq_ignore_ascii_case(account_token)
+                    });
+
+                    let same_time = candidate.timestamp.as_deref() == Some(posted_at.as_str());
+
+                    same_account && same_time
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("局部 OCR 未能匹配目标帖子 @{}，禁止恢复坐标", account_token)
+                })?;
+
+            super::automation::log_event("[互动栏恢复] 目标账号和发布时间核验通过");
+
+            // 4. 局部 OCR 必须识别到回复坐标。
+            let local_reply = recovered_post
+                .action_coordinates
+                .reply
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("局部 OCR 仍未识别到回复坐标，禁止猜测"))?;
+
+            anyhow::ensure!(
+                local_reply.x < source.width() && local_reply.y < crop.image.height(),
+                "局部回复坐标超出裁剪区域"
+            );
+
+            // 5. 将局部坐标还原成原始截图坐标。
+            let global_reply_y = super::crop::restore_y(local_reply.y, crop.top)?;
+
+            anyhow::ensure!(
+                global_reply_y > header_y
+                    && global_reply_y < next_header_y
+                    && global_reply_y < source.height(),
+                "局部 OCR 回复坐标不属于目标帖子，禁止点击"
+            );
+
+            let reply_point = (local_reply.x as i32, global_reply_y as i32);
+
+            // 6. 转发、点赞属于辅助坐标。
+            // 不符合位置关系时直接忽略，不影响回复坐标。
+            let restore_optional_point = |point: Option<&ActionPoint>| -> Option<(i32, i32)> {
+                let point = point?;
+
+                if point.x <= local_reply.x
+                    || point.x >= source.width()
+                    || point.y >= crop.image.height()
+                    || point.y.abs_diff(local_reply.y) > 8
+                {
+                    return None;
+                }
+
+                let global_y = super::crop::restore_y(point.y, crop.top).ok()?;
+
+                if global_y <= header_y || global_y >= next_header_y {
+                    return None;
+                }
+
+                Some((point.x as i32, global_y as i32))
+            };
+
+            let repost_point =
+                restore_optional_point(recovered_post.action_coordinates.repost.as_ref());
+
+            let mut like_point =
+                restore_optional_point(recovered_post.action_coordinates.like.as_ref());
+
+            // 点赞必须在转发右侧。
+            if let (Some(repost), Some(like)) = (repost_point, like_point) {
+                if like.0 <= repost.0 {
+                    like_point = None;
+                }
+            }
+
+            super::automation::log_event(&format!(
+                "[互动栏恢复] 局部坐标还原成功：回复={:?} 转发={:?} 点赞={:?}",
+                reply_point, repost_point, like_point,
+            ));
+
+            (reply_point, repost_point, like_point, global_reply_y as i32)
+        };
+
+        // 无论是整页识别还是局部恢复，都再次验证回复坐标。
+        anyhow::ensure!(
+            reply_point.0 >= 0
+                && reply_point.1 > header_y as i32
+                && reply_point.1 < next_header_y as i32
+                && (reply_point.0 as u32) < source.width()
+                && (reply_point.1 as u32) < source.height(),
+            "最终回复坐标未通过目标帖子范围校验，禁止点击"
+        );
 
         let post_bottom_y = action_y;
 
@@ -401,7 +530,7 @@ pub(super) fn identify_post_and_action_bar_at(
             author_name,
             account_handle,
             posted_at,
-            post_text: post.text.clone(),
+            post_text,
             reply_point,
             repost_point,
             like_point,
