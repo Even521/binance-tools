@@ -4,12 +4,12 @@ mod timeline;
 mod tests;
 
 pub use ppocr_rs::{OcrResult, TextBlock};
+use std::path::Path;
 pub use timeline::{
     ActionPoint, BrowserRegion, LocatedText, PostActionCoordinates, PostMetrics, RightSidebar,
     SidebarSection, TimelineOcrResult, TimelinePost, TimelineRegion, parse_timeline,
+    parse_timeline_for_crop,
 };
-
-use std::path::Path;
 
 use anyhow::{Context, Result};
 use image::{DynamicImage, ImageReader};
@@ -82,13 +82,35 @@ impl OcrEngine {
         image: &image::RgbImage,
         path: impl AsRef<Path>,
     ) -> Result<(OcrResult, TimelineOcrResult, serde_json::Value)> {
+        self.recognize_image_with_action_coordinates_and_timeline_mode(image, path, false)
+    }
+
+    /// 专门用于局部裁剪图的 OCR 解析。
+    pub fn recognize_image_with_action_coordinates_and_timeline_for_crop(
+        &mut self,
+        image: &image::RgbImage,
+        path: impl AsRef<Path>,
+    ) -> Result<(OcrResult, TimelineOcrResult, serde_json::Value)> {
+        self.recognize_image_with_action_coordinates_and_timeline_mode(image, path, true)
+    }
+
+    fn recognize_image_with_action_coordinates_and_timeline_mode(
+        &mut self,
+        image: &image::RgbImage,
+        path: impl AsRef<Path>,
+        crop_mode: bool,
+    ) -> Result<(OcrResult, TimelineOcrResult, serde_json::Value)> {
         let path = path.as_ref();
 
         // 1. OCR 推理只执行一次
         let result = self.recognize_image_detailed(image)?;
 
         // 2. 时间线只解析一次
-        let timeline = parse_timeline(&result.text_blocks, image);
+        let timeline = if crop_mode {
+            parse_timeline_for_crop(&result.text_blocks, image)
+        } else {
+            parse_timeline(&result.text_blocks, image)
+        };
 
         // 3. 构建 OCR 文本框 JSON
         let text_blocks = result

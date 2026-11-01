@@ -425,9 +425,8 @@ fn parse_timeline_inner(
         } else {
             (height * 12 / 1032).max(8)
         };
-
-        let action_rows = group_metric_rows(&post.metric_candidates, action_row_tolerance);
-
+        let outside_action_row = selected_action_y
+            .is_none_or(|action_y| item.y.abs_diff(action_y) > action_row_tolerance);
         let selected_row = action_rows
             .iter()
             .filter(|row| {

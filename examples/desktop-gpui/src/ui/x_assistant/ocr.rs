@@ -391,8 +391,8 @@ pub(super) fn identify_post_and_action_bar_at(
             // 不重新初始化引擎，也不重新识别整页。
             let crop_start = Instant::now();
 
-            let (_crop_result, crop_parsed, _crop_json) =
-                engine.recognize_image_with_action_coordinates_and_timeline(&crop.image, path)?;
+            let (_crop_result, crop_parsed, _crop_json) = engine
+                .recognize_image_with_action_coordinates_and_timeline_for_crop(&crop.image, path)?;
 
             super::automation::log_event(&format!(
                 "[互动栏恢复] 局部 OCR 耗时：{} ms",
