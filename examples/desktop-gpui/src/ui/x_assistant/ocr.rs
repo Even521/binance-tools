@@ -384,37 +384,6 @@ pub(super) fn identify_post_and_action_bar_at(
             author_name, account_handle, reply_point, repost_point, like_point,
         ));
 
-        anyhow::ensure!(
-            reply.y > header_y
-                && repost.y > header_y
-                && like.y > header_y
-                && reply.y < next_header_y
-                && repost.y < next_header_y
-                && like.y < next_header_y,
-            "互动栏坐标不属于目标帖子 @{}，禁止点击",
-            account_token
-        );
-
-        anyhow::ensure!(
-            reply.x < source.width()
-                && repost.x < source.width()
-                && like.x < source.width()
-                && action_y > header_y as i32
-                && action_y < next_header_y as i32,
-            "互动栏坐标超出目标帖子有效范围，禁止点击"
-        );
-
-        let reply_point = (reply.x as i32, reply.y as i32);
-        let repost_point = (repost.x as i32, repost.y as i32);
-        let like_point = (like.x as i32, like.y as i32);
-
-        let post_bottom_y = action_y;
-
-        super::automation::log_event(&format!(
-            "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
-            author_name, account_handle, reply_point, repost_point, like_point,
-        ));
-
         let annotated_path = path.with_file_name(format!(
             "{}-ocr-coordinates.png",
             path.file_stem()
