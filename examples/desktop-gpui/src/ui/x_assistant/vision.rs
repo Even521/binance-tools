@@ -849,7 +849,7 @@ fn run_visual_reply_inner(
         ));
         let mut current_url = compose_page["current_url"].as_str().map(str::to_owned);
 
-        // 局部 OCR 未能识别出有效的 X 页面地址时，使用通用地址栏识别作为备用。
+        // 局部 OCR 能识别出有效的 X 页面地址时，使用通用地址栏识别作为备用。
         // 仍然要求识别到明确的 X 路由，不因地址栏为空而放行。
         let has_valid_x_route = current_url
             .as_deref()
@@ -1652,14 +1652,8 @@ fn identify_post_for_mode(
             x: local.reply_point.0,
             y: local.reply_point.1,
         }),
-        repost_point: Some(Point {
-            x: local.repost_point.0,
-            y: local.repost_point.1,
-        }),
-        like_point: Some(Point {
-            x: local.like_point.0,
-            y: local.like_point.1,
-        }),
+        repost_point: local.repost_point.map(|(x, y)| Point { x, y }),
+        like_point: local.like_point.map(|(x, y)| Point { x, y }),
         post_text_bottom_y: Some(local.post_text_bottom_y),
         post_bottom_y: Some(local.post_bottom_y),
         refresh_posts: false,
@@ -1868,14 +1862,8 @@ fn decision_from_local_post(post: ocr::LocalPostIdentification) -> VisionDecisio
             x: post.reply_point.0,
             y: post.reply_point.1,
         }),
-        repost_point: Some(Point {
-            x: post.repost_point.0,
-            y: post.repost_point.1,
-        }),
-        like_point: Some(Point {
-            x: post.like_point.0,
-            y: post.like_point.1,
-        }),
+        repost_point: post.repost_point.map(|(x, y)| Point { x, y }),
+        like_point: post.like_point.map(|(x, y)| Point { x, y }),
         post_text_bottom_y: Some(post.post_text_bottom_y),
         post_bottom_y: Some(post.post_bottom_y),
         refresh_posts: false,
@@ -2480,13 +2468,13 @@ fn validate_or_refind_action_targets(
 
     let mut adjusted = decision.clone();
     let translate_y = |point: &mut Option<Point>, label: &str| -> anyhow::Result<()> {
-        let point = point
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("局部重识别未返回 {label} 坐标"))?;
-        point.y = point
-            .y
-            .checked_add(crop_top as i32)
-            .ok_or_else(|| anyhow::anyhow!("{label} y 坐标换算溢出"))?;
+        if let Some(point) = point.as_mut() {
+            point.y = point
+                .y
+                .checked_add(crop_top as i32)
+                .ok_or_else(|| anyhow::anyhow!("{label} y 坐标换算溢出"))?;
+        }
+
         Ok(())
     };
     adjusted.reply_point = refound.reply_point;
@@ -2511,22 +2499,39 @@ fn validate_action_targets(
 ) -> anyhow::Result<Point> {
     require_ok(decision, "AI 无法确认完整帖子及其回复操作栏")
         .map_err(|error| anyhow::anyhow!("帖子与回复按钮关联校验失败：{error:#}"))?;
+
+    // 回复坐标必须存在。
     let reply = require_named_point(decision.reply_point.as_ref(), width, height, "回复按钮")?;
-    let repost = require_named_point(decision.repost_point.as_ref(), width, height, "转发按钮")?;
-    let like = require_named_point(decision.like_point.as_ref(), width, height, "点赞按钮")?;
+
+    // 转发和点赞坐标允许缺失，但如果提供了，就必须在截图范围内。
+    let repost = decision
+        .repost_point
+        .as_ref()
+        .map(|point| require_named_point(Some(point), width, height, "转发按钮"))
+        .transpose()?;
+
+    let like = decision
+        .like_point
+        .as_ref()
+        .map(|point| require_named_point(Some(point), width, height, "点赞按钮"))
+        .transpose()?;
 
     let _post_text_bottom_y = decision.post_text_bottom_y.ok_or_else(|| {
         anyhow::anyhow!("AI 未返回所选帖子正文底部坐标，无法确认帖子内容；已停止")
     })?;
+
     let post_bottom_y = decision.post_bottom_y.ok_or_else(|| {
         anyhow::anyhow!("AI 未返回整条帖子（含媒体）底部坐标，不能确认操作栏位置；已停止")
     })?;
+
     anyhow::ensure!(
         post_bottom_y >= 0 && (post_bottom_y as u32) < height,
         "整条帖子底部 y={} 超出截图范围，帖子或媒体可能未完整显示；已停止",
         post_bottom_y
     );
+
     const POST_BOTTOM_Y_TOLERANCE: i32 = 40;
+
     anyhow::ensure!(
         reply.y >= post_bottom_y.saturating_sub(POST_BOTTOM_Y_TOLERANCE),
         "回复按钮 y={} 明显高于所选帖子底部 y={}（容差 {}px），疑似属于其他帖子；已停止",
@@ -2535,18 +2540,34 @@ fn validate_action_targets(
         POST_BOTTOM_Y_TOLERANCE
     );
 
-    anyhow::ensure!(
-        reply.x < repost.x && repost.x < like.x,
-        "回复、转发、点赞坐标的水平顺序异常，已停止"
-    );
-    anyhow::ensure!(
-        (reply.y - repost.y).abs() <= 8 && (reply.y - like.y).abs() <= 8,
-        "回复、转发、点赞坐标的 Y 轴相差超过 8 像素，不在同一水平操作栏；已停止"
-    );
+    // 只校验实际存在的辅助坐标。
+    if let Some(repost) = &repost {
+        anyhow::ensure!(reply.x < repost.x, "回复与转发坐标水平顺序异常，已停止");
+
+        anyhow::ensure!(
+            reply.y.abs_diff(repost.y) <= 8,
+            "回复与转发坐标不在同一水平操作栏，已停止"
+        );
+    }
+
+    if let Some(like) = &like {
+        anyhow::ensure!(reply.x < like.x, "回复与点赞坐标水平顺序异常，已停止");
+
+        anyhow::ensure!(
+            reply.y.abs_diff(like.y) <= 8,
+            "回复与点赞坐标不在同一水平操作栏，已停止"
+        );
+    }
+
+    if let (Some(repost), Some(like)) = (&repost, &like) {
+        anyhow::ensure!(repost.x < like.x, "转发与点赞坐标水平顺序异常，已停止");
+    }
+
     automation::log_event(&format!(
-        "阶段 1/3：AI 操作栏坐标通过结构校验（同一行容差 8px、帖子底边关联容差 40px），整帖底部 y={}，reply=({}, {})，repost=({}, {})，like=({}, {})。",
-        post_bottom_y, reply.x, reply.y, repost.x, repost.y, like.x, like.y
+        "阶段 1/3：操作栏坐标通过校验，整帖底部 y={}，reply=({}, {})，repost={:?}，like={:?}",
+        post_bottom_y, reply.x, reply.y, repost, like
     ));
+
     Ok(reply)
 }
 

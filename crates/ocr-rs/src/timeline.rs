@@ -412,7 +412,24 @@ pub fn parse_timeline(blocks: &[TextBlock], image: &image::RgbImage) -> Timeline
         let selected_row = action_rows
             .iter()
             .filter(|row| {
-                if row.len() < 3 {
+                // 至少需要两个数字候选。
+                if row.len() < 2 {
+                    return false;
+                }
+
+                // 必须存在回复数量候选。
+                let has_reply_count = row.iter().any(|candidate| {
+                    let relative_x = candidate.x as f32 / width.max(1) as f32;
+                    (0.28..0.40).contains(&relative_x)
+                });
+
+                // 回复右侧还必须存在至少一个互动数字候选。
+                let has_following_count = row.iter().any(|candidate| {
+                    let relative_x = candidate.x as f32 / width.max(1) as f32;
+                    (0.40..0.62).contains(&relative_x)
+                });
+
+                if !has_reply_count || !has_following_count {
                     return false;
                 }
 
