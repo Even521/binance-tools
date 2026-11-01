@@ -179,7 +179,7 @@ fn parse_timeline_inner(
         }
 
         // 1. 浏览器顶部
-        if y <= browser_bottom {
+        if !crop_mode && y <= browser_bottom {
             if y < height * 4 / 100 {
                 browser.tabs.push(item);
             } else if y < height * 7 / 100 {
@@ -318,17 +318,17 @@ fn parse_timeline_inner(
         }
 
         // 5. 时间线顶部导航和发帖区域
-        if y < height * 15 / 100 {
+        if !crop_mode && y < height * 15 / 100 {
             timeline.navigation.push(item);
             continue;
         }
 
-        if y < height * 25 / 100 {
+        if !crop_mode && y < height * 25 / 100 {
             timeline.composer.push(item);
             continue;
         }
 
-        if y < height * 31 / 100 {
+        if !crop_mode && y < height * 31 / 100 {
             timeline.new_posts.push(item);
             continue;
         }
@@ -420,7 +420,13 @@ fn parse_timeline_inner(
             more: None,
         };
 
-        let action_rows = group_metric_rows(&post.metric_candidates, (height * 12 / 1032).max(8));
+        let action_row_tolerance = if crop_mode {
+            12
+        } else {
+            (height * 12 / 1032).max(8)
+        };
+
+        let action_rows = group_metric_rows(&post.metric_candidates, action_row_tolerance);
 
         let selected_row = action_rows
             .iter()
@@ -450,7 +456,7 @@ fn parse_timeline_inner(
 
                 row_y > post.header_y
                     && row_y < post_bottom
-                    && row_y.saturating_sub(post.header_y) < height * 55 / 100
+                    && (crop_mode || row_y.saturating_sub(post.header_y) < height * 55 / 100)
             })
             .min_by_key(|row| {
                 row.iter().map(|candidate| candidate.y).sum::<u32>() / row.len() as u32
@@ -497,7 +503,13 @@ fn parse_timeline_inner(
                 let outside_media = media
                     .is_none_or(|(media_x, media_y)| !(item.x >= media_x && item.y >= media_y));
 
-                let action_row_tolerance = (height * 12 / 1032).max(8);
+                let action_row_tolerance = if crop_mode {
+                    12
+                } else {
+                    (height * 12 / 1032).max(8)
+                };
+
+                let action_rows = group_metric_rows(&post.metric_candidates, action_row_tolerance);
 
                 let outside_action_row = selected_action_y
                     .is_none_or(|action_y| item.y.abs_diff(action_y) > action_row_tolerance);
