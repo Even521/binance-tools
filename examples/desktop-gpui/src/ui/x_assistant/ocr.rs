@@ -331,80 +331,6 @@ pub(super) fn identify_post_and_action_bar_at(
             })
             .unwrap_or(source.height());
 
-        let mut counts = result
-            .text_blocks
-            .iter()
-            .filter_map(|block| {
-                let text = block.text.trim();
-
-                if !is_numeric_count(text) {
-                    return None;
-                }
-
-                let (left, top, right, bottom) = text_block_bounds(block)?;
-                let center_x = (left + right) / 2;
-                let center_y = (top + bottom) / 2;
-                let relative_x = center_x as f32 / source.width().max(1) as f32;
-
-                (center_y > header_y
-                    && center_y < next_header_y
-                    && relative_x >= 0.30
-                    && relative_x <= 0.68)
-                    .then_some(MetricCandidate {
-                        center_x,
-                        center_y,
-                        left,
-                        relative_x,
-                    })
-            })
-            .collect::<Vec<_>>();
-
-        counts.sort_by_key(|candidate| (candidate.center_y, candidate.center_x));
-
-        let mut rows: Vec<Vec<MetricCandidate>> = Vec::new();
-
-        for candidate in counts {
-            if let Some(row) = rows.last_mut()
-                && candidate.center_y.saturating_sub(row[0].center_y) <= 12
-            {
-                row.push(candidate);
-            } else {
-                rows.push(vec![candidate]);
-            }
-        }
-
-        let mut action_row = rows
-            .into_iter()
-            .filter(|row| {
-                row.len() >= 3
-                    && row.iter().any(|item| item.relative_x < 0.40)
-                    && row
-                        .iter()
-                        .any(|item| (0.45..0.53).contains(&item.relative_x))
-                    && row
-                        .iter()
-                        .any(|item| (0.52..0.63).contains(&item.relative_x))
-            })
-            .min_by_key(|row| row[0].center_y);
-
-        let mut action_row = action_row
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("未识别到完整互动栏，禁止猜测回复坐标"))?;
-
-        if action_row.len() < 3 {
-            anyhow::bail!("互动栏识别结果不足 3 个，禁止猜测回复坐标");
-        }
-
-        action_row.sort_by_key(|item| item.center_x);
-
-        anyhow::ensure!(
-            action_row.iter().all(|item| {
-                let y = item.center_y as i32;
-                y > header_y as i32 && y < next_header_y as i32
-            }),
-            "互动栏包含其他帖子的坐标，禁止点击回复"
-        );
-
         // 直接复用 timeline.rs 已经识别的互动栏坐标，
         // 不再从 OCR text_blocks 中重复提取数字和计算坐标。
         let action_coordinates = &post.action_coordinates;
@@ -455,52 +381,39 @@ pub(super) fn identify_post_and_action_bar_at(
 
         super::automation::log_event(&format!(
             "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
-            author_name,
-            account_handle,
-            reply_point,
-            repost_point,
-            like_point,
+            author_name, account_handle, reply_point, repost_point, like_point,
         ));
 
         anyhow::ensure!(
-                   reply.y > header_y
-                       && repost.y > header_y
-                       && like.y > header_y
-                       && reply.y < next_header_y
-                       && repost.y < next_header_y
-                       && like.y < next_header_y,
-                   "互动栏坐标不属于目标帖子 @{}，禁止点击",
-                   account_token
-               );
-       
-               anyhow::ensure!(
-                   reply.x < source.width()
-                       && repost.x < source.width()
-                       && like.x < source.width()
-                       && action_y > header_y as i32
-                       && action_y < next_header_y as i32,
-                   "互动栏坐标超出目标帖子有效范围，禁止点击"
-               );
-       
-               let reply_point = (reply.x as i32, reply.y as i32);
-               let repost_point = (repost.x as i32, repost.y as i32);
-               let like_point = (like.x as i32, like.y as i32);
-       
-               let post_bottom_y = action_y;
-       
-               super::automation::log_event(&format!(
-                   "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
-                   author_name,
-                   account_handle,
-                   reply_point,
-                   repost_point,
-                   like_point,
-               ));
+            reply.y > header_y
+                && repost.y > header_y
+                && like.y > header_y
+                && reply.y < next_header_y
+                && repost.y < next_header_y
+                && like.y < next_header_y,
+            "互动栏坐标不属于目标帖子 @{}，禁止点击",
+            account_token
+        );
+
+        anyhow::ensure!(
+            reply.x < source.width()
+                && repost.x < source.width()
+                && like.x < source.width()
+                && action_y > header_y as i32
+                && action_y < next_header_y as i32,
+            "互动栏坐标超出目标帖子有效范围，禁止点击"
+        );
+
+        let reply_point = (reply.x as i32, reply.y as i32);
+        let repost_point = (repost.x as i32, repost.y as i32);
+        let like_point = (like.x as i32, like.y as i32);
 
         let post_bottom_y = action_y;
-        let reply_point = (reply_x, action_y);
-        let repost_point = (repost_x, action_y);
-        let like_point = (like_x, action_y);
+
+        super::automation::log_event(&format!(
+            "[互动栏坐标复用] 作者={}，账号={}，回复={:?}，转发={:?}，点赞={:?}",
+            author_name, account_handle, reply_point, repost_point, like_point,
+        ));
 
         let annotated_path = path.with_file_name(format!(
             "{}-ocr-coordinates.png",
