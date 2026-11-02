@@ -343,6 +343,11 @@ pub(super) mod native {
     }
 
     pub fn scroll_down_once() -> anyhow::Result<()> {
+        scroll_down_by_notches(1)
+    }
+
+    pub fn scroll_down_by_notches(notches: i32) -> anyhow::Result<()> {
+        anyhow::ensure!((1..=12).contains(&notches), "滚动格数必须在 1..=12");
         let hwnd = unsafe { GetForegroundWindow() };
         anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
         let mut class_name = [0u16; 128];
@@ -358,7 +363,7 @@ pub(super) mod native {
                 mi: MOUSEINPUT {
                     dx: 0,
                     dy: 0,
-                    mouseData: (-120i32) as u32,
+                    mouseData: (-(120i32 * notches)) as u32,
                     dwFlags: MOUSEEVENTF_WHEEL,
                     time: 0,
                     dwExtraInfo: 0,
@@ -558,6 +563,9 @@ pub(super) mod native {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn scroll_down_once() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn scroll_down_by_notches(_: i32) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn press_enter() -> anyhow::Result<()> {
