@@ -325,42 +325,30 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
 }
 
 fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    scroll_down_random_steps(cancel, reason, 4, 10)
+    scroll_by_notches(cancel, reason, 5)
 }
 
 pub(super) fn scroll_down_to_complete_post(
     cancel: &AtomicBool,
     reason: &str,
 ) -> anyhow::Result<()> {
-    scroll_down_random_steps(cancel, reason, 1, 3)
+    scroll_by_notches(cancel, reason, 2)
 }
 
-fn scroll_down_random_steps(
+fn scroll_by_notches(
     cancel: &AtomicBool,
     reason: &str,
-    min_steps: usize,
-    max_steps: usize,
+    notches: i32,
 ) -> anyhow::Result<()> {
-    let scroll_steps = min_steps + (next_random_u64() as usize % (max_steps - min_steps + 1));
+    check_cancel(cancel)?;
     automation::native::activate_browser()?;
     automation::log_event(&format!(
-        "全自动准备：{reason}；本次滚动 {scroll_steps} 格，步间节奏随机。"
+        "全自动准备：{reason}；滚动 {notches} 格。"
     ));
-    for step in 0..scroll_steps {
-        check_cancel(cancel)?;
-        automation::native::scroll_down_once()?;
-        if step + 1 < scroll_steps {
-            let pause_ms = 160 + next_random_u64() % 541;
-            wait_cancel(cancel, Duration::from_millis(pause_ms))?;
-            if next_random_u64() % 4 == 0 {
-                wait_cancel(cancel, Duration::from_millis(350 + next_random_u64() % 651))?;
-            }
-        }
-    }
-    let settle_ms = 350 + next_random_u64() % 651;
-    wait_cancel(cancel, Duration::from_millis(settle_ms))?;
+    automation::native::scroll_down_by_notches(notches)?;
+    wait_cancel(cancel, Duration::from_millis(280))?;
     automation::log_event(&format!(
-        "全自动准备：随机小步滚动完成（{scroll_steps} 格，停稳 {settle_ms} ms），等待下一轮完整帖子识别。"
+        "全自动准备：滚动完成（{notches} 格），等待页面稳定后识别。"
     ));
     check_cancel(cancel)
 }
