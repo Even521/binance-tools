@@ -483,50 +483,52 @@ fn run_visual_reply_inner(
             ),
         });
     }
+
     let mut post = if options.stage2_ocr {
-        const MAX_INCOMPLETE_POST_RETRIES: usize = 2;
-        let mut retry = 0;
-        loop {
-            match identify_post_for_mode(&options, &feed, cancel) {
-                Ok(post) => break post,
-                Err(error)
-                    if retry < MAX_INCOMPLETE_POST_RETRIES && is_incomplete_post_error(&error) =>
-                {
-                    retry += 1;
+        match identify_post_for_mode(&options, &feed, cancel) {
+            Ok(post) => post,
+            Err(error) => {
+                if ocr::recognize_post_unavailable_error(&feed.png).unwrap_or(false) {
+                    automation::log_event(
+                        "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
+                    );
+                    let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+                    return Ok(VisionReplyResult {
+                        screenshots,
+                        author_name: String::new(),
+                        account_handle: String::new(),
+                        posted_at: String::new(),
+                        post_text: String::new(),
+                        reply_text: String::new(),
+                        completed: false,
+                        skipped_duplicate: true,
+                        summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
+                    });
+                }
+
+                if is_incomplete_post_error(&error) {
                     automation::log_event(&format!(
-                        "阶段 1/3：第 {} 次 OCR 未获得完整帖子（{error:#}）；短距离补滚 1–3 格后重新截图识别（最多重试 {MAX_INCOMPLETE_POST_RETRIES} 次）。",
-                        retry
+                        "阶段 1/3：当前截图未能识别完整帖子（{error:#}）；不再重复截图和 OCR，安全跳过。"
                     ));
-                    scroll_down_to_complete_post(cancel, "当前画面没有完整可识别的帖子")?;
-                    move_cursor_to_safe_blank_area(feed.width, feed.height)?;
-                    let stage = format!("01-complete-post-retry-{retry}");
-                    feed = capture(&dir, &id, &stage, &mut screenshots)?;
+                    return skip_post_and_scroll(
+                        screenshots,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        cancel,
+                        false,
+                        &format!("当前截图未能识别完整帖子：{error:#}"),
+                    );
                 }
-                Err(error) => {
-                    if ocr::recognize_post_unavailable_error(&feed.png).unwrap_or(false) {
-                        automation::log_event(
-                            "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
-                        );
-                        let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
-                        return Ok(VisionReplyResult {
-                            screenshots,
-                            author_name: String::new(),
-                            account_handle: String::new(),
-                            posted_at: String::new(),
-                            post_text: String::new(),
-                            reply_text: String::new(),
-                            completed: false,
-                            skipped_duplicate: true,
-                            summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
-                        });
-                    }
-                    return Err(error);
-                }
+
+                return Err(error);
             }
         }
     } else {
         identify_post_for_mode(&options, &feed, cancel)?
     };
+
     let mut post_text = post.post_text.trim().to_string();
     let mut author_name = post.author_name.trim().to_string();
     let mut account_handle = post.account_handle.trim().to_string();
