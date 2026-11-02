@@ -325,30 +325,51 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
 }
 
 fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    scroll_by_notches(cancel, reason, 5)
+    // 恢复不等距滚动：每轮随机 4～10 格，拆成不同长度的小段。
+    scroll_down_random_steps(cancel, reason, 4, 10)
 }
 
 pub(super) fn scroll_down_to_complete_post(
     cancel: &AtomicBool,
     reason: &str,
 ) -> anyhow::Result<()> {
-    scroll_by_notches(cancel, reason, 2)
+    // 补齐帖子时也保留随机长短，避免固定两格。
+    scroll_down_random_steps(cancel, reason, 2, 5)
 }
 
-fn scroll_by_notches(
+fn scroll_down_random_steps(
     cancel: &AtomicBool,
     reason: &str,
-    notches: i32,
+    min_steps: u32,
+    max_steps: u32,
 ) -> anyhow::Result<()> {
     check_cancel(cancel)?;
     automation::native::activate_browser()?;
+    let range = max_steps.saturating_sub(min_steps).saturating_add(1);
+    let total = min_steps + (next_random_u64() % u64::from(range)) as u32;
     automation::log_event(&format!(
-        "全自动准备：{reason}；滚动 {notches} 格。"
+        "全自动准备：{reason}；本轮随机滚动 {total} 格，分段执行。"
     ));
-    automation::native::scroll_down_by_notches(notches)?;
-    wait_cancel(cancel, Duration::from_millis(280))?;
+
+    let mut moved = 0;
+    while moved < total {
+        check_cancel(cancel)?;
+        let remaining = total - moved;
+        let batch = (1 + (next_random_u64() % 3) as u32).min(remaining);
+        automation::native::scroll_down_by_notches(batch as i32)?;
+        moved += batch;
+
+        // 每段等待时间不同，偶尔停顿更久；取消时最多约 100ms 响应。
+        let delay_ms = 160 + (next_random_u64() % 541);
+        wait_cancel(cancel, Duration::from_millis(delay_ms))?;
+        if moved < total && next_random_u64() % 4 == 0 {
+            let pause_ms = 350 + (next_random_u64() % 651);
+            wait_cancel(cancel, Duration::from_millis(pause_ms))?;
+        }
+    }
+
     automation::log_event(&format!(
-        "全自动准备：滚动完成（{notches} 格），等待页面稳定后识别。"
+        "全自动准备：随机滚动完成，共 {total} 格，页面稳定后识别。"
     ));
     check_cancel(cancel)
 }
