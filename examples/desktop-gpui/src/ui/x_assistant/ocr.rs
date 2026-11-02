@@ -1117,24 +1117,11 @@ fn with_cached_ocr_engine<T>(
         if cached.is_none() {
             let init_start = Instant::now();
 
-            let engine = match OcrEngine::new_directml() {
-                Ok(engine) => {
-                    super::automation::log_event("[OCR] DirectML GPU 初始化成功");
-                    engine
-                }
-                Err(err) => {
-                    super::automation::log_event(&format!(
-                        "[OCR] DirectML 初始化失败，回退 CPU：{:#}",
-                        err
-                    ));
-
-                    let engine = OcrEngine::new()?;
-
-                    super::automation::log_event("[OCR] CPU OCR 初始化成功");
-
-                    engine
-                }
-            };
+            let engine = OcrEngine::new_auto()?;
+            super::automation::log_event(&format!(
+                "[OCR] {} OCR 初始化成功",
+                engine.backend_name()
+            ));
 
             let init_ms = init_start.elapsed().as_millis();
 
