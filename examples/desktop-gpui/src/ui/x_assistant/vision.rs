@@ -17,7 +17,7 @@ mod text_ai;
 
 pub const DEFAULT_OLLAMA_URL: &str = "http://192.168.31.60:11434/v1";
 pub const DEFAULT_VISION_MODEL: &str = "qwen3.5:4b";
-pub const AUTO_SCROLL_ENABLED: bool = false;
+pub const AUTO_SCROLL_ENABLED: bool = true;
 
 const SYSTEM_PROMPT: &str = "你是屏幕视觉操作助手。禁止长篇思考，最快速度返回 JSON 对象。所有坐标和边界值必须使用 0 到 1000 的归一化整数：x=0 表示图片最左，x=1000 表示最右；y=0 表示最上，y=1000 表示最下；有多个回复气泡时候不能在正文的上方必须在正文下方相差高度32像素；x、y 分别按整张图片宽度和高度独立归一化，不要输出像素坐标。无法确认时把 ok 设为 false。";
 
@@ -328,6 +328,10 @@ fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Resu
     scroll_down_random_steps(cancel, reason, 4, 10)
 }
 
+fn scroll_down_after_skip(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
+    scroll_down_random_steps(cancel, reason, 3, 6)
+}
+
 pub(super) fn scroll_down_to_complete_post(
     cancel: &AtomicBool,
     reason: &str,
@@ -362,30 +366,6 @@ fn scroll_down_random_steps(
     automation::log_event(&format!(
         "全自动准备：随机小步滚动完成（{scroll_steps} 格，停稳 {settle_ms} ms），等待下一轮完整帖子识别。"
     ));
-    check_cancel(cancel)
-}
-
-fn scroll_down_for_random_duration(
-    cancel: &AtomicBool,
-    min_seconds: u64,
-    max_seconds: u64,
-    reason: &str,
-) -> anyhow::Result<()> {
-    check_cancel(cancel)?;
-    automation::native::activate_browser()?;
-    let seed = next_random_u64();
-    let duration_secs = min_seconds + seed % (max_seconds - min_seconds + 1);
-    automation::log_event(&format!(
-        "全自动准备：{reason}，随机向下滚动 {duration_secs} 秒。"
-    ));
-    let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(duration_secs) {
-        check_cancel(cancel)?;
-        automation::native::scroll_down_once()?;
-        let pause_ms = 120 + (started.elapsed().as_nanos() % 281) as u64;
-        wait_cancel(cancel, Duration::from_millis(pause_ms))?;
-    }
-    automation::log_event("全自动准备：向下滚动完成。");
     check_cancel(cancel)
 }
 
@@ -1771,12 +1751,7 @@ fn recover_from_ocr_composer_failure(
         )
     };
     if AUTO_SCROLL_ENABLED {
-        scroll_down_for_random_duration(
-            cancel,
-            5,
-            10,
-            "OCR 回复框定位失败，关闭回复弹窗后下滑查找其他帖子",
-        )?;
+        scroll_down_after_skip(cancel, "OCR 回复框定位失败，关闭回复弹窗后查找其他帖子")?;
     } else {
         automation::log_event("自动滚动已关闭；OCR 恢复关闭弹窗后不滚动。");
     }
@@ -1810,12 +1785,7 @@ fn skip_post_and_scroll(
         "阶段 1/3：{reason}；不点击回复按钮、不生成或保存回复。"
     ));
     if AUTO_SCROLL_ENABLED {
-        scroll_down_for_random_duration(
-            cancel,
-            5,
-            10,
-            "帖子与回复按钮关联不可靠，跳过并查找下一帖",
-        )?;
+        scroll_down_after_skip(cancel, "跳过当前帖子后查找下一帖")?;
     } else {
         automation::log_event("自动滚动已关闭；本轮跳过当前帖子，不滚动。");
     }
