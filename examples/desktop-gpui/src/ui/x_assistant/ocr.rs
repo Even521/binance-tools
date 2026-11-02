@@ -296,32 +296,55 @@ pub(super) fn identify_post_and_action_bar_at(
 
         let account_token = account_handle.trim_start_matches('@');
 
-        let header_y = result
+        let (header_left, header_y, _, _) = result
             .text_blocks
             .iter()
             .filter(|block| block.text.contains(account_token) && block.text.contains(&posted_at))
             .filter_map(text_block_bounds)
-            .map(|bounds| bounds.1)
-            .min()
+            .min_by_key(|bounds| bounds.1)
             .ok_or_else(|| anyhow::anyhow!("未能定位 PP-OCR 识别到的帖子头部"))?;
+
+        // 下一条真正的顶层帖子，应该与当前帖子作者栏基本左对齐。
+        // 图片中的引用作者通常会向右缩进，不能作为帖子边界。
+        let header_alignment_tolerance = (source.width() * 4 / 100).max(40);
 
         let next_header_y = parsed
             .timeline
             .posts
-            .get(selected_index + 1)
-            .and_then(|next_post| next_post.account.as_deref())
-            .map(|account| account.trim_start_matches('@'))
-            .and_then(|next_account| {
+            .iter()
+            .skip(selected_index + 1)
+            .find_map(|next_post| {
+                let next_account = next_post.account.as_deref()?.trim_start_matches('@');
+
+                let next_timestamp = next_post.timestamp.as_deref()?;
+
                 result
                     .text_blocks
                     .iter()
-                    .filter(|block| block.text.contains(next_account))
+                    .filter(|block| {
+                        block.text.contains(next_account) && block.text.contains(next_timestamp)
+                    })
                     .filter_map(text_block_bounds)
+                    .filter(|bounds| {
+                        let next_left = bounds.0;
+                        let next_y = bounds.1;
+
+                        next_y > header_y
+                            && next_left.abs_diff(header_left) <= header_alignment_tolerance
+                    })
                     .map(|bounds| bounds.1)
-                    .filter(|&y| y > header_y)
                     .min()
             })
             .unwrap_or(source.height());
+
+        super::automation::log_event(&format!(
+            "[帖子边界] 当前作者栏 x={} y={}，下一条顶层帖子 y={}，截图高度={}，横向容差={}",
+            header_left,
+            header_y,
+            next_header_y,
+            source.height(),
+            header_alignment_tolerance
+        ));
 
         // 直接复用 timeline.rs 已经识别的
 
