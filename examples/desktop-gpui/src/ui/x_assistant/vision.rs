@@ -328,10 +328,6 @@ fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Resu
     scroll_down_random_steps(cancel, reason, 4, 10)
 }
 
-fn scroll_down_after_skip(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    scroll_down_random_steps(cancel, reason, 3, 6)
-}
-
 pub(super) fn scroll_down_to_complete_post(
     cancel: &AtomicBool,
     reason: &str,
@@ -1750,11 +1746,7 @@ fn recover_from_ocr_composer_failure(
             "OCR 回复框定位失败，且两次关闭尝试后弹窗仍未关闭；为避免刷新或滚动改变页面状态，已停止自动操作。请手动关闭回复弹窗后再重试。"
         )
     };
-    if AUTO_SCROLL_ENABLED {
-        scroll_down_after_skip(cancel, "OCR 回复框定位失败，关闭回复弹窗后查找其他帖子")?;
-    } else {
-        automation::log_event("自动滚动已关闭；OCR 恢复关闭弹窗后不滚动。");
-    }
+
     Ok(VisionReplyResult {
         screenshots: std::mem::take(screenshots),
         author_name,
@@ -1777,18 +1769,13 @@ fn skip_post_and_scroll(
     account_handle: String,
     posted_at: String,
     post_text: String,
-    cancel: &AtomicBool,
+    _cancel: &AtomicBool,
     reply_button_missed: bool,
     reason: &str,
 ) -> anyhow::Result<VisionReplyResult> {
     automation::log_event(&format!(
         "阶段 1/3：{reason}；不点击回复按钮、不生成或保存回复。"
     ));
-    if AUTO_SCROLL_ENABLED {
-        scroll_down_after_skip(cancel, "跳过当前帖子后查找下一帖")?;
-    } else {
-        automation::log_event("自动滚动已关闭；本轮跳过当前帖子，不滚动。");
-    }
     let summary = if reply_button_missed {
         format!("继续扫描下一帖；回复按钮未识别；{reason}。未执行回复。")
     } else {
