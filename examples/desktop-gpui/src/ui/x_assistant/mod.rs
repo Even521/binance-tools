@@ -44,6 +44,13 @@ pub struct XAssistantPage {
     reply_list: Entity<reply_list::ReplyListPage>,
 }
 
+impl Drop for XAssistantPage {
+    fn drop(&mut self) {
+        // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
+        self.cancel_reply.store(true, Ordering::Release);
+    }
+}
+
 impl XAssistantPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rules_value = load_reply_rules();
