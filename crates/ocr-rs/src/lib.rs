@@ -18,40 +18,103 @@ use ppocr_rs::{ModelHub, OcrLite, OcrOptions, PpOcrVersion};
 /// Local PP-OCRv6 engine with Chinese and multilingual text recognition.
 pub struct OcrEngine {
     engine: OcrLite,
+    detection_model: std::path::PathBuf,
+    recognition_model: std::path::PathBuf,
+    dictionary: std::path::PathBuf,
+    using_directml: bool,
 }
 
 impl OcrEngine {
-    /// Loads PP-OCRv6 Tiny from the local model cache, downloading it if needed.
-    pub fn new() -> Result<Self> {
+    fn model_paths() -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
         let model_hub = ModelHub::with_default_cache()?;
         let models = model_hub.ensure(PpOcrVersion::V6Tiny)?;
-        let detection_model = models.det_onnx.to_string_lossy();
-        let recognition_model = models.rec_onnx.to_string_lossy();
-        let dictionary = models.dict_txt.to_string_lossy();
-
-        let mut engine = OcrLite::new();
-        engine.init_models_no_angle(&detection_model, &recognition_model, &dictionary, 4)?;
-        Ok(Self { engine })
+        Ok((models.det_onnx, models.rec_onnx, models.dict_txt))
     }
 
-    /// Loads PP-OCRv6 Tiny and uses Windows DirectML for GPU inference.
-    #[cfg(target_os = "windows")]
-    pub fn new_directml() -> Result<Self> {
-        let model_hub = ModelHub::with_default_cache()?;
-        let models = model_hub.ensure(PpOcrVersion::V6Tiny)?;
-        let detection_model = models.det_onnx.to_string_lossy();
-        let recognition_model = models.rec_onnx.to_string_lossy();
-        let dictionary = models.dict_txt.to_string_lossy();
+    fn build_cpu_engine(
+        detection_model: &Path,
+        recognition_model: &Path,
+        dictionary: &Path,
+    ) -> Result<OcrLite> {
+        let mut engine = OcrLite::new();
+        engine.init_models_no_angle(
+            &detection_model.to_string_lossy(),
+            &recognition_model.to_string_lossy(),
+            &dictionary.to_string_lossy(),
+            4,
+        )?;
+        Ok(engine)
+    }
 
+    #[cfg(target_os = "windows")]
+    fn build_directml_engine(
+        detection_model: &Path,
+        recognition_model: &Path,
+        dictionary: &Path,
+    ) -> Result<OcrLite> {
         let mut engine = OcrLite::new();
         engine.init_models_no_angle_with_builder(
-            &detection_model,
-            &recognition_model,
-            &dictionary,
+            &detection_model.to_string_lossy(),
+            &recognition_model.to_string_lossy(),
+            &dictionary.to_string_lossy(),
             4,
             directml_session_builder,
         )?;
-        Ok(Self { engine })
+        Ok(engine)
+    }
+
+    fn from_paths(
+        paths: (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        use_directml: bool,
+    ) -> Result<Self> {
+        let engine = if use_directml {
+            #[cfg(target_os = "windows")]
+            {
+                Self::build_directml_engine(&paths.0, &paths.1, &paths.2)?
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                anyhow::bail!("DirectML is only available on Windows");
+            }
+        } else {
+            Self::build_cpu_engine(&paths.0, &paths.1, &paths.2)?
+        };
+
+        Ok(Self {
+            engine,
+            detection_model: paths.0,
+            recognition_model: paths.1,
+            dictionary: paths.2,
+            using_directml: use_directml,
+        })
+    }
+
+    /// Loads PP-OCRv6 Tiny with the CPU execution provider.
+    pub fn new() -> Result<Self> {
+        Self::from_paths(Self::model_paths()?, false)
+    }
+
+    /// Loads PP-OCRv6 Tiny with Windows DirectML. Initialization errors are returned.
+    #[cfg(target_os = "windows")]
+    pub fn new_directml() -> Result<Self> {
+        Self::from_paths(Self::model_paths()?, true)
+    }
+
+    /// Prefers DirectML on Windows and falls back to CPU if GPU initialization fails.
+    pub fn new_auto() -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        {
+            match Self::new_directml() {
+                Ok(engine) => return Ok(engine),
+                Err(error) => eprintln!("[OCR] DirectML 初始化失败，切换 CPU：{error:#}"),
+            }
+        }
+        Self::new()
+    }
+
+    /// Returns the currently active inference backend.
+    pub fn backend_name(&self) -> &'static str {
+        if self.using_directml { "DirectML" } else { "CPU" }
     }
 
     /// Recognizes a full page and returns its OCR details plus timeline/action coordinates as JSON.
@@ -376,19 +439,47 @@ impl OcrEngine {
 
     /// Recognizes text in an image and returns the detailed result.
     pub fn recognize_image_detailed(&mut self, image: &image::RgbImage) -> Result<OcrResult> {
-        self.engine
-            .detect_with_options(
-                image,
-                10,
-                1280,
-                0.6,
-                0.3,
-                1.6,
-                false,
-                false,
-                OcrOptions::default(),
-            )
-            .map_err(Into::into)
+        let result = self.engine.detect_with_options(
+            image,
+            10,
+            1280,
+            0.6,
+            0.3,
+            1.6,
+            false,
+            false,
+            OcrOptions::default(),
+        );
+
+        match result {
+            Ok(result) => Ok(result),
+            Err(gpu_error) if self.using_directml => {
+                eprintln!("[OCR] DirectML 推理失败，切换 CPU 并重试：{gpu_error}");
+
+                self.engine = Self::build_cpu_engine(
+                    &self.detection_model,
+                    &self.recognition_model,
+                    &self.dictionary,
+                )
+                .context("DirectML 推理失败，且 CPU 引擎初始化失败")?;
+                self.using_directml = false;
+
+                self.engine
+                    .detect_with_options(
+                        image,
+                        10,
+                        1280,
+                        0.6,
+                        0.3,
+                        1.6,
+                        false,
+                        false,
+                        OcrOptions::default(),
+                    )
+                    .map_err(Into::into)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Recognizes text in an image file and joins the detected lines with newlines.
