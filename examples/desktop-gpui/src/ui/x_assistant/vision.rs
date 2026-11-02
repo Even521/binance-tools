@@ -325,16 +325,16 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
 }
 
 fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    // 恢复不等距滚动：每轮随机 4～10 格，拆成不同长度的小段。
-    scroll_down_random_steps(cancel, reason, 4, 10)
+    // 每轮随机滚动 5～12 格，每段随机滚动 2～5 格。
+    scroll_down_random_steps(cancel, reason, 5, 12)
 }
 
 pub(super) fn scroll_down_to_complete_post(
     cancel: &AtomicBool,
     reason: &str,
 ) -> anyhow::Result<()> {
-    // 补齐帖子时也保留随机长短，避免固定两格。
-    scroll_down_random_steps(cancel, reason, 2, 5)
+    // 补齐帖子时同样随机滚动 5～12 格，每段 2～5 格。
+    scroll_down_random_steps(cancel, reason, 5, 12)
 }
 
 fn scroll_down_random_steps(
@@ -355,7 +355,7 @@ fn scroll_down_random_steps(
     while moved < total {
         check_cancel(cancel)?;
         let remaining = total - moved;
-        let batch = (1 + (next_random_u64() % 3) as u32).min(remaining);
+        let batch = (2 + (next_random_u64() % 4) as u32).min(remaining);
         automation::native::scroll_down_by_notches(batch as i32)?;
         moved += batch;
 
