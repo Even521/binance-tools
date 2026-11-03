@@ -1,6 +1,6 @@
 use crate::ui::palette;
 use binance_tools::{
-    ai::{AiSettings, ChatMessage, send_chat_with_model_timeout_blocking},
+    ai::{AiSettings, ChatMessage, send_news_rewrite_chat_blocking},
     db::{
         crypto_news::{
             NewsItemEntity, insert_news_items, update_news_rewrite,
@@ -147,11 +147,11 @@ impl CryptoNewsPage {
                             "请将下面这条新闻改写成一条 X 帖子。严格控制在 100 个字符以内（包含标点和空格），尽量压缩但保留核心信息。只输出最终文案。\n\n新闻标题：{title}\n新闻内容：{source}"
                         )),
                     ];
-                    let response = send_chat_with_model_timeout_blocking(
+                    let response = send_news_rewrite_chat_blocking(
                         &settings,
                         selection,
                         &messages,
-                        Duration::from_secs(120),
+                        Duration::from_secs(180),
                     )?;
                     let rewritten: String = response
                         .content
