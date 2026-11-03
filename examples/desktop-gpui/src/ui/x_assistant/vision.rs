@@ -19,6 +19,10 @@ pub const DEFAULT_OLLAMA_URL: &str = "http://192.168.31.60:11434/v1";
 pub const DEFAULT_VISION_MODEL: &str = "qwen3.5:4b";
 pub const AUTO_SCROLL_ENABLED: bool = true;
 
+// 连续滚动达到阈值后刷新时间线，避免反复处理旧帖子。
+const SCROLLS_BEFORE_REFRESH: u64 = 8;
+static FEED_SCROLL_COUNT: AtomicU64 = AtomicU64::new(0);
+
 const SYSTEM_PROMPT: &str = "你是屏幕视觉操作助手。禁止长篇思考，最快速度返回 JSON 对象。所有坐标和边界值必须使用 0 到 1000 的归一化整数：x=0 表示图片最左，x=1000 表示最右；y=0 表示最上，y=1000 表示最下；有多个回复气泡时候不能在正文的上方必须在正文下方相差高度32像素；x、y 分别按整张图片宽度和高度独立归一化，不要输出像素坐标。无法确认时把 ok 设为 false。";
 
 #[derive(Clone)]
@@ -163,6 +167,43 @@ struct Shot {
 
 pub(super) fn scroll_to_next_post(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
     scroll_down_in_small_steps(cancel, reason)
+}
+
+fn refresh_timeline(cancel: &AtomicBool) -> anyhow::Result<()> {
+    check_cancel(cancel)?;
+    automation::native::activate_browser()?;
+    automation::native::press_f5()?;
+    wait_cancel(cancel, Duration::from_secs(3))?;
+
+    let dir = PathBuf::from("data")
+        .join("x_assistant")
+        .join("screenshots");
+    fs::create_dir_all(&dir)?;
+    let id = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
+    let mut screenshots = Vec::new();
+    let check_shot = capture_desktop(&dir, &id, "feed-refresh-check", &mut screenshots)?;
+    check_cancel(cancel)?;
+    anyhow::ensure!(
+        check_shot.width >= 800 && check_shot.height >= 600,
+        "刷新确认检查截图尺寸异常（{}x{}），停止本轮以免漏处理确认弹窗",
+        check_shot.width,
+        check_shot.height
+    );
+
+    match ocr::recognize_reload_confirmation(&check_shot.png) {
+        Ok(true) => {
+            automation::log_event("时间线刷新：识别到重新加载确认提示，按 Enter 确认。");
+            automation::native::press_enter()?;
+            wait_cancel(cancel, Duration::from_secs(5))?;
+        }
+        Ok(false) => {
+            automation::log_event("时间线刷新：未发现重新加载确认提示。");
+            wait_cancel(cancel, Duration::from_secs(2))?;
+        }
+        Err(error) => anyhow::bail!("无法识别刷新确认提示，停止本轮：{error:#}"),
+    }
+
+    check_cancel(cancel)
 }
 
 pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
@@ -326,7 +367,22 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
 
 fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
     // 每轮随机滚动 5～12 格，每段随机滚动 2～5 格。
-    scroll_down_random_steps(cancel, reason, 5, 12)
+    scroll_down_random_steps(cancel, reason, 5, 12)?;
+
+    let count = FEED_SCROLL_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
+    automation::log_event(&format!(
+        "时间线滚动计数：{count}/{SCROLLS_BEFORE_REFRESH}"
+    ));
+
+    if count >= SCROLLS_BEFORE_REFRESH {
+        check_cancel(cancel)?;
+        automation::log_event("时间线连续滚动达到阈值，刷新页面以获取较新的帖子。");
+        refresh_timeline(cancel)?;
+        FEED_SCROLL_COUNT.store(0, Ordering::Release);
+        automation::log_event("时间线刷新完成，滚动计数已归零。");
+    }
+
+    Ok(())
 }
 
 pub(super) fn scroll_down_to_complete_post(
@@ -2651,6 +2707,11 @@ fn sanitize_reply(text: &str, rules: &str) -> anyhow::Result<String> {
         char_count <= limit,
         "AI 生成的回复有 {char_count} 字，超过回复规则要求的 {limit} 字；已拦截，未输入或发送"
     );
+    anyhow::ensure!(
+        reply_quality_violation(&text).is_none(),
+        "AI 回复包含不合适的口头表达或反问句式：{}；已拦截，要求 AI 重新生成",
+        reply_quality_violation(&text).unwrap_or_default()
+    );
     if rules.contains("不能有表情") || rules.contains("不要有表情") {
         anyhow::ensure!(
             !text.chars().any(is_emoji),
@@ -2670,6 +2731,34 @@ fn sanitize_reply(text: &str, rules: &str) -> anyhow::Result<String> {
         );
     }
     Ok(text)
+}
+
+fn reply_quality_violation(text: &str) -> Option<&'static str> {
+    let compact: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation() && !ch.is_ascii_digit())
+        .collect();
+
+    if ["撒意思", "啥意思", "撒意思啊", "啥意思啊"]
+        .iter()
+        .any(|phrase| compact.contains(phrase))
+    {
+        return Some("出现“撒意思/啥意思”类口头表达");
+    }
+
+    if text.contains('?') || text.contains('？') {
+        return Some("使用了疑问或反问标点");
+    }
+
+    let rhetorical_patterns = [
+        "难道", "岂不是", "这不就是", "不就是", "不是吗", "不是么",
+        "还用说吗", "你说是不是", "你觉得呢", "你说呢", "不觉得吗",
+    ];
+    if rhetorical_patterns.iter().any(|pattern| compact.contains(pattern)) {
+        return Some("使用了反问句式");
+    }
+
+    None
 }
 
 fn reply_char_limit(rules: &str) -> Option<usize> {
@@ -2811,6 +2900,12 @@ mod tests {
         assert!(sanitize_reply("这是超过十个字的回复内容", rules).is_err());
         assert!(sanitize_reply("你好！", rules).is_err());
         assert!(sanitize_reply("   ", rules).is_err());
+        assert!(sanitize_reply("你这撒意思啊", rules).is_err());
+        assert!(sanitize_reply("你啥意思", rules).is_err());
+        assert!(sanitize_reply("难道不是这样吗", rules).is_err());
+        assert!(sanitize_reply("你觉得呢", rules).is_err());
+        assert!(sanitize_reply("这波确实有意思", rules).is_ok());
+        assert!(sanitize_reply("这次处理得很稳", rules).is_ok());
     }
 }
 
