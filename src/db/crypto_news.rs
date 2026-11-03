@@ -44,6 +44,21 @@ pub fn insert_news_items(
     Ok(inserted_count)
 }
 
+/// 保存 X 文案改写结果，只更新中文摘要/翻译字段，不改动中文标题。
+pub fn update_news_rewrite(
+    connection: &Connection,
+    id: i64,
+    rewritten_text: &str,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE crypto_news SET chinese_summary = ?1 WHERE id = ?2",
+            params![rewritten_text, id],
+        )
+        .context("save news X rewrite failed")?;
+    Ok(())
+}
+
 /// 更新或保存新闻的中文翻译结果
 pub fn update_news_translation(
     connection: &Connection,
