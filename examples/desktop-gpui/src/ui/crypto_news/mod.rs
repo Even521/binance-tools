@@ -1,6 +1,7 @@
 use crate::ui::palette;
 use binance_tools::ai::{ChatMessage, send_chat_blocking};
 use binance_tools::db::{
+    ai_rules::load_ai_rule_blocking,
     crypto_news::NewsItemEntity, crypto_news::insert_news_items,
     crypto_news::update_news_translation, open_default_connection,
 };
@@ -193,17 +194,15 @@ impl CryptoNewsPage {
             let result = std::thread::spawn(move || {
                 let title = item.title.clone();
                 let summary = item.summary.clone().unwrap_or_default();
-                let prompt = format!(
-                    "请将以下加密货币快讯的标题和摘要翻译为专业、流畅的中文。\n\
-                    【重要规则】：\n\
-                    1. 专有名词、代币符号（如 BTC、ETH、SOL、USDT）、话题标签（如 #Bitcoin、#Ethereum、#DeFi）必须严格保留英文原样，绝对不要翻译成中文。\n\
-                    2. 请按以下格式返回结果，不要包含多余的废话：\n\
-                    [CHINESE_TITLE]: 翻译后的中文标题\n\
-                    [CHINESE_SUMMARY]: 翻译后的中文摘要/正文\n\n\
-                    英文标题：{}\n\
-                    英文摘要：{}",
-                    title, summary
-                );
+                let rule = load_ai_rule_blocking("crypto_news_translate")?
+                    .filter(|rule| rule.enabled)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "AI 翻译规则 crypto_news_translate 不存在或已停用，请在 AI 规则页面启用该规则"
+                    ))?;
+                let prompt = rule
+                    .content
+                    .replace("{{title}}", &title)
+                    .replace("{{content}}", &summary);
 
                 let messages = vec![ChatMessage::user(prompt)];
                 let response = send_chat_blocking(&messages)?;
