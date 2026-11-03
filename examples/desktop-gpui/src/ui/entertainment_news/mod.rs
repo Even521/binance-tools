@@ -427,7 +427,6 @@ impl EntertainmentNewsPage {
         });
 
         self.news_items = scored.into_iter().map(|(_, item)| item).collect();
-        self.current_page = 0;
         self.refresh_table_page(cx);
         hot_count
     }
