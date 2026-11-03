@@ -49,7 +49,6 @@ pub struct CryptoNewsPage {
     is_syncing: bool,
     sync_guard: Arc<AtomicBool>,
     rewrite_open: bool,
-    rewrite_news_id: Option<i64>,
     rewrite_title: String,
     rewrite_source: String,
     rewrite_result: Option<String>,
@@ -85,7 +84,6 @@ impl CryptoNewsPage {
             is_syncing: false,
             sync_guard: Arc::new(AtomicBool::new(false)),
             rewrite_open: false,
-            rewrite_news_id: None,
             rewrite_title: String::new(),
             rewrite_source: String::new(),
             rewrite_result: None,
@@ -126,7 +124,6 @@ impl CryptoNewsPage {
         }
 
         self.rewrite_open = true;
-        self.rewrite_news_id = Some(event.id);
         self.rewrite_title = event.title.clone();
         self.rewrite_source = event.content.clone();
         self.rewrite_result = None;
@@ -526,6 +523,9 @@ impl TableDelegate for CryptoNewsTableDelegate {
                     .unwrap_or("暂无内容")
                     .to_string();
                 let copy_content = content.clone();
+                let rewrite_news_id = item.id;
+                let rewrite_news_title = item.title.clone();
+                let rewrite_content = content.clone();
                 h_flex()
                     .gap_2()
                     .items_center()
@@ -545,9 +545,9 @@ impl TableDelegate for CryptoNewsTableDelegate {
                             )
                             .on_click(cx.listener(move |_state, _event, _window, cx| {
                                 cx.emit(CryptoNewsRewriteRequested {
-                                    id: item.id,
-                                    title: item.title.clone(),
-                                    content: content.clone(),
+                                    id: rewrite_news_id,
+                                    title: rewrite_news_title.clone(),
+                                    content: rewrite_content.clone(),
                                 });
                             })),
                     )
@@ -738,6 +738,23 @@ impl Render for CryptoNewsPage {
                                                 .text_size(px(12.))
                                                 .text_color(palette::text(theme))
                                                 .child(self.rewrite_source.clone()),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child("当前新闻"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_semibold()
+                                                .text_color(text_strong)
+                                                .child(self.rewrite_title.clone()),
                                         ),
                                 )
                                 .child(
