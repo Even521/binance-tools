@@ -282,7 +282,7 @@ impl EntertainmentNewsPage {
                         let feeds = vec![
                             FeedConfig {
                                 name: "新浪娱乐".to_string(),
-                                url: "https://rss.sina.com.cn/ent/ent.xml".to_string(),
+                                url: "https://rss.sina.com.cn/news/allnews/ent.xml".to_string(),
                             },
                             FeedConfig {
                                 name: "中国新闻网娱乐".to_string(),
@@ -307,10 +307,12 @@ impl EntertainmentNewsPage {
                         let entities: Vec<NewsItemEntity> = items
                             .into_iter()
                             .filter(|item| {
-                                item.summary
-                                    .as_deref()
-                                    .map(|summary| summary.chars().count() <= MAX_SUMMARY_CHARS)
-                                    .unwrap_or(true)
+                                item.title.chars().count() <= MAX_SUMMARY_CHARS
+                                    && item
+                                        .summary
+                                        .as_deref()
+                                        .map(|summary| summary.chars().count() <= MAX_SUMMARY_CHARS)
+                                        .unwrap_or(true)
                             })
                             .map(|i| NewsItemEntity {
                                 source: i.source,
