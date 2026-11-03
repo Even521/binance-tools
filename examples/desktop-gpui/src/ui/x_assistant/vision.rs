@@ -206,6 +206,56 @@ fn refresh_timeline(cancel: &AtomicBool) -> anyhow::Result<()> {
     check_cancel(cancel)
 }
 
+pub(super) fn recover_by_error(
+    cancel: &AtomicBool,
+    error: &anyhow::Error,
+) -> anyhow::Result<()> {
+    let message = format!("{error:#}");
+
+    if message.contains("账号二次 OCR") || message.contains("账号不一致") {
+        automation::log_event(
+            "分类恢复：账号二次核验存在歧义，跳过当前帖子并滚动；不执行全桌面 OCR。",
+        );
+        return scroll_down_in_small_steps(cancel, "账号识别存在歧义，安全跳过当前帖子");
+    }
+
+    if message.contains("截图尺寸异常")
+        || message.contains("浏览器客户区尺寸异常")
+        || message.contains("截图尺寸与浏览器客户区不一致")
+    {
+        automation::log_event(
+            "分类恢复：浏览器窗口尺寸异常，重新激活并检查客户区；不对异常截图执行 OCR。",
+        );
+        native::activate_browser()?;
+        wait_cancel(cancel, Duration::from_millis(700))?;
+        let (width, height) = native::get_window_client_size()?;
+        anyhow::ensure!(
+            width >= 800 && height >= 600,
+            "浏览器恢复后客户区仍异常（{}x{}），停止自动操作",
+            width,
+            height
+        );
+        automation::log_event(&format!(
+            "分类恢复：浏览器客户区已恢复为 {}x{}，下一轮重新截图。",
+            width, height
+        ));
+        return Ok(());
+    }
+
+    if message.contains("局部 OCR")
+        || message.contains("互动栏")
+        || message.contains("回复坐标")
+        || message.contains("PP-OCR")
+    {
+        automation::log_event(
+            "分类恢复：帖子或互动栏 OCR 失败，跳过当前帖子并滚动；不执行昂贵的全桌面状态 OCR。",
+        );
+        return scroll_down_in_small_steps(cancel, "帖子或互动栏 OCR 失败，安全跳过当前帖子");
+    }
+
+    randomized_recovery(cancel, "本轮报错，按通用流程恢复")
+}
+
 pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
     check_cancel(cancel)?;
     if reason.contains("报错") {
@@ -1979,9 +2029,31 @@ fn capture(
 ) -> anyhow::Result<Shot> {
     let bmp = dir.join(format!("{id}-{stage}.bmp"));
     automation::log_event(&format!("开始采集阶段截图：{stage}"));
+    let (expected_width, expected_height) = native::get_window_client_size()?;
+    anyhow::ensure!(
+        expected_width >= 800 && expected_height >= 600,
+        "浏览器客户区尺寸异常（{}x{}），停止 OCR，先恢复浏览器窗口",
+        expected_width,
+        expected_height
+    );
     let capture_started = std::time::Instant::now();
     native::capture_window(&bmp)?;
     let image = image::open(&bmp)?;
+    anyhow::ensure!(
+        image.width() >= 800 && image.height() >= 600,
+        "截图尺寸异常（{}x{}），停止 OCR，避免对最小化或未就绪窗口继续识别",
+        image.width(),
+        image.height()
+    );
+    anyhow::ensure!(
+        image.width().abs_diff(expected_width) <= 4
+            && image.height().abs_diff(expected_height) <= 4,
+        "截图尺寸与浏览器客户区不一致：截图={}x{}，窗口={}x{}；停止 OCR",
+        image.width(),
+        image.height(),
+        expected_width,
+        expected_height
+    );
     let png = bmp.with_extension("png");
     image.save(&png)?;
     let elapsed_ms = capture_started.elapsed().as_millis();
