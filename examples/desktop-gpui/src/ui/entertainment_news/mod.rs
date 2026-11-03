@@ -735,6 +735,14 @@ impl Render for EntertainmentNewsPage {
                                             .label(if self.is_syncing { "正在同步..." } else { "立即同步 RSS" })
                                             .disabled(self.is_syncing)
                                             .on_click(cx.listener(Self::on_sync_click)),
+                                    )
+                                    .child(
+                                        Button::new("clear_entertainment_news_btn")
+                                            .outline()
+                                            .xsmall()
+                                            .label(if self.clear_confirm { "确认清空" } else { "清空数据" })
+                                            .disabled(self.is_syncing || self.news_items.is_empty())
+                                            .on_click(cx.listener(Self::on_clear_all_click)),
                                     ),
                             ),
                     )
@@ -767,12 +775,50 @@ impl Render for EntertainmentNewsPage {
                             .min_h(px(420.))
                             .min_w_0()
                             .child(
-                                div().flex_1().size_full().overflow_hidden().child(
+                                div().flex_1().size_full().min_h_0().overflow_hidden().child(
                                     DataTable::new(&self.table)
                                         .stripe(true)
                                         .bordered(true)
                                         .scrollbar_visible(true, true),
                                 ),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .p_2()
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(muted)
+                                            .child(format!(
+                                                "第 {} / {} 页 · 共 {} 条 · 每页 {} 条",
+                                                self.current_page + 1,
+                                                self.total_pages(),
+                                                self.news_items.len(),
+                                                Self::PAGE_SIZE
+                                            )),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("entertainment_news_prev_page")
+                                                    .outline()
+                                                    .xsmall()
+                                                    .label("上一页")
+                                                    .disabled(self.current_page == 0)
+                                                    .on_click(cx.listener(Self::on_prev_page)),
+                                            )
+                                            .child(
+                                                Button::new("entertainment_news_next_page")
+                                                    .outline()
+                                                    .xsmall()
+                                                    .label("下一页")
+                                                    .disabled(self.current_page + 1 >= self.total_pages())
+                                                    .on_click(cx.listener(Self::on_next_page)),
+                                            ),
+                                    ),
                             ),
                     )
                     .when(self.rewrite_open, |row| {
