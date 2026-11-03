@@ -190,8 +190,11 @@ impl CryptoNewsPage {
                 sync_guard.store(false, Ordering::Release);
                 match result {
                     Ok(Ok(count)) => {
-                        this.status = Some(format!("同步完成！成功入库 {count} 条新资讯"));
                         this.reload_news(cx);
+                        let hot_count = this.rank_hot_news(cx);
+                        this.status = Some(format!(
+                            "同步完成！新增 {count} 条，已自动识别并置顶前 {hot_count} 条热点新闻。"
+                        ));
                     }
                     Ok(Err(err)) => {
                         eprintln!("[CryptoNews] Sync error: {err:?}");
@@ -210,20 +213,7 @@ impl CryptoNewsPage {
         .detach();
     }
 
-    fn on_find_hot_click(
-        &mut self,
-        _: &ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.news_items.is_empty() {
-            self.status = Some("暂无新闻，请先同步 RSS。".to_string());
-            cx.notify();
-            return;
-        }
-
-        // 仅对当前已加载的新闻做本地评分，不发起网络请求。
-        // 前五名按热点分数排序，其余新闻继续按发布时间排列。
+    fn rank_hot_news(&mut self, cx: &mut Context<Self>) -> usize {
         let mut scored: Vec<(i64, DbNewsItem)> = self
             .news_items
             .drain(..)
@@ -235,27 +225,18 @@ impl CryptoNewsPage {
             .collect();
 
         scored.sort_by(|(score_a, item_a), (score_b, item_b)| {
-            score_b
-                .cmp(score_a)
-                .then_with(|| {
-                    item_b
-                        .published_at
-                        .as_deref()
-                        .unwrap_or(&item_b.collected_at)
-                        .cmp(item_a.published_at.as_deref().unwrap_or(&item_a.collected_at))
-                })
+            score_b.cmp(score_a).then_with(|| {
+                item_b.published_at.as_deref().unwrap_or(&item_b.collected_at)
+                    .cmp(item_a.published_at.as_deref().unwrap_or(&item_a.collected_at))
+            })
         });
 
         let hot_count = scored.len().min(5);
         for (index, (_, item)) in scored.iter_mut().take(hot_count).enumerate() {
             item.hot_rank = Some(index + 1);
         }
-
-        // 热点前五固定置顶；其余恢复按时间倒序。
         scored[hot_count..].sort_by(|(_, a), (_, b)| {
-            b.published_at
-                .as_deref()
-                .unwrap_or(&b.collected_at)
+            b.published_at.as_deref().unwrap_or(&b.collected_at)
                 .cmp(a.published_at.as_deref().unwrap_or(&a.collected_at))
         });
 
@@ -265,9 +246,7 @@ impl CryptoNewsPage {
             table.delegate_mut().set_news(items_clone);
             table.refresh(cx);
         });
-        self.status = Some(format!("已识别并置顶前 {hot_count} 条热点新闻。"));
-        self.error = None;
-        cx.notify();
+        hot_count
     }
 
     fn hot_score(item: &DbNewsItem) -> i64 {
@@ -454,13 +433,6 @@ impl Render for CryptoNewsPage {
                                 h_flex()
                                     .justify_end()
                                     .gap_2()
-                                    .child(
-                                        Button::new("find_hot_news_btn")
-                                            .outline()
-                                            .xsmall()
-                                            .label("识别前 5 条热点")
-                                            .on_click(cx.listener(Self::on_find_hot_click)),
-                                    )
                                     .child(
                                         Button::new("sync_news_btn")
                                             .outline()
