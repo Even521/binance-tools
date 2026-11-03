@@ -346,6 +346,7 @@ pub(super) fn identify_post_and_action_bar_at(
                 .filter_map(|block| extract_account_token(&block.text).map(|value| {
                     (value, block.text_score, block.text.clone())
                 }))
+                .filter(|(value, _, _)| value.eq_ignore_ascii_case(account_token))
                 .max_by(|left, right| left.1.total_cmp(&right.1));
             let Some((verified_handle, confidence, recognized_line)) = second_handle else {
                 anyhow::bail!(
