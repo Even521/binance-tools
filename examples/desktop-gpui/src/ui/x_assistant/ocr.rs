@@ -304,6 +304,70 @@ pub(super) fn identify_post_and_action_bar_at(
             .min_by_key(|bounds| bounds.1)
             .ok_or_else(|| anyhow::anyhow!("未能定位 PP-OCR 识别到的帖子头部"))?;
 
+        // 账号中出现 i/l、o/0 等易混淆字符，或首轮置信度偏低时，
+        // 对作者栏单独放大复核。两次结果不一致就停止，不放宽账号匹配。
+        let header_confidence = result
+            .text_blocks
+            .iter()
+            .filter(|block| block.text.contains(account_token) && block.text.contains(&posted_at))
+            .map(|block| block.text_score)
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0);
+        let has_ambiguous_handle_char = account_token
+            .chars()
+            .any(|ch| matches!(ch, 'i' | 'I' | 'l' | 'L' | '1' | 'o' | 'O' | '0'));
+        if header_confidence < 0.92 || has_ambiguous_handle_char {
+            let crop_top = header_y.saturating_sub(6);
+            let crop_bottom = (header_y + 76).min(source.height());
+            let crop_left = header_left.saturating_sub(8);
+            let crop_right = (header_left + source.width() * 70 / 100).min(source.width());
+            anyhow::ensure!(
+                crop_right > crop_left && crop_bottom > crop_top,
+                "账号二次 OCR 作者栏裁剪区域无效"
+            );
+            let header_crop = image::imageops::crop_imm(
+                &source,
+                crop_left,
+                crop_top,
+                crop_right - crop_left,
+                crop_bottom - crop_top,
+            )
+            .to_image();
+            let enlarged_header = image::imageops::resize(
+                &header_crop,
+                header_crop.width().saturating_mul(2),
+                header_crop.height().saturating_mul(2),
+                image::imageops::FilterType::Lanczos3,
+            );
+            let second_pass = engine.recognize_image_detailed(&enlarged_header)?;
+            let second_handle = second_pass
+                .text_blocks
+                .iter()
+                .filter_map(|block| extract_account_token(&block.text).map(|value| {
+                    (value, block.text_score, block.text.clone())
+                }))
+                .max_by(|left, right| left.1.total_cmp(&right.1));
+            let Some((verified_handle, confidence, recognized_line)) = second_handle else {
+                anyhow::bail!(
+                    "账号二次 OCR 未能确认 @{}，首轮置信度 {:.2}；停止以避免回复错账号",
+                    account_token,
+                    header_confidence
+                );
+            };
+            anyhow::ensure!(
+                verified_handle.eq_ignore_ascii_case(account_token),
+                "账号二次 OCR 不一致：首轮=@{}，复核=@{}，复核行={:?}，置信度={:.2}；停止以避免回复错账号",
+                account_token,
+                verified_handle,
+                recognized_line,
+                confidence
+            );
+            super::automation::log_event(&format!(
+                "[账号二次核验] 首轮=@{}，复核=@{}，首轮置信度={:.2}，复核置信度={:.2}，通过。",
+                account_token, verified_handle, header_confidence, confidence
+            ));
+        }
+
         // 下一条真正的顶层帖子，应该与当前帖子作者栏基本左对齐。
         // 图片中的引用作者通常会向右缩进，不能作为帖子边界。
         let header_alignment_tolerance = (source.width() * 4 / 100).max(40);
@@ -1355,6 +1419,16 @@ fn find_dark_submit_button(
         dx + dy
     });
     Ok(candidates.into_iter().next())
+}
+
+fn extract_account_token(text: &str) -> Option<String> {
+    let at = text.find('@')?;
+    let token = text[at + 1..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .take(16)
+        .collect::<String>();
+    (!token.is_empty() && token.len() <= 15).then_some(token)
 }
 
 fn text_block_bounds(block: &TextBlock) -> Option<(u32, u32, u32, u32)> {
