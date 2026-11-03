@@ -1053,6 +1053,99 @@ pub fn send_chat_with_model_blocking(
     send_chat_with_model_timeout_blocking(settings, selection, messages, AI_REQUEST_TIMEOUT)
 }
 
+/// 专用于短文本新闻改写的 Ollama 请求。
+/// 与通用 AI 请求隔离，避免修改其他 AI 页面使用的模型参数。
+pub fn send_news_rewrite_chat_blocking(
+    settings: &AiSettings,
+    selection: ModelSelection,
+    messages: &[ChatMessage],
+    request_timeout: Duration,
+) -> anyhow::Result<ChatResponse> {
+    if !settings.agent.enabled {
+        return Err(anyhow!("AI agent is disabled in config"));
+    }
+
+    let provider = settings
+        .provider_for_model(&selection)
+        .with_context(|| format!("AI provider is not configured: {}", selection.provider))?;
+    let provider = provider_with_stored_key(&selection.provider, provider)?;
+    if provider.api_format != ApiFormat::OllamaNative {
+        return Err(anyhow!("新闻专用改写请求目前只支持 Ollama Native"));
+    }
+
+    let api_url = provider
+        .api_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("Ollama provider does not have api_url"))?;
+    let body = json!({
+        "model": selection.model,
+        "messages": ollama_native_messages(messages),
+        "stream": false,
+        "think": false,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 192,
+            "num_ctx": 4096
+        }
+    });
+
+    let endpoint = format!("{}/api/chat", ollama_native_base_url(api_url));
+    let started = Instant::now();
+    let mut request = ai_http_client_with_timeout(request_timeout)
+        .build()
+        .context("创建新闻改写 HTTP 客户端失败")?
+        .post(endpoint)
+        .json(&body);
+    if let Some(api_key) = provider.api_key() {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request
+        .send()
+        .map_err(|err| anyhow!(format_ai_transport_error("ollama 新闻改写", &err)))?;
+    let status = response.status();
+    let response_body = response
+        .text()
+        .context("读取 Ollama 新闻改写响应失败")?;
+    if !status.is_success() {
+        return Err(anyhow!(format_ai_http_error(
+            "ollama 新闻改写",
+            status,
+            &response_body
+        )));
+    }
+
+    let value: Value =
+        serde_json::from_str(&response_body).context("解析 Ollama 新闻改写响应失败")?;
+    let content = value
+        .pointer("/message/content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| anyhow!("Ollama 新闻改写响应中没有返回消息内容"))?;
+
+    let elapsed = started.elapsed();
+    let total_seconds = value
+        .get("total_duration")
+        .and_then(Value::as_f64)
+        .map(|n| n / 1_000_000_000.0);
+    let load_seconds = value
+        .get("load_duration")
+        .and_then(Value::as_f64)
+        .map(|n| n / 1_000_000_000.0);
+    let eval_count = value.get("eval_count").and_then(Value::as_u64);
+    eprintln!(
+        "[AI 新闻改写] model={} elapsed={:.2}s total={:?} load={:?} eval_count={:?}",
+        selection.model, elapsed.as_secs_f64(), total_seconds, load_seconds, eval_count
+    );
+
+    Ok(ChatResponse {
+        content: content.to_string(),
+        provider: selection.provider,
+        model: selection.model,
+    })
+}
+
 pub fn send_chat_with_model_timeout_blocking(
     settings: &AiSettings,
     selection: ModelSelection,
