@@ -3,7 +3,7 @@ use binance_tools::{
     ai::{AiSettings, ChatMessage, send_news_rewrite_chat_blocking},
     db::{
         entertainment_news::{
-            NewsItemEntity, insert_news_items, update_news_rewrite,
+            NewsItemEntity, delete_all_news, insert_news_items, update_news_rewrite,
         },
         open_default_connection,
     },
@@ -55,6 +55,8 @@ pub struct EntertainmentNewsPage {
     rewrite_error: Option<String>,
     is_rewriting: bool,
     _rewrite_task: Task<()>,
+    current_page: usize,
+    clear_confirm: bool,
 }
 
 struct EntertainmentNewsRewriteRequested {
@@ -90,6 +92,8 @@ impl EntertainmentNewsPage {
             rewrite_error: None,
             is_rewriting: false,
             _rewrite_task: Task::ready(()),
+            current_page: 0,
+            clear_confirm: false,
         };
         instance.reload_news(cx);
         instance
@@ -100,11 +104,8 @@ impl EntertainmentNewsPage {
             Ok(items) => {
                 self.news_items = items;
                 self.error = None;
-                let items_clone = self.news_items.clone();
-                self.table.update(cx, |table, cx| {
-                    table.delegate_mut().set_news(items_clone);
-                    table.refresh(cx);
-                });
+                self.current_page = 0;
+                self.refresh_table_page(cx);
             }
             Err(err) => {
                 self.error = Some(format!("加载新闻失败: {err}"));
@@ -205,11 +206,7 @@ impl EntertainmentNewsPage {
                         if let Some(item) = this.news_items.iter_mut().find(|item| item.id == news_id) {
                             item.chinese_summary = Some(rewritten);
                         }
-                        let items = this.news_items.clone();
-                        this.table.update(cx, |table, cx| {
-                            table.delegate_mut().set_news(items);
-                            table.refresh(cx);
-                        });
+                        this.refresh_table_page(cx);
                     }
                     Err(error) => {
                         this.rewrite_error = Some(format!("AI 改写失败：{error:#}"));
@@ -218,6 +215,73 @@ impl EntertainmentNewsPage {
                 cx.notify();
             });
         });
+    }
+
+    const PAGE_SIZE: usize = 50;
+
+    fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
+        let start = self.current_page.saturating_mul(Self::PAGE_SIZE);
+        let page_items = self.news_items
+            .iter()
+            .skip(start)
+            .take(Self::PAGE_SIZE)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_news(page_items);
+            table.refresh(cx);
+        });
+    }
+
+    fn total_pages(&self) -> usize {
+        self.news_items.len().div_ceil(Self::PAGE_SIZE).max(1)
+    }
+
+    fn on_prev_page(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.current_page > 0 {
+            self.current_page -= 1;
+            self.refresh_table_page(cx);
+            cx.notify();
+        }
+    }
+
+    fn on_next_page(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.current_page + 1 < self.total_pages() {
+            self.current_page += 1;
+            self.refresh_table_page(cx);
+            cx.notify();
+        }
+    }
+
+    fn on_clear_all_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_syncing {
+            return;
+        }
+        if !self.clear_confirm {
+            self.clear_confirm = true;
+            self.status = Some("再次点击‘确认清空’将永久删除全部吃瓜娱乐数据。".to_string());
+            cx.notify();
+            return;
+        }
+        match (|| -> anyhow::Result<usize> {
+            let conn = open_default_connection()?;
+            delete_all_news(&conn)
+        })() {
+            Ok(deleted) => {
+                self.news_items.clear();
+                self.current_page = 0;
+                self.clear_confirm = false;
+                self.rewrite_open = false;
+                self.status = Some(format!("已清空娱乐新闻数据，共删除 {deleted} 条。"));
+                self.error = None;
+                self.refresh_table_page(cx);
+            }
+            Err(err) => {
+                self.clear_confirm = false;
+                self.error = Some(format!("清空数据失败：{err}"));
+            }
+        }
+        cx.notify();
     }
 
     fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
@@ -394,11 +458,8 @@ impl EntertainmentNewsPage {
         });
 
         self.news_items = scored.into_iter().map(|(_, item)| item).collect();
-        let items_clone = self.news_items.clone();
-        self.table.update(cx, |table, cx| {
-            table.delegate_mut().set_news(items_clone);
-            table.refresh(cx);
-        });
+        self.current_page = 0;
+        self.refresh_table_page(cx);
         hot_count
     }
 
