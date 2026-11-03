@@ -431,16 +431,58 @@ pub(super) fn identify_post_and_action_bar_at(
             // 不重新初始化引擎，也不重新识别整页。
             let crop_start = Instant::now();
 
-            let (_crop_result, crop_parsed, _crop_json) = engine
+            let (_crop_result, mut crop_parsed, _crop_json) = engine
                 .recognize_image_with_action_coordinates_and_timeline_for_crop(&crop.image, path)?;
+            let mut coordinate_scale = 1u32;
+
+            // 首轮局部 OCR 未找到目标回复坐标时，仅在失败路径放大 2 倍复核。
+            let first_pass_has_reply = crop_parsed.timeline.posts.iter().any(|candidate| {
+                let same_account = candidate.account.as_deref().is_some_and(|account| {
+                    account.trim_start_matches('@').eq_ignore_ascii_case(account_token)
+                });
+                same_account
+                    && candidate.timestamp.as_deref() == Some(posted_at.as_str())
+                    && candidate.action_coordinates.reply.is_some()
+            });
+            if !first_pass_has_reply {
+                super::automation::log_event(
+                    "[互动栏恢复] 首轮局部 OCR 未取得目标回复坐标，启动 2 倍放大复核。",
+                );
+                let enlarged = image::imageops::resize(
+                    &crop.image,
+                    crop.image.width().saturating_mul(2),
+                    crop.image.height().saturating_mul(2),
+                    image::imageops::FilterType::Lanczos3,
+                );
+                let (_, retry_parsed, _) = engine
+                    .recognize_image_with_action_coordinates_and_timeline_for_crop(&enlarged, path)?;
+                let retry_has_reply = retry_parsed.timeline.posts.iter().any(|candidate| {
+                    let same_account = candidate.account.as_deref().is_some_and(|account| {
+                        account.trim_start_matches('@').eq_ignore_ascii_case(account_token)
+                    });
+                    same_account
+                        && candidate.timestamp.as_deref() == Some(posted_at.as_str())
+                        && candidate.action_coordinates.reply.is_some()
+                });
+                if retry_has_reply {
+                    crop_parsed = retry_parsed;
+                    coordinate_scale = 2;
+                    super::automation::log_event(
+                        "[互动栏恢复] 2 倍放大复核成功，使用复核坐标。",
+                    );
+                } else {
+                    super::automation::log_event(
+                        "[互动栏恢复] 2 倍放大复核仍未找到目标回复坐标。",
+                    );
+                }
+            }
 
             super::automation::log_event(&format!(
-                "[互动栏恢复] 局部 OCR 耗时：{} ms",
+                "[互动栏恢复] 局部 OCR（含必要时放大复核）耗时：{} ms",
                 crop_start.elapsed().as_millis()
             ));
 
-            // 3. 必须匹配同一个账号和发布时间。
-            // 不允许使用裁剪区域中其他帖子的互动栏。
+            // 必须同时匹配同一个账号和发布时间，禁止借用其他帖子的互动栏。
             let recovered_post = crop_parsed
                 .timeline
                 .posts
@@ -451,9 +493,7 @@ pub(super) fn identify_post_and_action_bar_at(
                             .trim_start_matches('@')
                             .eq_ignore_ascii_case(account_token)
                     });
-
                     let same_time = candidate.timestamp.as_deref() == Some(posted_at.as_str());
-
                     same_account && same_time
                 })
                 .ok_or_else(|| {
@@ -462,20 +502,20 @@ pub(super) fn identify_post_and_action_bar_at(
 
             super::automation::log_event("[互动栏恢复] 目标账号和发布时间核验通过");
 
-            // 4. 局部 OCR 必须识别到回复坐标。
             let local_reply = recovered_post
                 .action_coordinates
                 .reply
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("局部 OCR 仍未识别到回复坐标，禁止猜测"))?;
+                .ok_or_else(|| anyhow::anyhow!("局部 OCR 两轮均未识别到回复坐标，禁止猜测"))?;
+            let local_reply_x = local_reply.x / coordinate_scale;
+            let local_reply_y = local_reply.y / coordinate_scale;
 
             anyhow::ensure!(
-                local_reply.x < source.width() && local_reply.y < crop.image.height(),
+                local_reply_x < crop.image.width() && local_reply_y < crop.image.height(),
                 "局部回复坐标超出裁剪区域"
             );
 
-            // 5. 将局部坐标还原成原始截图坐标。
-            let global_reply_y = super::crop::restore_y(local_reply.y, crop.top)?;
+            let global_reply_y = super::crop::restore_y(local_reply_y, crop.top)?;
 
             anyhow::ensure!(
                 global_reply_y > header_y
@@ -484,28 +524,30 @@ pub(super) fn identify_post_and_action_bar_at(
                 "局部 OCR 回复坐标不属于目标帖子，禁止点击"
             );
 
-            let reply_point = (local_reply.x as i32, global_reply_y as i32);
+            let reply_point = (local_reply_x as i32, global_reply_y as i32);
 
             // 6. 转发、点赞属于辅助坐标。
             // 不符合位置关系时直接忽略，不影响回复坐标。
             let restore_optional_point = |point: Option<&ActionPoint>| -> Option<(i32, i32)> {
                 let point = point?;
 
-                if point.x <= local_reply.x
-                    || point.x >= source.width()
-                    || point.y >= crop.image.height()
-                    || point.y.abs_diff(local_reply.y) > 8
+                let point_x = point.x / coordinate_scale;
+                let point_y = point.y / coordinate_scale;
+                if point_x <= local_reply_x
+                    || point_x >= crop.image.width()
+                    || point_y >= crop.image.height()
+                    || point_y.abs_diff(local_reply_y) > 8
                 {
                     return None;
                 }
 
-                let global_y = super::crop::restore_y(point.y, crop.top).ok()?;
+                let global_y = super::crop::restore_y(point_y, crop.top).ok()?;
 
                 if global_y <= header_y || global_y >= next_header_y {
                     return None;
                 }
 
-                Some((point.x as i32, global_y as i32))
+                Some((point_x as i32, global_y as i32))
             };
 
             let repost_point =
