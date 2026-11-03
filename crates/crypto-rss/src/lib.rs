@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use feed_rs::parser;
-use reqwest::Client;
+use reqwest::{
+    Client,
+    header::{ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, HeaderMap, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -39,26 +42,62 @@ pub struct Collector {
 
 impl Collector {
     pub fn new() -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static(
+                "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            ),
+        );
+        headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+
         let client = Client::builder()
-            .user_agent("crypto-rss-collector/0.1 (+RSS feed reader)")
+            .default_headers(headers)
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .context("build HTTP client")?;
         Ok(Self { client })
     }
 
     pub async fn collect_feed(&self, feed: &FeedConfig) -> Result<Vec<NewsItem>> {
+        let candidate_urls = feed_candidate_urls(&feed.url);
+        let mut errors = Vec::new();
+
+        for url in candidate_urls {
+            match self.collect_feed_from_url(feed, &url).await {
+                Ok(items) => return Ok(items),
+                Err(err) => errors.push(format!("{url}: {err:#}")),
+            }
+        }
+
+        anyhow::bail!(
+            "all RSS endpoints failed: {}",
+            errors.join(" | ")
+        )
+    }
+
+    async fn collect_feed_from_url(
+        &self,
+        feed: &FeedConfig,
+        url: &str,
+    ) -> Result<Vec<NewsItem>> {
         let response = self
             .client
-            .get(&feed.url)
+            .get(url)
             .send()
             .await
-            .with_context(|| format!("request RSS: {}", feed.url))?
+            .with_context(|| format!("request RSS: {url}"))?
             .error_for_status()
-            .with_context(|| format!("RSS HTTP status: {}", feed.url))?;
+            .with_context(|| format!("RSS HTTP status: {url}"))?;
         let bytes = response.bytes().await.context("read RSS body")?;
         let parsed =
-            parser::parse(&bytes[..]).with_context(|| format!("parse RSS/Atom: {}", feed.url))?;
+            parser::parse(&bytes[..]).with_context(|| format!("parse RSS/Atom: {url}"))?;
 
         let collected_at = Utc::now();
         let mut items = Vec::new();
@@ -87,7 +126,7 @@ impl Collector {
                         .unwrap_or(true)
                 })
                 .map(|link| link.href.clone());
-            let url = raw_url.as_deref().map(normalize_url);
+            let item_url = raw_url.as_deref().map(normalize_url);
 
             let summary = entry
                 .summary
@@ -97,7 +136,7 @@ impl Collector {
             items.push(NewsItem {
                 source: feed.name.clone(),
                 title,
-                url,
+                url: item_url,
                 summary,
                 published_at: entry.published.or(entry.updated),
                 collected_at,
@@ -157,6 +196,33 @@ impl Collector {
 
         (unique_items, reports)
     }
+}
+
+// rsshub.app 遇到 403/限流/实例故障时，依次尝试 RSSHub 文档列出的公共实例。
+// 只对 rsshub.app 地址启用备用实例，其他 RSS 源保持原地址。
+fn feed_candidate_urls(raw: &str) -> Vec<String> {
+    const FALLBACK_HOSTS: &[&str] = &[
+        "rsshub.rssforever.com",
+        "hub.slarker.me",
+        "rsshub.pseudoyu.com",
+    ];
+
+    let Ok(original) = Url::parse(raw) else {
+        return vec![raw.to_string()];
+    };
+
+    if original.host_str() != Some("rsshub.app") {
+        return vec![raw.to_string()];
+    }
+
+    let mut urls = vec![raw.to_string()];
+    for host in FALLBACK_HOSTS {
+        let mut candidate = original.clone();
+        if candidate.set_host(Some(host)).is_ok() {
+            urls.push(candidate.to_string());
+        }
+    }
+    urls
 }
 
 fn contains_chinese(text: &str) -> bool {
