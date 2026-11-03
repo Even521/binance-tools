@@ -143,11 +143,11 @@ impl CryptoNewsPage {
                                 url: "https://rss.odaily.news/rss/newsflash".to_string(),
                             },
                             FeedConfig {
-                                name: "Odaily 文章".to_string(),
-                                url: "https://rss.odaily.news/rss/post".to_string(),
+                                name: "BlockBeats 快讯".to_string(),
+                                url: "https://api.theblockbeats.news/v2/rss/newsflash".to_string(),
                             },
                             FeedConfig {
-                                name: "ChainCatcher".to_string(),
+                                name: "ChainCatcher 快讯".to_string(),
                                 url: "https://www.chaincatcher.com/rss/clist".to_string(),
                             },
                             FeedConfig {
@@ -163,8 +163,17 @@ impl CryptoNewsPage {
                             }
                         }
 
+                        // 只保留快讯：摘要正文超过 500 个字符的内容直接丢弃，
+                        // 避免 RSS 混入长篇专栏/文章；空摘要的短快讯仍允许入库。
+                        const MAX_SUMMARY_CHARS: usize = 500;
                         let entities: Vec<NewsItemEntity> = items
                             .into_iter()
+                            .filter(|item| {
+                                item.summary
+                                    .as_deref()
+                                    .map(|summary| summary.chars().count() <= MAX_SUMMARY_CHARS)
+                                    .unwrap_or(true)
+                            })
                             .map(|i| NewsItemEntity {
                                 source: i.source,
                                 title: i.title,
