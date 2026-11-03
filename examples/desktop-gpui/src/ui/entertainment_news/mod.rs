@@ -311,20 +311,24 @@ impl EntertainmentNewsPage {
                     rt.block_on(async {
                         let feeds = vec![
                             FeedConfig {
+                                name: "新浪娱乐要闻".to_string(),
+                                url: "https://rss.sina.com.cn/ent/hot_roll.xml".to_string(),
+                            },
+                            FeedConfig {
+                                name: "新浪娱乐焦点".to_string(),
+                                url: "https://rss.sina.com.cn/news/allnews/ent.xml".to_string(),
+                            },
+                            FeedConfig {
                                 name: "新浪明星动态".to_string(),
                                 url: "https://rss.sina.com.cn/ent/star/focus7.xml".to_string(),
                             },
                             FeedConfig {
-                                name: "六间房娱乐八卦".to_string(),
-                                url: "https://rsshub.app/6park/enter8/gold".to_string(),
+                                name: "中央社娱乐".to_string(),
+                                url: "https://feeds.feedburner.com/rsscna/stars".to_string(),
                             },
                             FeedConfig {
-                                name: "六间房搞笑段子".to_string(),
-                                url: "https://rsshub.app/6park/enter1/gold".to_string(),
-                            },
-                            FeedConfig {
-                                name: "公众号搞笑精选".to_string(),
-                                url: "https://rsshub.app/gzh360/category/5d3579a2e2eb992114a3d589".to_string(),
+                                name: "今日吃瓜".to_string(),
+                                url: "https://freenewsapi.ai/v1/rss?host=tobaoliao.com&size=50".to_string(),
                             },
                         ];
                         let collector = Collector::new()?;
