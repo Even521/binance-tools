@@ -348,6 +348,19 @@ impl CryptoNewsTableDelegate {
             .child(text.into())
             .into_any_element()
     }
+
+    // RSS 时间统一按北京时间（UTC+8）显示；无法解析的原始值保持原样。
+    fn format_beijing_time(value: &str) -> String {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .map(|time| {
+                time.with_timezone(
+                    &chrono::FixedOffset::east_opt(8 * 60 * 60).expect("UTC+8 offset is valid"),
+                )
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+            })
+            .unwrap_or_else(|_| value.to_string())
+    }
 }
 
 impl TableDelegate for CryptoNewsTableDelegate {
@@ -397,6 +410,18 @@ impl TableDelegate for CryptoNewsTableDelegate {
                 h_flex()
                     .gap_2()
                     .items_center()
+                    // 将复制控件放在内容左侧，避免长文本挤压或遮挡按钮。
+                    .child(
+                        Button::new(row_ix)
+                            .outline()
+                            .xsmall()
+                            .label("复制内容")
+                            .on_click(cx.listener(move |_state, _event, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copy_content.clone(),
+                                ));
+                            })),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -404,23 +429,15 @@ impl TableDelegate for CryptoNewsTableDelegate {
                             .text_color(palette::text(theme))
                             .child(content),
                     )
-                    .child(
-                        Button::new(row_ix)
-                            .outline()
-                            .xsmall()
-                            .label("复制")
-                            .on_click(cx.listener(move |_state, _event, _window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    copy_content.clone(),
-                                ));
-                            })),
-                    )
                     .into_any_element()
             },
-            "published_at" => Self::text_cell(
-                item.published_at.clone().unwrap_or_else(|| item.collected_at.clone()),
-                palette::text(theme),
-            ),
+            "published_at" => {
+                let timestamp = item.published_at.as_deref().unwrap_or(&item.collected_at);
+                Self::text_cell(
+                    Self::format_beijing_time(timestamp),
+                    palette::text(theme),
+                )
+            },
             _ => Self::text_cell("", palette::text(theme)),
         }
     }
