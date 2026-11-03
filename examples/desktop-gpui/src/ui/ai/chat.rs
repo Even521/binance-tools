@@ -148,9 +148,7 @@ impl AiChatPanel {
             Ok(settings) => (settings, None),
             Err(err) => (AiSettings::default(), Some(err.to_string())),
         };
-        let selected_model = first_custom_model(&ai_settings)
-            .map(|item| item.selection)
-            .unwrap_or_else(|| ai_settings.selected_model().clone());
+        let selected_model = preferred_model(&ai_settings);
 
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -225,9 +223,7 @@ impl AiChatPanel {
                 self.selected_model = if custom_model_exists(&settings, &selected_model) {
                     selected_model
                 } else {
-                    first_custom_model(&settings)
-                        .map(|item| item.selection)
-                        .unwrap_or(selected_model)
+                    preferred_model(&settings)
                 };
                 self.ai_settings = settings;
                 self.settings_status = None;
@@ -2000,8 +1996,15 @@ fn model_groups(settings: &AiSettings) -> Vec<(String, Vec<ModelSelectItem>)> {
 
 fn provider_has_configured_key(
     provider_id: &str,
-    _settings: &binance_tools::ai::ProviderSettings,
+    settings: &binance_tools::ai::ProviderSettings,
 ) -> bool {
+    // Ollama's native local API does not require an API key.
+    if provider_id == "ollama" {
+        return settings.api_url.as_deref().is_some_and(|url| {
+            !url.trim().is_empty()
+        });
+    }
+
     let stored_key = binance_tools::db::ai::load_ai_provider_key_blocking(provider_id)
         .ok()
         .flatten();
@@ -2016,6 +2019,17 @@ fn provider_has_configured_key(
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty())
     })
+}
+
+fn preferred_model(settings: &AiSettings) -> ModelSelection {
+    let configured_default = settings.selected_model();
+    if custom_model_exists(settings, configured_default) {
+        return configured_default.clone();
+    }
+
+    first_custom_model(settings)
+        .map(|item| item.selection)
+        .unwrap_or_else(|| configured_default.clone())
 }
 
 fn first_custom_model(settings: &AiSettings) -> Option<ModelSelectItem> {
