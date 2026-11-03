@@ -149,7 +149,7 @@
       "version": 1,
       "api_url": "http://192.168.31.60:11434",
       "api_key_env": "OLLAMA_API_KEY",
-      "api_format": "open_ai_chat",
+      "api_format": "ollama_native",
       "available_models": [
         {
           "name": "qwen3.5:4b",
@@ -158,13 +158,13 @@
           "max_output_tokens": null,
           "max_completion_tokens": null,
           "supports_tools": true,
-          "supports_images": false,
-          "supports_thinking": false,
+          "supports_images": true,
+          "supports_thinking": true,
           "supports_prompt_cache_key": false,
           "capabilities": {
             "chat_completions": true,
             "tools": true,
-            "images": false,
+            "images": true,
             "parallel_tool_calls": false
           }
         }
