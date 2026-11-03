@@ -271,6 +271,27 @@ fn title_fingerprint(title: &str) -> String {
 
 
 #[cfg(test)]
+mod feed_fallback_tests {
+    use super::feed_candidate_urls;
+
+    #[test]
+    fn adds_public_instances_for_rsshub_app() {
+        let urls = feed_candidate_urls("https://rsshub.app/6park/enter8/gold");
+        assert_eq!(urls.len(), 4);
+        assert_eq!(urls[0], "https://rsshub.app/6park/enter8/gold");
+        assert!(urls.iter().any(|url| url == "https://rsshub.rssforever.com/6park/enter8/gold"));
+        assert!(urls.iter().any(|url| url == "https://hub.slarker.me/6park/enter8/gold"));
+        assert!(urls.iter().any(|url| url == "https://rsshub.pseudoyu.com/6park/enter8/gold"));
+    }
+
+    #[test]
+    fn does_not_rewrite_other_feed_hosts() {
+        let url = "https://rss.sina.com.cn/ent/star/focus7.xml";
+        assert_eq!(feed_candidate_urls(url), vec![url.to_string()]);
+    }
+}
+
+#[cfg(test)]
 mod language_filter_tests {
     use super::contains_chinese;
 
