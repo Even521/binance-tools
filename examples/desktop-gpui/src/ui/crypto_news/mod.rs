@@ -412,10 +412,18 @@ impl TableDelegate for CryptoNewsTableDelegate {
                     .items_center()
                     // 将复制控件放在内容左侧，避免长文本挤压或遮挡按钮。
                     .child(
-                        Button::new(row_ix)
-                            .outline()
+                        Button::new(("crypto-news-copy", row_ix))
+                            .ghost()
                             .xsmall()
-                            .label("复制内容")
+                            .w(px(22.))
+                            .h(px(18.))
+                            .tooltip("复制新闻内容")
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(palette::muted(theme))
+                                    .child("⧉"),
+                            )
                             .on_click(cx.listener(move |_state, _event, _window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     copy_content.clone(),
