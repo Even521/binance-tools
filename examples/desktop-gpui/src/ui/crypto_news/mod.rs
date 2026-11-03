@@ -1,9 +1,7 @@
 use crate::ui::palette;
-use binance_tools::ai::{ChatMessage, send_chat_blocking};
 use binance_tools::db::{
-    ai_rules::load_ai_rule_blocking,
     crypto_news::NewsItemEntity, crypto_news::insert_news_items,
-    crypto_news::update_news_translation, open_default_connection,
+    open_default_connection,
 };
 use crypto_rss::{Collector, FeedConfig};
 use gpui::{prelude::FluentBuilder, *};
@@ -31,31 +29,26 @@ pub struct DbNewsItem {
 
 pub struct CryptoNewsPage {
     table: Entity<TableState<CryptoNewsTableDelegate>>,
-    selected_news_id: Option<i64>,
     news_items: Vec<DbNewsItem>,
     status: Option<String>,
     error: Option<String>,
     is_syncing: bool,
-    is_translating: bool,
 }
 
 impl CryptoNewsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let page = cx.weak_entity();
         let table = cx.new(|cx| {
-            TableState::new(CryptoNewsTableDelegate::new(page), window, cx)
+            TableState::new(CryptoNewsTableDelegate::new(), window, cx)
                 .col_movable(false)
                 .row_selectable(true)
         });
 
         let mut instance = Self {
             table,
-            selected_news_id: None,
             news_items: Vec::new(),
             status: None,
             error: None,
             is_syncing: false,
-            is_translating: false,
         };
         instance.reload_news(cx);
         instance
@@ -81,7 +74,7 @@ impl CryptoNewsPage {
     fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
         let conn = open_default_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source, title, chinese_title, url, summary, chinese_summary, published_at, collected_at FROM crypto_news ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 200"
+            "SELECT id, source, title, chinese_title, url, summary, chinese_summary, published_at, collected_at FROM crypto_news ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DbNewsItem {
@@ -98,7 +91,10 @@ impl CryptoNewsPage {
         })?;
         let mut list = Vec::new();
         for row in rows {
-            list.push(row?);
+            let item = row?;
+            if item.title.chars().any(|ch| matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)) {
+                list.push(item);
+            }
         }
         Ok(list)
     }
@@ -120,12 +116,20 @@ impl CryptoNewsPage {
                 rt.block_on(async {
                     let feeds = vec![
                         FeedConfig {
-                            name: "Coindesk".to_string(),
-                            url: "https://www.coindesk.com/arc/outboundfeeds/rss/".to_string(),
+                            name: "Odaily 快讯".to_string(),
+                            url: "https://rss.odaily.news/rss/newsflash".to_string(),
                         },
                         FeedConfig {
-                            name: "CoinTelegraph".to_string(),
-                            url: "https://cointelegraph.com/rss".to_string(),
+                            name: "Odaily 文章".to_string(),
+                            url: "https://rss.odaily.news/rss/post".to_string(),
+                        },
+                        FeedConfig {
+                            name: "ChainCatcher".to_string(),
+                            url: "https://www.chaincatcher.com/rss/clist".to_string(),
+                        },
+                        FeedConfig {
+                            name: "PANews".to_string(),
+                            url: "https://rss.panewslab.com/zh/tvsq/rss".to_string(),
                         },
                     ];
                     let collector = Collector::new()?;
@@ -177,95 +181,17 @@ impl CryptoNewsPage {
         .detach();
     }
 
-    fn translate_selected_news(&mut self, item_id: i64, cx: &mut Context<Self>) {
-        if self.is_translating {
-            return;
-        }
-        let Some(item) = self.news_items.iter().find(|i| i.id == item_id).cloned() else {
-            return;
-        };
 
-        self.is_translating = true;
-        self.status = Some("正在使用 AI 翻译当前快讯...".to_string());
-        self.error = None;
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let result = std::thread::spawn(move || {
-                let title = item.title.clone();
-                let summary = item.summary.clone().unwrap_or_default();
-                let rule = load_ai_rule_blocking("crypto_news_translate")?
-                    .filter(|rule| rule.enabled)
-                    .ok_or_else(|| anyhow::anyhow!(
-                        "AI 翻译规则 crypto_news_translate 不存在或已停用，请在 AI 规则页面启用该规则"
-                    ))?;
-                let prompt = rule
-                    .content
-                    .replace("{{title}}", &title)
-                    .replace("{{content}}", &summary);
-
-                let messages = vec![ChatMessage::user(prompt)];
-                let response = send_chat_blocking(&messages)?;
-                let reply = response.content.trim();
-
-                let mut cn_title = title.clone();
-                let mut cn_summary = summary.clone();
-
-                for line in reply.lines() {
-                    if let Some(rest) = line.strip_prefix("[CHINESE_TITLE]:") {
-                        cn_title = rest.trim().to_string();
-                    } else if let Some(rest) = line.strip_prefix("[CHINESE_SUMMARY]:") {
-                        cn_summary = rest.trim().to_string();
-                    }
-                }
-
-                let conn = open_default_connection()?;
-                update_news_translation(&conn, item_id, &cn_title, &cn_summary)?;
-                Ok::<(String, String), anyhow::Error>((cn_title, cn_summary))
-            })
-            .join();
-
-            _ = this.update(cx, |this, cx| {
-                this.is_translating = false;
-                match result {
-                    Ok(Ok((cn_title, cn_summary))) => {
-                        this.status = Some("AI 翻译完成并已保存！".to_string());
-                        if let Some(news) = this.news_items.iter_mut().find(|i| i.id == item_id) {
-                            news.chinese_title = Some(cn_title);
-                            news.chinese_summary = Some(cn_summary);
-                        }
-                        let items_clone = this.news_items.clone();
-                        this.table.update(cx, |table, cx| {
-                            table.delegate_mut().set_news(items_clone);
-                            table.refresh(cx);
-                        });
-                    }
-                    Ok(Err(err)) => {
-                        eprintln!("[CryptoNews] Translate error: {err:?}");
-                        this.error = Some(format!("AI 翻译失败 (请检查 AI Provider 设置): {err}"));
-                        this.status = None;
-                    }
-                    Err(_) => {
-                        this.error = Some("AI 翻译线程崩溃".to_string());
-                        this.status = None;
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
 }
 
 #[derive(Clone)]
 struct CryptoNewsTableDelegate {
     columns: Vec<Column>,
     news: Vec<DbNewsItem>,
-    page: WeakEntity<CryptoNewsPage>,
 }
 
 impl CryptoNewsTableDelegate {
-    fn new(page: WeakEntity<CryptoNewsPage>) -> Self {
+    fn new() -> Self {
         Self {
             columns: vec![
                 Column::new("source", "来源").width(px(140.)).sortable(),
@@ -275,7 +201,6 @@ impl CryptoNewsTableDelegate {
                     .sortable(),
             ],
             news: Vec::new(),
-            page,
         }
     }
 
@@ -317,52 +242,14 @@ impl TableDelegate for CryptoNewsTableDelegate {
             return Self::text_cell("", palette::text(theme));
         };
         let key = self.columns[col_ix].key.as_ref();
-        let item_id = item.id;
-        let page = self.page.clone();
-
-        let display_title = item
-            .chinese_title
-            .clone()
-            .unwrap_or_else(|| item.title.clone());
 
         match key {
-            "source" => Button::new(("news-src", row_ix as u64))
-                .ghost()
-                .xsmall()
-                .label(item.source.clone())
-                .on_click(move |_, _, cx| {
-                    _ = page.update(cx, |page, cx| {
-                        page.selected_news_id = Some(item_id);
-                        cx.notify();
-                    });
-                })
-                .into_any_element(),
-            "title" => Button::new(("news-title", row_ix as u64))
-                .ghost()
-                .xsmall()
-                .label(display_title)
-                .on_click(move |_, _, cx| {
-                    _ = page.update(cx, |page, cx| {
-                        page.selected_news_id = Some(item_id);
-                        cx.notify();
-                    });
-                })
-                .into_any_element(),
-            "published_at" => Button::new(("news-time", row_ix as u64))
-                .ghost()
-                .xsmall()
-                .label(
-                    item.published_at
-                        .clone()
-                        .unwrap_or_else(|| item.collected_at.clone()),
-                )
-                .on_click(move |_, _, cx| {
-                    _ = page.update(cx, |page, cx| {
-                        page.selected_news_id = Some(item_id);
-                        cx.notify();
-                    });
-                })
-                .into_any_element(),
+            "source" => Self::text_cell(item.source.clone(), palette::text(theme)),
+            "title" => Self::text_cell(item.title.clone(), palette::text(theme)),
+            "published_at" => Self::text_cell(
+                item.published_at.clone().unwrap_or_else(|| item.collected_at.clone()),
+                palette::text(theme),
+            ),
             _ => Self::text_cell("", palette::text(theme)),
         }
     }
@@ -375,11 +262,6 @@ impl Render for CryptoNewsPage {
         let border = palette::border(theme);
         let muted = palette::muted(theme);
         let text_strong = palette::text_strong(theme);
-        let selected_item = self
-            .selected_news_id
-            .and_then(|id| self.news_items.iter().find(|i| i.id == id))
-            .cloned();
-
         v_flex()
             .gap_3()
             .size_full()
@@ -413,7 +295,7 @@ impl Render for CryptoNewsPage {
                                             .text_size(px(12.))
                                             .text_color(muted)
                                             .child(format!(
-                                                "实时收集主流加密 RSS 快讯，支持去重入库与 AI 中文翻译。当前共存储 {} 条资讯。",
+                                                "仅收集中文加密货币 RSS 快讯，自动过滤英文标题并去重入库。当前显示 {} 条资讯。",
                                                 self.news_items.len()
                                             )),
                                     ),
@@ -450,117 +332,15 @@ impl Render for CryptoNewsPage {
                     }),
             )
             .child(
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_h_0()
-                    .gap_3()
-                    .child(
-                        // Official gpui_component::table::Table
-                        v_flex()
-                            .flex_1()
-                            .h_full()
-                            .rounded(px(8.))
-                            .bg(theme.background)
-                            .border_1()
-                            .border_color(border)
-                            .overflow_hidden()
-                            .child(
-                                DataTable::new(&self.table),
-                            ),
-                    )
-                    .when_some(selected_item, |parent, item| {
-                        let item_id = item.id;
-                        let has_translation = item.chinese_title.is_some() || item.chinese_summary.is_some();
-                        let display_title = item.chinese_title.clone().unwrap_or_else(|| item.title.clone());
-                        let display_summary = item.chinese_summary.clone()
-                            .or(item.summary.clone())
-                            .unwrap_or_else(|| "暂无详细正文/摘要。".to_string());
-
-                        parent.child(
-                            // Detail panel
-                            v_flex()
-                                .w(px(460.))
-                                .h_full()
-                                .rounded(px(8.))
-                                .bg(theme.background)
-                                .border_1()
-                                .border_color(border)
-                                .p_4()
-                                .gap_3()
-                                .child(
-                                    h_flex()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .font_bold()
-                                                .text_color(theme.accent)
-                                                .child(item.source),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .child(
-                                                    Button::new("translate_news_btn")
-                                                        .primary()
-                                                        .small()
-                                                        .label(if self.is_translating {
-                                                            "翻译中..."
-                                                        } else if has_translation {
-                                                            "重新翻译"
-                                                        } else {
-                                                            "🤖 AI 智能翻译"
-                                                        })
-                                                        .disabled(self.is_translating)
-                                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                                            this.translate_selected_news(item_id, cx);
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("close_detail")
-                                                        .ghost()
-                                                        .small()
-                                                        .label("关闭")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.selected_news_id = None;
-                                                            cx.notify();
-                                                        })),
-                                                    ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(15.))
-                                        .font_bold()
-                                        .text_color(text_strong)
-                                        .child(display_title),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(muted)
-                                        .child(format!("发布时间: {}", item.published_at.unwrap_or(item.collected_at))),
-                                )
-                                .when_some(item.url, |p, url| {
-                                    p.child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(theme.accent)
-                                            .child(format!("原文链接: {url}")),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .overflow_y_scrollbar()
-                                        .text_size(px(13.))
-                                        .text_color(palette::text(theme))
-                                        .child(display_summary),
-                                ),
-                        )
-                    }),
+                    .rounded(px(8.))
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(border)
+                    .overflow_hidden()
+                    .child(DataTable::new(&self.table)),
             )
     }
 }
