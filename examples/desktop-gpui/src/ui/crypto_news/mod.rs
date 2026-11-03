@@ -109,53 +109,65 @@ impl CryptoNewsPage {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let result = std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                rt.block_on(async {
-                    let feeds = vec![
-                        FeedConfig {
-                            name: "Odaily 快讯".to_string(),
-                            url: "https://rss.odaily.news/rss/newsflash".to_string(),
-                        },
-                        FeedConfig {
-                            name: "Odaily 文章".to_string(),
-                            url: "https://rss.odaily.news/rss/post".to_string(),
-                        },
-                        FeedConfig {
-                            name: "ChainCatcher".to_string(),
-                            url: "https://www.chaincatcher.com/rss/clist".to_string(),
-                        },
-                        FeedConfig {
-                            name: "PANews".to_string(),
-                            url: "https://rss.panewslab.com/zh/tvsq/rss".to_string(),
-                        },
-                    ];
-                    let collector = Collector::new()?;
-                    let (items, reports) = collector.collect_all(&feeds).await;
-                    for rep in &reports {
-                        if let Some(e) = &rep.error {
-                            eprintln!("[CryptoNews] Feed {} error: {}", rep.source, e);
+            // RSS 网络请求和 SQLite 写入都放在独立线程执行。
+            // 通过 oneshot 异步等待结果，不能在 GPUI 任务里调用 JoinHandle::join()，
+            // 否则会阻塞界面线程，导致点击同步时窗口卡顿。
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+            std::thread::spawn(move || {
+                let result = (|| -> anyhow::Result<usize> {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+
+                    rt.block_on(async {
+                        let feeds = vec![
+                            FeedConfig {
+                                name: "Odaily 快讯".to_string(),
+                                url: "https://rss.odaily.news/rss/newsflash".to_string(),
+                            },
+                            FeedConfig {
+                                name: "Odaily 文章".to_string(),
+                                url: "https://rss.odaily.news/rss/post".to_string(),
+                            },
+                            FeedConfig {
+                                name: "ChainCatcher".to_string(),
+                                url: "https://www.chaincatcher.com/rss/clist".to_string(),
+                            },
+                            FeedConfig {
+                                name: "PANews".to_string(),
+                                url: "https://rss.panewslab.com/zh/tvsq/rss".to_string(),
+                            },
+                        ];
+                        let collector = Collector::new()?;
+                        let (items, reports) = collector.collect_all(&feeds).await;
+                        for rep in &reports {
+                            if let Some(e) = &rep.error {
+                                eprintln!("[CryptoNews] Feed {} error: {}", rep.source, e);
+                            }
                         }
-                    }
-                    let entities: Vec<NewsItemEntity> = items
-                        .into_iter()
-                        .map(|i| NewsItemEntity {
-                            source: i.source,
-                            title: i.title,
-                            url: i.url,
-                            summary: i.summary,
-                            published_at: i.published_at.map(|dt| dt.to_rfc3339()),
-                            collected_at: i.collected_at.to_rfc3339(),
-                        })
-                        .collect();
-                    let conn = open_default_connection()?;
-                    let inserted = insert_news_items(&conn, &entities)?;
-                    Ok::<usize, anyhow::Error>(inserted)
-                })
-            })
-            .join();
+
+                        let entities: Vec<NewsItemEntity> = items
+                            .into_iter()
+                            .map(|i| NewsItemEntity {
+                                source: i.source,
+                                title: i.title,
+                                url: i.url,
+                                summary: i.summary,
+                                published_at: i.published_at.map(|dt| dt.to_rfc3339()),
+                                collected_at: i.collected_at.to_rfc3339(),
+                            })
+                            .collect();
+
+                        let conn = open_default_connection()?;
+                        insert_news_items(&conn, &entities)
+                    })
+                })();
+
+                let _ = result_tx.send(result);
+            });
+
+            let result = result_rx.await;
 
             _ = this.update(cx, |this, cx| {
                 this.is_syncing = false;
@@ -170,8 +182,8 @@ impl CryptoNewsPage {
                         this.status = None;
                     }
                     Err(_) => {
-                        eprintln!("[CryptoNews] Sync thread panicked");
-                        this.error = Some("同步线程崩溃".to_string());
+                        eprintln!("[CryptoNews] Sync thread stopped unexpectedly");
+                        this.error = Some("同步线程异常退出".to_string());
                         this.status = None;
                     }
                 }
