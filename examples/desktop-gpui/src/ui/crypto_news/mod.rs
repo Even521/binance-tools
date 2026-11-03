@@ -139,30 +139,56 @@ impl CryptoNewsPage {
                 .background_spawn(async move {
                     let settings = AiSettings::load_default()?;
                     let selection = settings.selected_model().clone();
+                    const REWRITE_SYSTEM_PROMPT: &str = "你是一名专业的加密货币 X 博主，负责将币圈新闻改写成适合 X 发布的中文短帖。改写规则：1. 字数严格控制在 100 字以内，包含标点和空格。2. 开头直接突出最重要的新闻事件，避免铺垫。3. 保留核心人物、机构、项目、事件和关键数据。4. 使用自然、简洁、有传播力的中文，避免新闻通稿腔。5. 可以适当加入分析或点评，但必须有原文依据，不得编造观点。6. 不夸大事实，不制造恐慌，不使用标题党表达。7. 区分事实、传闻和预测，不得将传闻写成事实。8. 避免重复、空话和无意义的感叹。9. 不强制添加话题标签、表情符号或引导关注。10. 不要每条新闻使用相同句式，保持表达自然。只输出一条可以直接发布到 X 的中文文案，不输出标题、改写说明、字数统计或其他解释。超过 100 字时必须重新压缩并保证语句完整，不能截断；不得添加原文没有的事实、数字或信息。";
                     let messages = [
-                        ChatMessage::system(
-                            "你是一名专业的加密货币 X 内容编辑。将新闻改写成适合发布在 X 的简洁中文短文。必须忠于原文，不得编造事实、数字或观点；保留关键主体、事件和重要数据；语气自然、有信息量，不要写成标题党。只输出改写后的正文，不要解释。",
-                        ),
+                        ChatMessage::system(REWRITE_SYSTEM_PROMPT),
                         ChatMessage::user(format!(
-                            "请将下面这条新闻改写成一条 X 帖子。严格控制在 100 个字符以内（包含标点和空格），尽量压缩但保留核心信息。只输出最终文案。\n\n新闻标题：{title}\n新闻内容：{source}"
+                            "请将下面这条新闻改写成一条可直接发布到 X 的中文短帖，严格遵守系统规则。\n\n新闻标题：{title}\n新闻内容：{source}"
                         )),
                     ];
                     let response = send_news_rewrite_chat_blocking(
                         &settings,
-                        selection,
+                        selection.clone(),
                         &messages,
                         Duration::from_secs(180),
                     )?;
-                    let rewritten: String = response
+                    let mut rewritten = response
                         .content
                         .trim()
                         .trim_matches('"')
                         .trim_matches('“')
                         .trim_matches('”')
-                        .chars()
-                        .take(100)
-                        .collect();
-                    anyhow::ensure!(!rewritten.trim().is_empty(), "AI 返回的改写内容为空");
+                        .trim()
+                        .to_string();
+
+                    // 超过 100 字时让模型重新压缩，避免直接截断导致句子残缺。
+                    if rewritten.chars().count() > 100 {
+                        let retry_messages = [
+                            ChatMessage::system(REWRITE_SYSTEM_PROMPT),
+                            ChatMessage::user(format!(
+                                "请将下面这条已经改写的 X 文案进一步压缩到 100 字以内（包含标点和空格）。保留核心事实和关键数据，保证语句完整。只输出最终文案，不要解释。\n\n原始新闻标题：{title}\n原始新闻内容：{source}\n\n当前文案：{rewritten}"
+                            )),
+                        ];
+                        let retry = send_news_rewrite_chat_blocking(
+                            &settings,
+                            selection,
+                            &retry_messages,
+                            Duration::from_secs(180),
+                        )?;
+                        rewritten = retry.content
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('“')
+                            .trim_matches('”')
+                            .trim()
+                            .to_string();
+                    }
+
+                    anyhow::ensure!(!rewritten.is_empty(), "AI 返回的改写内容为空");
+                    anyhow::ensure!(
+                        rewritten.chars().count() <= 100,
+                        "AI 改写内容仍超过 100 字，未写入数据库，请重试"
+                    );
 
                     let connection = open_default_connection()?;
                     update_news_rewrite(&connection, news_id, &rewritten)?;
