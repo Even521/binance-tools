@@ -1,13 +1,21 @@
 use crate::ui::palette;
-use binance_tools::db::{
-    crypto_news::NewsItemEntity, crypto_news::insert_news_items,
-    open_default_connection,
+use binance_tools::{
+    ai::{AiSettings, ChatMessage, send_chat_with_model_timeout_blocking},
+    db::{
+        crypto_news::{
+            NewsItemEntity, insert_news_items, update_news_rewrite,
+        },
+        open_default_connection,
+    },
 };
 use crypto_rss::{Collector, FeedConfig};
 use gpui::{prelude::FluentBuilder, *};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
@@ -34,12 +42,29 @@ pub struct DbNewsItem {
 
 pub struct CryptoNewsPage {
     table: Entity<TableState<CryptoNewsTableDelegate>>,
+    _table_subscription: Subscription,
     news_items: Vec<DbNewsItem>,
     status: Option<String>,
     error: Option<String>,
     is_syncing: bool,
     sync_guard: Arc<AtomicBool>,
+    rewrite_open: bool,
+    rewrite_news_id: Option<i64>,
+    rewrite_title: String,
+    rewrite_source: String,
+    rewrite_result: Option<String>,
+    rewrite_error: Option<String>,
+    is_rewriting: bool,
+    _rewrite_task: Task<()>,
 }
+
+struct CryptoNewsRewriteRequested {
+    id: i64,
+    title: String,
+    content: String,
+}
+
+impl EventEmitter<CryptoNewsRewriteRequested> for TableState<CryptoNewsTableDelegate> {}
 
 impl CryptoNewsPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -49,13 +74,24 @@ impl CryptoNewsPage {
                 .row_selectable(true)
         });
 
+        let table_subscription =
+            cx.subscribe_in(&table, window, Self::on_rewrite_requested);
         let mut instance = Self {
             table,
+            _table_subscription: table_subscription,
             news_items: Vec::new(),
             status: None,
             error: None,
             is_syncing: false,
             sync_guard: Arc::new(AtomicBool::new(false)),
+            rewrite_open: false,
+            rewrite_news_id: None,
+            rewrite_title: String::new(),
+            rewrite_source: String::new(),
+            rewrite_result: None,
+            rewrite_error: None,
+            is_rewriting: false,
+            _rewrite_task: Task::ready(()),
         };
         instance.reload_news(cx);
         instance
@@ -76,6 +112,89 @@ impl CryptoNewsPage {
                 self.error = Some(format!("加载新闻失败: {err}"));
             }
         }
+    }
+
+    fn on_rewrite_requested(
+        &mut self,
+        _table: Entity<TableState<CryptoNewsTableDelegate>>,
+        event: &CryptoNewsRewriteRequested,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_rewriting {
+            return;
+        }
+
+        self.rewrite_open = true;
+        self.rewrite_news_id = Some(event.id);
+        self.rewrite_title = event.title.clone();
+        self.rewrite_source = event.content.clone();
+        self.rewrite_result = None;
+        self.rewrite_error = None;
+        self.is_rewriting = true;
+        cx.notify();
+
+        let news_id = event.id;
+        let title = event.title.clone();
+        let source = event.content.clone();
+        self._rewrite_task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let settings = AiSettings::load_default()?;
+                    let selection = settings.selected_model().clone();
+                    let messages = [
+                        ChatMessage::system(
+                            "你是一名专业的加密货币 X 内容编辑。将新闻改写成适合发布在 X 的简洁中文短文。必须忠于原文，不得编造事实、数字或观点；保留关键主体、事件和重要数据；语气自然、有信息量，不要写成标题党。只输出改写后的正文，不要解释。",
+                        ),
+                        ChatMessage::user(format!(
+                            "请将下面这条新闻改写成一条 X 帖子。严格控制在 100 个字符以内（包含标点和空格），尽量压缩但保留核心信息。只输出最终文案。\n\n新闻标题：{title}\n新闻内容：{source}"
+                        )),
+                    ];
+                    let response = send_chat_with_model_timeout_blocking(
+                        &settings,
+                        selection,
+                        &messages,
+                        Duration::from_secs(120),
+                    )?;
+                    let rewritten: String = response
+                        .content
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('“')
+                        .trim_matches('”')
+                        .chars()
+                        .take(100)
+                        .collect();
+                    anyhow::ensure!(!rewritten.trim().is_empty(), "AI 返回的改写内容为空");
+
+                    let connection = open_default_connection()?;
+                    update_news_rewrite(&connection, news_id, &rewritten)?;
+                    Ok::<String, anyhow::Error>(rewritten)
+                })
+                .await;
+
+            _ = this.update(cx, |this, cx| {
+                this.is_rewriting = false;
+                match result {
+                    Ok(rewritten) => {
+                        this.rewrite_result = Some(rewritten.clone());
+                        this.rewrite_error = None;
+                        if let Some(item) = this.news_items.iter_mut().find(|item| item.id == news_id) {
+                            item.chinese_summary = Some(rewritten);
+                        }
+                        let items = this.news_items.clone();
+                        this.table.update(cx, |table, cx| {
+                            table.delegate_mut().set_news(items);
+                            table.refresh(cx);
+                        });
+                    }
+                    Err(error) => {
+                        this.rewrite_error = Some(format!("AI 改写失败：{error:#}"));
+                    }
+                }
+                cx.notify();
+            });
+        });
     }
 
     fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
@@ -410,7 +529,29 @@ impl TableDelegate for CryptoNewsTableDelegate {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    // 将复制控件放在内容左侧，避免长文本挤压或遮挡按钮。
+                    .child(
+                        Button::new(("crypto-news-ai-rewrite", row_ix))
+                            .ghost()
+                            .xsmall()
+                            .w(px(28.))
+                            .h(px(18.))
+                            .tooltip("AI 改写为 X 文案（100 字以内）")
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_semibold()
+                                    .text_color(palette::muted(theme))
+                                    .child("AI"),
+                            )
+                            .on_click(cx.listener(move |_state, _event, _window, cx| {
+                                cx.emit(CryptoNewsRewriteRequested {
+                                    id: item.id,
+                                    title: item.title.clone(),
+                                    content: content.clone(),
+                                });
+                            })),
+                    )
+                    // 复制按钮紧跟在 AI 改写按钮后面。
                     .child(
                         Button::new(("crypto-news-copy", row_ix))
                             .ghost()
@@ -528,19 +669,126 @@ impl Render for CryptoNewsPage {
                     }),
             )
             .child(
-                v_flex()
+                h_flex()
                     .flex_1()
-                    .h_full()
-                    .min_h(px(420.))
-                    .w_full()
+                    .min_h_0()
+                    .gap_3()
                     .child(
-                        div().flex_1().size_full().overflow_hidden().child(
-                            DataTable::new(&self.table)
-                                .stripe(true)
-                                .bordered(true)
-                                .scrollbar_visible(true, true),
-                        ),
-                    ),
+                        v_flex()
+                            .flex_1()
+                            .h_full()
+                            .min_h(px(420.))
+                            .min_w_0()
+                            .child(
+                                div().flex_1().size_full().overflow_hidden().child(
+                                    DataTable::new(&self.table)
+                                        .stripe(true)
+                                        .bordered(true)
+                                        .scrollbar_visible(true, true),
+                                ),
+                            ),
+                    )
+                    .when(self.rewrite_open, |row| {
+                        row.child(
+                            v_flex()
+                                .w(px(360.))
+                                .min_w(px(320.))
+                                .h_full()
+                                .gap_3()
+                                .p_3()
+                                .rounded(px(8.))
+                                .bg(surface)
+                                .border_1()
+                                .border_color(border)
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .font_semibold()
+                                                .text_color(text_strong)
+                                                .child("AI 改写"),
+                                        )
+                                        .child(
+                                            Button::new("close_crypto_news_rewrite")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("关闭")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.rewrite_open = false;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(muted)
+                                                .child("原始新闻"),
+                                        )
+                                        .child(
+                                            div()
+                                                .p_2()
+                                                .rounded(px(6.))
+                                                .bg(theme.background)
+                                                .text_size(px(12.))
+                                                .text_color(palette::text(theme))
+                                                .child(self.rewrite_source.clone()),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .gap_1()
+                                        .child(
+                                            h_flex()
+                                                .justify_between()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .text_color(muted)
+                                                        .child("X 改写结果"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(10.))
+                                                        .text_color(muted)
+                                                        .child("最多 100 字"),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_h(px(140.))
+                                                .p_2()
+                                                .rounded(px(6.))
+                                                .bg(theme.background)
+                                                .text_size(px(13.))
+                                                .text_color(palette::text(theme))
+                                                .child(if self.is_rewriting {
+                                                    "正在等待 AI 返回改写结果...".to_string()
+                                                } else {
+                                                    self.rewrite_result.clone().unwrap_or_else(|| {
+                                                        "改写结果将在这里显示".to_string()
+                                                    })
+                                                }),
+                                        )
+                                        .when_some(self.rewrite_error.clone(), |panel, error| {
+                                            panel.child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(theme.danger)
+                                                    .child(error),
+                                            )
+                                        }),
+                                ),
+                        )
+                    }),
             )
     }
 }
