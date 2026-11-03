@@ -5,6 +5,10 @@ use binance_tools::db::{
 };
 use crypto_rss::{Collector, FeedConfig};
 use gpui::{prelude::FluentBuilder, *};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
@@ -33,6 +37,7 @@ pub struct CryptoNewsPage {
     status: Option<String>,
     error: Option<String>,
     is_syncing: bool,
+    sync_guard: Arc<AtomicBool>,
 }
 
 impl CryptoNewsPage {
@@ -49,6 +54,7 @@ impl CryptoNewsPage {
             status: None,
             error: None,
             is_syncing: false,
+            sync_guard: Arc::new(AtomicBool::new(false)),
         };
         instance.reload_news(cx);
         instance
@@ -100,7 +106,14 @@ impl CryptoNewsPage {
     }
 
     fn on_sync_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_syncing {
+        // UI 状态用于禁用按钮；原子锁用于兜底拦截连续/重复事件，
+        // 确保同一页面生命周期内最多只有一个 RSS 同步任务。
+        if self.is_syncing
+            || self
+                .sync_guard
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
             return;
         }
         self.is_syncing = true;
@@ -108,6 +121,7 @@ impl CryptoNewsPage {
         self.error = None;
         cx.notify();
 
+        let sync_guard = self.sync_guard.clone();
         cx.spawn(async move |this, cx| {
             // RSS 网络请求和 SQLite 写入都放在独立线程执行。
             // 通过 oneshot 异步等待结果，不能在 GPUI 任务里调用 JoinHandle::join()，
@@ -171,6 +185,7 @@ impl CryptoNewsPage {
 
             _ = this.update(cx, |this, cx| {
                 this.is_syncing = false;
+                sync_guard.store(false, Ordering::Release);
                 match result {
                     Ok(Ok(count)) => {
                         this.status = Some(format!("同步完成！成功入库 {count} 条新资讯"));
