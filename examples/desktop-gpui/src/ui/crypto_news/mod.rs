@@ -29,6 +29,7 @@ pub struct DbNewsItem {
     pub chinese_summary: Option<String>,
     pub published_at: Option<String>,
     pub collected_at: String,
+    pub hot_rank: Option<usize>,
 }
 
 pub struct CryptoNewsPage {
@@ -93,6 +94,7 @@ impl CryptoNewsPage {
                 chinese_summary: row.get(6)?,
                 published_at: row.get(7)?,
                 collected_at: row.get(8)?,
+                hot_rank: None,
             })
         })?;
         let mut list = Vec::new();
@@ -208,6 +210,121 @@ impl CryptoNewsPage {
         .detach();
     }
 
+    fn on_find_hot_click(
+        &mut self,
+        _: &ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.news_items.is_empty() {
+            self.status = Some("暂无新闻，请先同步 RSS。".to_string());
+            cx.notify();
+            return;
+        }
+
+        // 仅对当前已加载的新闻做本地评分，不发起网络请求。
+        // 前五名按热点分数排序，其余新闻继续按发布时间排列。
+        let mut scored: Vec<(i64, DbNewsItem)> = self
+            .news_items
+            .drain(..)
+            .map(|mut item| {
+                let score = Self::hot_score(&item);
+                item.hot_rank = None;
+                (score, item)
+            })
+            .collect();
+
+        scored.sort_by(|(score_a, item_a), (score_b, item_b)| {
+            score_b
+                .cmp(score_a)
+                .then_with(|| {
+                    item_b
+                        .published_at
+                        .as_deref()
+                        .unwrap_or(&item_b.collected_at)
+                        .cmp(item_a.published_at.as_deref().unwrap_or(&item_a.collected_at))
+                })
+        });
+
+        let hot_count = scored.len().min(5);
+        for (index, (_, item)) in scored.iter_mut().take(hot_count).enumerate() {
+            item.hot_rank = Some(index + 1);
+        }
+
+        // 热点前五固定置顶；其余恢复按时间倒序。
+        scored[hot_count..].sort_by(|(_, a), (_, b)| {
+            b.published_at
+                .as_deref()
+                .unwrap_or(&b.collected_at)
+                .cmp(a.published_at.as_deref().unwrap_or(&a.collected_at))
+        });
+
+        self.news_items = scored.into_iter().map(|(_, item)| item).collect();
+        let items_clone = self.news_items.clone();
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_news(items_clone);
+            table.refresh(cx);
+        });
+        self.status = Some(format!("已识别并置顶前 {hot_count} 条热点新闻。"));
+        self.error = None;
+        cx.notify();
+    }
+
+    fn hot_score(item: &DbNewsItem) -> i64 {
+        let text = format!(
+            "{} {}",
+            item.title,
+            item.summary.as_deref().unwrap_or_default()
+        )
+        .to_lowercase();
+
+        let weighted_terms = [
+            ("比特币", 5), ("btc", 5), ("以太坊", 5), ("ethereum", 5), ("eth", 4),
+            ("美联储", 5), ("降息", 5), ("加息", 4), ("etf", 5), ("sec", 4),
+            ("监管", 4), ("黑客", 5), ("被盗", 5), ("漏洞", 4), ("清算", 5),
+            ("暴涨", 4), ("暴跌", 4), ("大涨", 3), ("大跌", 3), ("突破", 3),
+            ("历史新高", 5), ("创纪录", 4), ("资金流入", 4), ("资金流出", 4),
+            ("交易所", 3), ("币安", 4), ("上币", 3), ("下架", 3), ("稳定币", 3),
+            ("空投", 2), ("主网", 2), ("融资", 3), ("收购", 3), ("诉讼", 4),
+            ("破产", 5), ("暂停提现", 5), ("清退", 3), ("政策", 3),
+        ];
+
+        let mut score = weighted_terms
+            .iter()
+            .filter(|(term, _)| text.contains(term))
+            .map(|(_, weight)| *weight)
+            .sum::<i64>();
+
+        // 标题中的热点信号比摘要中的普通提及更重要。
+        let title = item.title.to_lowercase();
+        for (term, weight) in [
+            ("突发", 5), ("重磅", 4), ("紧急", 5), ("首次", 2), ("正式", 2),
+            ("宣布", 2), ("巨鲸", 4), ("大额", 3), ("清算", 3),
+        ] {
+            if title.contains(term) {
+                score += weight;
+            }
+        }
+
+        // 新鲜度加权：24 小时内优先，避免旧新闻因关键词多而长期置顶。
+        let timestamp = item.published_at.as_deref().unwrap_or(&item.collected_at);
+        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+            let age_hours = (chrono::Utc::now() - parsed.with_timezone(&chrono::Utc))
+                .num_hours()
+                .max(0);
+            score += match age_hours {
+                0..=2 => 8,
+                3..=6 => 6,
+                7..=12 => 4,
+                13..=24 => 2,
+                25..=48 => 1,
+                _ => 0,
+            };
+        }
+
+        score
+    }
+
 
 }
 
@@ -272,7 +389,13 @@ impl TableDelegate for CryptoNewsTableDelegate {
 
         match key {
             "source" => Self::text_cell(item.source.clone(), palette::text(theme)),
-            "title" => Self::text_cell(item.title.clone(), palette::text(theme)),
+            "title" => {
+                let title = match item.hot_rank {
+                    Some(rank) => format!("🔥 TOP {rank}  {}", item.title),
+                    None => item.title.clone(),
+                };
+                Self::text_cell(title, palette::text(theme))
+            },
             "published_at" => Self::text_cell(
                 item.published_at.clone().unwrap_or_else(|| item.collected_at.clone()),
                 palette::text(theme),
@@ -331,6 +454,13 @@ impl Render for CryptoNewsPage {
                                 h_flex()
                                     .justify_end()
                                     .gap_2()
+                                    .child(
+                                        Button::new("find_hot_news_btn")
+                                            .outline()
+                                            .xsmall()
+                                            .label("识别前 5 条热点")
+                                            .on_click(cx.listener(Self::on_find_hot_click)),
+                                    )
                                     .child(
                                         Button::new("sync_news_btn")
                                             .outline()
