@@ -114,7 +114,7 @@ impl CryptoNewsPage {
 
     fn on_rewrite_requested(
         &mut self,
-        _table: Entity<TableState<CryptoNewsTableDelegate>>,
+        _table: &Entity<TableState<CryptoNewsTableDelegate>>,
         event: &CryptoNewsRewriteRequested,
         _window: &mut Window,
         cx: &mut Context<Self>,
