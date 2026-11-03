@@ -530,13 +530,17 @@ impl Render for CryptoNewsPage {
             .child(
                 v_flex()
                     .flex_1()
-                    .min_h_0()
-                    .rounded(px(8.))
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(border)
-                    .overflow_hidden()
-                    .child(DataTable::new(&self.table)),
+                    .h_full()
+                    .min_h(px(420.))
+                    .w_full()
+                    .child(
+                        div().flex_1().size_full().overflow_hidden().child(
+                            DataTable::new(&self.table)
+                                .stripe(true)
+                                .bordered(true)
+                                .scrollbar_visible(true, true),
+                        ),
+                    ),
             )
     }
 }
