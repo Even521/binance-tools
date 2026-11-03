@@ -11,7 +11,7 @@ use std::sync::{
 };
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
     scroll::ScrollableElement,
     table::{Column, Table as DataTable, TableDelegate, TableState},
