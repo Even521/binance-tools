@@ -765,21 +765,42 @@ fn run_visual_reply_inner(
         post_text.len()
     ));
 
-    automation::log_event(&format!(
-        "阶段 1/3：悬停 AI 回复坐标 ({}, {})，等待 tooltip 后由本地 OCR 验证‘回复’提示。",
-        reply_button.x, reply_button.y
-    ));
-    native::move_cursor_to_reply(reply_button.x, reply_button.y)?;
-    wait_cancel(cancel, Duration::from_millis(900))?;
-    let tooltip_shot = capture(&dir, &id, "01-reply-tooltip-hover", &mut screenshots)?;
-    let tooltip_verified =
-        match ocr::verify_reply_tooltip(&tooltip_shot.png, reply_button.x, reply_button.y) {
-            Ok(verified) => verified,
-            Err(error) => {
-                automation::log_event(&format!("悬停回复提示 OCR 失败：{error:#}"));
-                false
-            }
-        };
+    let mut tooltip_verified = false;
+    for (attempt, offset_y) in [0, 5, 10].into_iter().enumerate() {
+        let hover_y = reply_button.y + offset_y;
+        automation::log_event(&format!(
+            "阶段 1/3：第 {} 次悬停回复坐标 ({}, {})，Y 偏移={}px。",
+            attempt + 1,
+            reply_button.x,
+            hover_y,
+            offset_y
+        ));
+        native::move_cursor_to_reply(reply_button.x, hover_y)?;
+        wait_cancel(
+            cancel,
+            Duration::from_millis(if attempt == 0 { 900 } else { 700 }),
+        )?;
+        let label = format!("01-reply-tooltip-hover-{}", attempt + 1);
+        let tooltip_shot = capture(&dir, &id, &label, &mut screenshots)?;
+        tooltip_verified =
+            match ocr::verify_reply_tooltip(&tooltip_shot.png, reply_button.x, hover_y) {
+                Ok(verified) => verified,
+                Err(error) => {
+                    automation::log_event(&format!(
+                        "第 {} 次悬停回复提示 OCR 失败：{error:#}",
+                        attempt + 1
+                    ));
+                    false
+                }
+            };
+        if tooltip_verified {
+            automation::log_event(&format!(
+                "阶段 1/3：第 {} 次悬停成功识别‘回复’提示。",
+                attempt + 1
+            ));
+            break;
+        }
+    }
     if !tooltip_verified {
         automation::log_event(
             "阶段 1/3：悬停后未识别到‘回复’tooltip，发送 Escape 尝试关闭可能打开的回复窗口。",
