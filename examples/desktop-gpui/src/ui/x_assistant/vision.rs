@@ -816,6 +816,7 @@ fn run_visual_reply_inner(
     ));
 
     let mut tooltip_verified = false;
+    let mut verified_reply_y = reply_button.y;
     for (attempt, offset_y) in [0, 5, 10].into_iter().enumerate() {
         let hover_y = reply_button.y + offset_y;
         automation::log_event(&format!(
@@ -844,9 +845,12 @@ fn run_visual_reply_inner(
                 }
             };
         if tooltip_verified {
+            verified_reply_y = hover_y;
             automation::log_event(&format!(
-                "阶段 1/3：第 {} 次悬停成功识别‘回复’提示。",
-                attempt + 1
+                "阶段 1/3：第 {} 次悬停成功识别‘回复’提示，后续点击复用坐标 ({}, {})。",
+                attempt + 1,
+                reply_button.x,
+                verified_reply_y
             ));
             break;
         }
@@ -940,12 +944,12 @@ fn run_visual_reply_inner(
         account_handle,
         truncate(&post_text, 240)
     ));
-    native::move_cursor_to_reply(reply_button.x, reply_button.y)?;
+    native::move_cursor_to_reply(reply_button.x, verified_reply_y)?;
     thread::sleep(Duration::from_millis(500));
-    native::click_at_client_position(reply_button.x, reply_button.y)?;
+    native::click_at_client_position(reply_button.x, verified_reply_y)?;
     automation::log_event(&format!(
-        "阶段 1/3：回复点点击事件已发送，坐标=({}, {})。",
-        reply_button.x, reply_button.y
+        "阶段 1/3：回复点点击事件已发送，使用悬停验证坐标=({}, {})（原始识别坐标 y={}）。",
+        reply_button.x, verified_reply_y, reply_button.y
     ));
     *current_stage = "阶段 2/3（识别回复框、生成并输入回复）".to_string();
     automation::log_event("========== 阶段 2/3：确认回复弹窗、生成并提交回复 ==========");
