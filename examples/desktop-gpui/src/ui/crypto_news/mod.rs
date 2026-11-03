@@ -11,7 +11,7 @@ use std::sync::{
 };
 use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
-    button::{Button, ButtonVariants},
+    button::Button,
     h_flex,
     scroll::ScrollableElement,
     table::{Column, Table as DataTable, TableDelegate, TableState},
@@ -405,7 +405,7 @@ impl TableDelegate for CryptoNewsTableDelegate {
                             .child(content),
                     )
                     .child(
-                        Button::new(format!("copy_news_content_{row_ix}"))
+                        Button::new(row_ix)
                             .outline()
                             .xsmall()
                             .label("复制")
@@ -415,6 +415,7 @@ impl TableDelegate for CryptoNewsTableDelegate {
                                 ));
                             })),
                     )
+                    .into_any_element()
             },
             "published_at" => Self::text_cell(
                 item.published_at.clone().unwrap_or_else(|| item.collected_at.clone()),
