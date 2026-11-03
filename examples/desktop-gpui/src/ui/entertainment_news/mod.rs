@@ -55,7 +55,6 @@ pub struct EntertainmentNewsPage {
     rewrite_error: Option<String>,
     is_rewriting: bool,
     _rewrite_task: Task<()>,
-    current_page: usize,
     clear_confirm: bool,
 }
 
@@ -92,7 +91,6 @@ impl EntertainmentNewsPage {
             rewrite_error: None,
             is_rewriting: false,
             _rewrite_task: Task::ready(()),
-            current_page: 0,
             clear_confirm: false,
         };
         instance.reload_news(cx);
@@ -104,7 +102,6 @@ impl EntertainmentNewsPage {
             Ok(items) => {
                 self.news_items = items;
                 self.error = None;
-                self.current_page = 0;
                 self.refresh_table_page(cx);
             }
             Err(err) => {
@@ -217,40 +214,13 @@ impl EntertainmentNewsPage {
         });
     }
 
-    const PAGE_SIZE: usize = 50;
-
+    // 与 Alpha Token 列表保持一致：完整数据交给 DataTable，由表格自身滚动浏览。
     fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
-        let start = self.current_page.saturating_mul(Self::PAGE_SIZE);
-        let page_items = self.news_items
-            .iter()
-            .skip(start)
-            .take(Self::PAGE_SIZE)
-            .cloned()
-            .collect::<Vec<_>>();
+        let all_items = self.news_items.clone();
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().set_news(page_items);
+            table.delegate_mut().set_news(all_items);
             table.refresh(cx);
         });
-    }
-
-    fn total_pages(&self) -> usize {
-        self.news_items.len().div_ceil(Self::PAGE_SIZE).max(1)
-    }
-
-    fn on_prev_page(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_page > 0 {
-            self.current_page -= 1;
-            self.refresh_table_page(cx);
-            cx.notify();
-        }
-    }
-
-    fn on_next_page(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_page + 1 < self.total_pages() {
-            self.current_page += 1;
-            self.refresh_table_page(cx);
-            cx.notify();
-        }
     }
 
     fn on_clear_all_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -269,7 +239,6 @@ impl EntertainmentNewsPage {
         })() {
             Ok(deleted) => {
                 self.news_items.clear();
-                self.current_page = 0;
                 self.clear_confirm = false;
                 self.rewrite_open = false;
                 self.status = Some(format!("已清空娱乐新闻数据，共删除 {deleted} 条。"));
@@ -775,51 +744,14 @@ impl Render for EntertainmentNewsPage {
                             .min_h(px(420.))
                             .min_w_0()
                             .child(
-                                div().flex_1().size_full().min_h_0().overflow_hidden().child(
+                                div().flex_1().size_full().overflow_hidden().child(
                                     DataTable::new(&self.table)
                                         .stripe(true)
                                         .bordered(true)
                                         .scrollbar_visible(true, true),
                                 ),
                             )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .p_2()
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(muted)
-                                            .child(format!(
-                                                "第 {} / {} 页 · 共 {} 条 · 每页 {} 条",
-                                                self.current_page + 1,
-                                                self.total_pages(),
-                                                self.news_items.len(),
-                                                Self::PAGE_SIZE
-                                            )),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new("entertainment_news_prev_page")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label("上一页")
-                                                    .disabled(self.current_page == 0)
-                                                    .on_click(cx.listener(Self::on_prev_page)),
-                                            )
-                                            .child(
-                                                Button::new("entertainment_news_next_page")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label("下一页")
-                                                    .disabled(self.current_page + 1 >= self.total_pages())
-                                                    .on_click(cx.listener(Self::on_next_page)),
-                                            ),
-                                    ),
-                            ),
+
                     )
                     .when(self.rewrite_open, |row| {
                         row.child(
