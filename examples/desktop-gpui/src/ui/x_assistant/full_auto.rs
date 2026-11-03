@@ -183,7 +183,7 @@ impl AutoReplyRunner {
         let recovery = if vision::is_incomplete_post_error(error) {
             vision::scroll_down_to_complete_post(cancel, "帖子信息不完整，短距离补滚后重试")
         } else {
-            vision::randomized_recovery(cancel, "本轮报错，尝试刷新或滚动后恢复")
+            vision::recover_by_error(cancel, error)
         };
 
         recovery.with_context(|| format!("全自动错误恢复失败；上一轮错误：{error:#}"))
