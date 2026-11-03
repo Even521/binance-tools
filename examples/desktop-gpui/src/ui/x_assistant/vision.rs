@@ -2707,6 +2707,11 @@ fn sanitize_reply(text: &str, rules: &str) -> anyhow::Result<String> {
         char_count <= limit,
         "AI 生成的回复有 {char_count} 字，超过回复规则要求的 {limit} 字；已拦截，未输入或发送"
     );
+    anyhow::ensure!(
+        reply_quality_violation(&text).is_none(),
+        "AI 回复包含不合适的口头表达或反问句式：{}；已拦截，要求 AI 重新生成",
+        reply_quality_violation(&text).unwrap_or_default()
+    );
     if rules.contains("不能有表情") || rules.contains("不要有表情") {
         anyhow::ensure!(
             !text.chars().any(is_emoji),
@@ -2726,6 +2731,34 @@ fn sanitize_reply(text: &str, rules: &str) -> anyhow::Result<String> {
         );
     }
     Ok(text)
+}
+
+fn reply_quality_violation(text: &str) -> Option<&'static str> {
+    let compact: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation() && !ch.is_ascii_digit())
+        .collect();
+
+    if ["撒意思", "啥意思", "撒意思啊", "啥意思啊"]
+        .iter()
+        .any(|phrase| compact.contains(phrase))
+    {
+        return Some("出现“撒意思/啥意思”类口头表达");
+    }
+
+    if text.contains('?') || text.contains('？') {
+        return Some("使用了疑问或反问标点");
+    }
+
+    let rhetorical_patterns = [
+        "难道", "岂不是", "这不就是", "不就是", "不是吗", "不是么",
+        "还用说吗", "你说是不是", "你觉得呢", "你说呢", "不觉得吗",
+    ];
+    if rhetorical_patterns.iter().any(|pattern| compact.contains(pattern)) {
+        return Some("使用了反问句式");
+    }
+
+    None
 }
 
 fn reply_char_limit(rules: &str) -> Option<usize> {
@@ -2867,6 +2900,12 @@ mod tests {
         assert!(sanitize_reply("这是超过十个字的回复内容", rules).is_err());
         assert!(sanitize_reply("你好！", rules).is_err());
         assert!(sanitize_reply("   ", rules).is_err());
+        assert!(sanitize_reply("你这撒意思啊", rules).is_err());
+        assert!(sanitize_reply("你啥意思", rules).is_err());
+        assert!(sanitize_reply("难道不是这样吗", rules).is_err());
+        assert!(sanitize_reply("你觉得呢", rules).is_err());
+        assert!(sanitize_reply("这波确实有意思", rules).is_ok());
+        assert!(sanitize_reply("这次处理得很稳", rules).is_ok());
     }
 }
 
