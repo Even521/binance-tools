@@ -274,10 +274,7 @@ impl EntertainmentNewsPage {
         })?;
         let mut list = Vec::new();
         for row in rows {
-            let item = row?;
-            if item.title.chars().any(|ch| matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)) {
-                list.push(item);
-            }
+            list.push(row?);
         }
         Ok(list)
     }
@@ -306,7 +303,7 @@ impl EntertainmentNewsPage {
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
             std::thread::spawn(move || {
-                let result = (|| -> anyhow::Result<usize> {
+                let result = (|| -> anyhow::Result<(usize, usize, usize, String)> {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
@@ -332,14 +329,22 @@ impl EntertainmentNewsPage {
                         ];
                         let collector = Collector::new()?;
                         let (items, reports) = collector.collect_all(&feeds).await;
-                        for rep in &reports {
-                            if let Some(e) = &rep.error {
-                                eprintln!("[EntertainmentNews] Feed {} error: {}", rep.source, e);
+                        let fetched_total = reports.iter().map(|report| report.fetched).sum::<usize>();
+                        let report_text = reports
+                            .iter()
+                            .map(|report| match &report.error {
+                                Some(error) => format!("{}：失败（{}）", report.source, error),
+                                None => format!("{}：获取 {} 条", report.source, report.fetched),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("；");
+                        for report in &reports {
+                            if let Some(error) = &report.error {
+                                eprintln!("[EntertainmentNews] Feed {} error: {}", report.source, error);
                             }
                         }
 
-                        // 只保留快讯：摘要正文超过 300 个字符的内容直接丢弃，
-                        // 避免 RSS 混入长篇专栏/文章；空摘要的短快讯仍允许入库。
+                        // 统计过滤前后数量，避免所有内容被长度条件过滤后页面仍误报同步成功。
                         const MAX_SUMMARY_CHARS: usize = 300;
                         let entities: Vec<NewsItemEntity> = items
                             .into_iter()
@@ -351,18 +356,20 @@ impl EntertainmentNewsPage {
                                         .map(|summary| summary.chars().count() <= MAX_SUMMARY_CHARS)
                                         .unwrap_or(true)
                             })
-                            .map(|i| NewsItemEntity {
-                                source: i.source,
-                                title: i.title,
-                                url: i.url,
-                                summary: i.summary,
-                                published_at: i.published_at.map(|dt| dt.to_rfc3339()),
-                                collected_at: i.collected_at.to_rfc3339(),
+                            .map(|item| NewsItemEntity {
+                                source: item.source,
+                                title: item.title,
+                                url: item.url,
+                                summary: item.summary,
+                                published_at: item.published_at.map(|dt| dt.to_rfc3339()),
+                                collected_at: item.collected_at.to_rfc3339(),
                             })
                             .collect();
+                        let accepted_count = entities.len();
 
                         let conn = open_default_connection()?;
-                        insert_news_items(&conn, &entities)
+                        let inserted_count = insert_news_items(&conn, &entities)?;
+                        Ok((inserted_count, fetched_total, accepted_count, report_text))
                     })
                 })();
 
@@ -375,11 +382,13 @@ impl EntertainmentNewsPage {
                 this.is_syncing = false;
                 sync_guard.store(false, Ordering::Release);
                 match result {
-                    Ok(Ok(count)) => {
+                    Ok(Ok((count, fetched, accepted, report))) => {
                         this.reload_news(cx);
                         let hot_count = this.rank_hot_news(cx);
                         this.status = Some(format!(
-                            "同步完成！新增 {count} 条，已自动识别并置顶前 {hot_count} 条热点新闻。"
+                            "同步结束：RSS 获取 {fetched} 条，长度筛选后 {accepted} 条，数据库新增 {count} 条；当前列表 {} 条。热点置顶 {hot_count} 条。订阅源：{}",
+                            this.news_items.len(),
+                            report
                         ));
                     }
                     Ok(Err(err)) => {
