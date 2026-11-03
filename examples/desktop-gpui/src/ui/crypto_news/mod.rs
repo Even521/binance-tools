@@ -326,8 +326,9 @@ impl CryptoNewsTableDelegate {
     fn new() -> Self {
         Self {
             columns: vec![
-                Column::new("source", "来源").width(px(140.)).sortable(),
-                Column::new("title", "标题").width(px(520.)).sortable(),
+                Column::new("source", "来源").width(px(120.)).sortable(),
+                Column::new("title", "标题").width(px(360.)).sortable(),
+                Column::new("content", "内容").width(px(520.)),
                 Column::new("published_at", "发布时间")
                     .width(px(180.))
                     .sortable(),
@@ -383,6 +384,37 @@ impl TableDelegate for CryptoNewsTableDelegate {
                     None => item.title.clone(),
                 };
                 Self::text_cell(title, palette::text(theme))
+            },
+            "content" => {
+                let content = item
+                    .chinese_summary
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .or(item.summary.as_deref())
+                    .unwrap_or("暂无内容")
+                    .to_string();
+                let copy_content = content.clone();
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .text_color(palette::text(theme))
+                            .child(content),
+                    )
+                    .child(
+                        Button::new(format!("copy_news_content_{row_ix}"))
+                            .outline()
+                            .xsmall()
+                            .label("复制")
+                            .on_click(cx.listener(move |_state, _event, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copy_content.clone(),
+                                ));
+                            })),
+                    )
             },
             "published_at" => Self::text_cell(
                 item.published_at.clone().unwrap_or_else(|| item.collected_at.clone()),
