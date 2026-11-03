@@ -139,11 +139,11 @@ impl EntertainmentNewsPage {
                 .background_spawn(async move {
                     let settings = AiSettings::load_default()?;
                     let selection = settings.selected_model().clone();
-                    const REWRITE_SYSTEM_PROMPT: &str = "你是一名专业的国内娱乐 X 博主，负责将国内娱乐新闻改写成适合 X 发布的中文短帖。改写规则：1. 字数严格控制在 100 字以内，包含标点和空格。2. 开头直接突出最重要的娱乐事件，避免铺垫。3. 保留明星、作品、节目、机构、事件和关键数据。4. 使用自然、简洁、有传播力的中文。5. 可以适当加入点评，但必须有原文依据，不得编造。6. 不夸大事实，不制造谣言，不使用标题党表达。7. 严格区分官方消息、媒体报道和网络传闻，不得将传闻写成事实。8. 避免重复、空话和无意义的感叹。9. 不强制添加话题标签、表情符号或引导关注。10. 不要每条新闻使用相同句式。只输出一条可以直接发布到 X 的中文文案，不输出标题、改写说明、字数统计或其他解释。超过 100 字时必须重新压缩并保证语句完整；不得添加原文没有的事实、数字或信息。";
+                    const REWRITE_SYSTEM_PROMPT: &str = "你是一名擅长吃瓜娱乐和搞笑段子的中文 X 博主。把输入内容改写成适合 X 发布的短帖，内容可以是明星八卦、网红动态、娱乐圈争议、网友热议、反转趣事或搞笑段子。规则：1. 严格控制在 100 字以内，包含标点和空格。2. 开头要有吸引力，像真实网友分享吃瓜或讲段子，不要写成新闻通稿。3. 八卦内容要交代人物和事件重点；段子要保留笑点和反转。4. 可以轻松吐槽、有网感，但不能人身攻击、造谣或恶意引战。5. 严格区分已证实事实与网传消息，传闻必须明确标注为网传/未经证实，不得写成事实。6. 不编造人物、对话、细节、数字或所谓内部消息。7. 不要强行升华，不要使用机械化标题党，不强制添加话题标签。8. 每条文案尽量自然、有变化，避免统一模板。只输出一条可直接发布的中文短帖，不输出标题、说明或字数统计。超过 100 字时必须压缩并保证语句完整。";
                     let messages = [
                         ChatMessage::system(REWRITE_SYSTEM_PROMPT),
                         ChatMessage::user(format!(
-                            "请将下面这条新闻改写成一条可直接发布到 X 的中文短帖，严格遵守系统规则。\n\n新闻标题：{title}\n新闻内容：{source}"
+                            "请把下面内容改写成一条适合 X 的吃瓜短帖或搞笑段子。不要写成正式新闻稿，严格遵守系统规则。\n\n内容标题：{title}\n内容正文：{source}"
                         )),
                     ];
                     let response = send_news_rewrite_chat_blocking(
@@ -281,16 +281,20 @@ impl EntertainmentNewsPage {
                     rt.block_on(async {
                         let feeds = vec![
                             FeedConfig {
-                                name: "新浪娱乐".to_string(),
-                                url: "https://rss.sina.com.cn/news/allnews/ent.xml".to_string(),
+                                name: "新浪明星动态".to_string(),
+                                url: "https://rss.sina.com.cn/ent/star/focus7.xml".to_string(),
                             },
                             FeedConfig {
-                                name: "中国新闻网娱乐".to_string(),
-                                url: "https://www.chinanews.com/rss/ent.xml".to_string(),
+                                name: "六间房娱乐八卦".to_string(),
+                                url: "https://rsshub.app/6park/enter8/gold".to_string(),
                             },
                             FeedConfig {
-                                name: "中国新闻网文娱".to_string(),
-                                url: "https://www.chinanews.com/rss/culture.xml".to_string(),
+                                name: "六间房搞笑段子".to_string(),
+                                url: "https://rsshub.app/6park/enter1/gold".to_string(),
+                            },
+                            FeedConfig {
+                                name: "公众号搞笑精选".to_string(),
+                                url: "https://rsshub.app/gzh360/category/5d3579a2e2eb992114a3d589".to_string(),
                             },
                         ];
                         let collector = Collector::new()?;
@@ -424,7 +428,7 @@ impl EntertainmentNewsPage {
         // 标题中的热点信号比摘要中的普通提及更重要。
         let title = item.title.to_lowercase();
         for (term, weight) in [
-            ("突发", 5), ("重磅", 4), ("紧急", 5), ("官宣", 5), ("回应", 3),
+            ("突发", 5), ("重磅", 4), ("紧急", 5), ("官宣", 5), ("回应", 3), ("吃瓜", 5), ("瓜", 2), ("爆料", 5), ("热搜", 4), ("离谱", 3), ("反转", 4), ("笑死", 3), ("搞笑", 3), ("段子", 3),
             ("声明", 4), ("首次", 2), ("正式", 2), ("曝光", 4), ("热搜", 4),
         ] {
             if title.contains(term) {
@@ -647,14 +651,14 @@ impl Render for EntertainmentNewsPage {
                                             .text_size(px(16.))
                                             .font_semibold()
                                             .text_color(text_strong)
-                                            .child("国内娱乐快讯 (Entertainment RSS)"),
+                                            .child("吃瓜娱乐 · 搞笑段子 (Entertainment RSS)"),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(12.))
                                             .text_color(muted)
                                             .child(format!(
-                                                "仅收集国内中文娱乐 RSS 快讯，过滤超过 300 字的内容并去重入库。当前显示 {} 条资讯。",
+                                                "主打明星八卦、吃瓜爆料、网红动态和搞笑段子；过滤超过 300 字的内容并去重。当前显示 {} 条。",
                                                 self.news_items.len()
                                             )),
                                     ),
