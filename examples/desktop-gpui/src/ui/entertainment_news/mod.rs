@@ -315,20 +315,16 @@ impl EntertainmentNewsPage {
                                 url: "https://rss.sina.com.cn/ent/hot_roll.xml".to_string(),
                             },
                             FeedConfig {
-                                name: "新浪娱乐焦点".to_string(),
-                                url: "https://rss.sina.com.cn/news/allnews/ent.xml".to_string(),
-                            },
-                            FeedConfig {
-                                name: "新浪明星动态".to_string(),
+                                name: "新浪明星全接触".to_string(),
                                 url: "https://rss.sina.com.cn/ent/star/focus7.xml".to_string(),
-                            },
-                            FeedConfig {
-                                name: "中央社娱乐".to_string(),
-                                url: "https://feeds.feedburner.com/rsscna/stars".to_string(),
                             },
                             FeedConfig {
                                 name: "今日吃瓜".to_string(),
                                 url: "https://freenewsapi.ai/v1/rss?host=tobaoliao.com&size=50".to_string(),
+                            },
+                            FeedConfig {
+                                name: "热摸爽综合热点".to_string(),
+                                url: "https://remoshuang.com/feed.xml".to_string(),
                             },
                         ];
                         let collector = Collector::new()?;
