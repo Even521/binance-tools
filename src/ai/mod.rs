@@ -505,11 +505,12 @@ impl ProviderSettings {
 
     fn ollama() -> Self {
         Self {
-            api_url: Some("http://localhost:11434/v1".to_string()),
-            api_key_env: Some("OLLAMA_API_KEY".to_string()),
+            api_url: Some("http://localhost:11434".to_string()),
+            api_key_env: None,
+            api_format: ApiFormat::OllamaNative,
             available_models: vec![ModelDefinition::new(
-                "qwen2.5-coder",
-                "qwen2.5-coder",
+                "qwen3.5:4b",
+                "Qwen 3.5 4B",
                 32768,
             )],
             auto_discover: true,
@@ -1833,6 +1834,14 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_ollama_native_base_urls() {
+        assert_eq!(ollama_native_base_url("http://localhost:11434"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/v1"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/api/chat"), "http://localhost:11434");
+    }
 
     #[test]
     fn default_settings_include_zed_style_agent_model() {
