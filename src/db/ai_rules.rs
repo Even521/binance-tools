@@ -60,29 +60,9 @@ default|当前交易活跃度有改善，市场讨论逐步增加，流动性表
 default|数据层面没有特别突兀，但成交和热度都有修复迹象，叠加盘面承接没有明显断层，更适合用小周期继续观察强弱
 default|盘面表现不算高调，胜在资金参与逐步改善，流动性和成交承接还能配合，若后续承接稳定，关注度可能慢慢打开"#;
 
-const CRYPTO_NEWS_TRANSLATE_DEFAULT_RULE: &str = r#"你是一名专业的加密货币与区块链新闻翻译人员。
-
-请将新闻标题和正文/摘要翻译为专业、准确、流畅的简体中文。
-
-翻译要求：
-1. 忠实原文，不得添加原文没有的信息，不要总结或评论。
-2. BTC、ETH、SOL、USDT、DeFi、ETF 等行业术语和代币符号必须保留英文原样。
-3. 项目名、协议名、交易所名称、人名和话题标签尽量保留英文原样。
-4. 数字、价格、百分比、时间、链名称、交易对和专有名词必须准确，不得擅自换算或改写。
-5. 保留原文的事实、语气和段落结构；原文为空时不要编造内容。
-6. 只输出以下两个字段，不要添加解释或 Markdown 代码围栏：
-[CHINESE_TITLE]: 中文标题
-[CHINESE_SUMMARY]: 中文正文或摘要
-
-新闻标题：
-{{title}}
-
-新闻正文/摘要：
-{{content}}"#;
 
 const DEFAULT_AI_RULES: &[(&str, &str, &str)] = &[
     ("market_products", "市场榜单", MARKET_PRODUCTS_DEFAULT_RULE),
-    ("crypto_news_translate", "币圈新闻中文翻译", CRYPTO_NEWS_TRANSLATE_DEFAULT_RULE),
     (
         "square_ai_market",
         "币安广场 AI 草稿",
