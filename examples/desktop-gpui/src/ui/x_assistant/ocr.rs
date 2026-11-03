@@ -311,7 +311,7 @@ pub(super) fn identify_post_and_action_bar_at(
             .iter()
             .filter(|block| block.text.contains(account_token) && block.text.contains(&posted_at))
             .map(|block| block.text_score)
-            .max_by(f32::total_cmp)
+            .max_by(|left, right| left.total_cmp(right))
             .unwrap_or(0.0);
         let has_ambiguous_handle_char = account_token
             .chars()
