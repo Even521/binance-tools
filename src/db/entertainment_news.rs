@@ -44,6 +44,13 @@ pub fn insert_news_items(
     Ok(inserted_count)
 }
 
+/// 删除娱乐新闻表中的全部记录。
+pub fn delete_all_news(connection: &Connection) -> anyhow::Result<usize> {
+    connection
+        .execute("DELETE FROM entertainment_news", [])
+        .context("delete all entertainment news failed")
+}
+
 /// 保存 X 文案改写结果，只更新中文摘要/翻译字段，不改动中文标题。
 pub fn update_news_rewrite(
     connection: &Connection,
