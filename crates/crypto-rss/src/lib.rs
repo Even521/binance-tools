@@ -72,6 +72,11 @@ impl Collector {
                 continue;
             }
 
+            // Keep Chinese-language headlines; English-only articles are excluded.
+            if !contains_chinese(&title) {
+                continue;
+            }
+
             let raw_url = entry
                 .links
                 .iter()
@@ -154,6 +159,15 @@ impl Collector {
     }
 }
 
+fn contains_chinese(text: &str) -> bool {
+    text.chars().any(|ch| {
+        matches!(
+            ch as u32,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
+        )
+    })
+}
+
 fn normalize_url(raw: &str) -> String {
     let Ok(mut parsed) = Url::parse(raw) else {
         return raw.trim().to_string();
@@ -187,4 +201,20 @@ fn title_fingerprint(title: &str) -> String {
         .flat_map(char::to_lowercase)
         .collect();
     format!("{:x}", Sha256::digest(normalized.as_bytes()))
+}
+
+
+#[cfg(test)]
+mod language_filter_tests {
+    use super::contains_chinese;
+
+    #[test]
+    fn keeps_chinese_headlines_with_english_tickers() {
+        assert!(contains_chinese("比特币 ETF 资金流入 BTC"));
+    }
+
+    #[test]
+    fn rejects_english_only_headlines() {
+        assert!(!contains_chinese("Bitcoin ETF sees record inflows"));
+    }
 }

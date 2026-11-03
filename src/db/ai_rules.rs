@@ -60,6 +60,7 @@ default|当前交易活跃度有改善，市场讨论逐步增加，流动性表
 default|数据层面没有特别突兀，但成交和热度都有修复迹象，叠加盘面承接没有明显断层，更适合用小周期继续观察强弱
 default|盘面表现不算高调，胜在资金参与逐步改善，流动性和成交承接还能配合，若后续承接稳定，关注度可能慢慢打开"#;
 
+
 const DEFAULT_AI_RULES: &[(&str, &str, &str)] = &[
     ("market_products", "市场榜单", MARKET_PRODUCTS_DEFAULT_RULE),
     (

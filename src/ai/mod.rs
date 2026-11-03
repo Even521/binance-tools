@@ -505,11 +505,12 @@ impl ProviderSettings {
 
     fn ollama() -> Self {
         Self {
-            api_url: Some("http://localhost:11434/v1".to_string()),
-            api_key_env: Some("OLLAMA_API_KEY".to_string()),
+            api_url: Some("http://localhost:11434".to_string()),
+            api_key_env: None,
+            api_format: ApiFormat::OllamaNative,
             available_models: vec![ModelDefinition::new(
-                "qwen2.5-coder",
-                "qwen2.5-coder",
+                "qwen3.5:4b",
+                "Qwen 3.5 4B",
                 32768,
             )],
             auto_discover: true,
@@ -561,6 +562,7 @@ pub enum ApiFormat {
     OpenAiChat,
     Anthropic,
     Google,
+    OllamaNative,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1051,6 +1053,99 @@ pub fn send_chat_with_model_blocking(
     send_chat_with_model_timeout_blocking(settings, selection, messages, AI_REQUEST_TIMEOUT)
 }
 
+/// 专用于短文本新闻改写的 Ollama 请求。
+/// 与通用 AI 请求隔离，避免修改其他 AI 页面使用的模型参数。
+pub fn send_news_rewrite_chat_blocking(
+    settings: &AiSettings,
+    selection: ModelSelection,
+    messages: &[ChatMessage],
+    request_timeout: Duration,
+) -> anyhow::Result<ChatResponse> {
+    if !settings.agent.enabled {
+        return Err(anyhow!("AI agent is disabled in config"));
+    }
+
+    let provider = settings
+        .provider_for_model(&selection)
+        .with_context(|| format!("AI provider is not configured: {}", selection.provider))?;
+    let provider = provider_with_stored_key(&selection.provider, provider)?;
+    if provider.api_format != ApiFormat::OllamaNative {
+        return Err(anyhow!("新闻专用改写请求目前只支持 Ollama Native"));
+    }
+
+    let api_url = provider
+        .api_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("Ollama provider does not have api_url"))?;
+    let body = json!({
+        "model": selection.model,
+        "messages": ollama_native_messages(messages),
+        "stream": false,
+        "think": false,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 192,
+            "num_ctx": 4096
+        }
+    });
+
+    let endpoint = format!("{}/api/chat", ollama_native_base_url(api_url));
+    let started = Instant::now();
+    let mut request = ai_http_client_with_timeout(request_timeout)
+        .build()
+        .context("创建新闻改写 HTTP 客户端失败")?
+        .post(endpoint)
+        .json(&body);
+    if let Some(api_key) = provider.api_key() {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = request
+        .send()
+        .map_err(|err| anyhow!(format_ai_transport_error("ollama 新闻改写", &err)))?;
+    let status = response.status();
+    let response_body = response
+        .text()
+        .context("读取 Ollama 新闻改写响应失败")?;
+    if !status.is_success() {
+        return Err(anyhow!(format_ai_http_error(
+            "ollama 新闻改写",
+            status,
+            &response_body
+        )));
+    }
+
+    let value: Value =
+        serde_json::from_str(&response_body).context("解析 Ollama 新闻改写响应失败")?;
+    let content = value
+        .pointer("/message/content")
+        .and_then(Value::as_str)
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| anyhow!("Ollama 新闻改写响应中没有返回消息内容"))?;
+
+    let elapsed = started.elapsed();
+    let total_seconds = value
+        .get("total_duration")
+        .and_then(Value::as_f64)
+        .map(|n| n / 1_000_000_000.0);
+    let load_seconds = value
+        .get("load_duration")
+        .and_then(Value::as_f64)
+        .map(|n| n / 1_000_000_000.0);
+    let eval_count = value.get("eval_count").and_then(Value::as_u64);
+    eprintln!(
+        "[AI 新闻改写] model={} elapsed={:.2}s total={:?} load={:?} eval_count={:?}",
+        selection.model, elapsed.as_secs_f64(), total_seconds, load_seconds, eval_count
+    );
+
+    Ok(ChatResponse {
+        content: content.to_string(),
+        provider: selection.provider,
+        model: selection.model,
+    })
+}
+
 pub fn send_chat_with_model_timeout_blocking(
     settings: &AiSettings,
     selection: ModelSelection,
@@ -1076,6 +1171,9 @@ pub fn send_chat_with_model_timeout_blocking(
         ApiFormat::Google => {
             send_google_chat(settings, &provider, &selection, messages, request_timeout)
         }
+        ApiFormat::OllamaNative => {
+            send_ollama_native_chat(settings, &provider, &selection, messages, request_timeout)
+        }
     }
 }
 
@@ -1099,6 +1197,9 @@ where
 
     match provider.api_format {
         ApiFormat::OpenAiChat => send_openai_compatible_chat_streaming(
+            settings, &provider, &selection, messages, on_delta,
+        ),
+        ApiFormat::OllamaNative => send_ollama_native_chat_streaming(
             settings, &provider, &selection, messages, on_delta,
         ),
         ApiFormat::Anthropic | ApiFormat::Google => {
@@ -1293,6 +1394,166 @@ fn ai_http_client_with_timeout(request_timeout: Duration) -> reqwest::blocking::
     Client::builder()
         .connect_timeout(AI_CONNECT_TIMEOUT)
         .timeout(request_timeout)
+}
+
+
+fn ollama_native_base_url(api_url: &str) -> String {
+    let mut base = api_url.trim().trim_end_matches('/').to_string();
+    for suffix in ["/api/chat", "/chat/completions", "/v1"] {
+        if let Some(stripped) = base.strip_suffix(suffix) {
+            base = stripped.trim_end_matches('/').to_string();
+        }
+    }
+    base
+}
+
+fn ollama_native_messages(messages: &[ChatMessage]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            let role = match message.role {
+                ChatRole::System => "system",
+                ChatRole::User => "user",
+                ChatRole::Assistant => "assistant",
+            };
+            json!({ "role": role, "content": message.content })
+        })
+        .collect()
+}
+
+fn send_ollama_native_chat(
+    settings: &AiSettings,
+    provider: &ProviderSettings,
+    selection: &ModelSelection,
+    messages: &[ChatMessage],
+    request_timeout: Duration,
+) -> anyhow::Result<ChatResponse> {
+    let api_url = provider.api_url.as_deref()
+        .ok_or_else(|| anyhow!("Ollama provider does not have api_url"))?;
+    let params = settings.model_parameters(selection);
+    let mut body = json!({
+        "model": selection.model,
+        "messages": ollama_native_messages(messages),
+        "stream": false,
+    });
+    if params.temperature.is_some() || params.max_output_tokens.is_some() {
+        body["options"] = json!({});
+        if let Some(temperature) = params.temperature {
+            body["options"]["temperature"] = json!(temperature);
+        }
+        if let Some(max_tokens) = params.max_output_tokens {
+            body["options"]["num_predict"] = json!(max_tokens);
+        }
+    }
+
+    let endpoint = format!("{}/api/chat", ollama_native_base_url(api_url));
+    let mut request = ai_http_client_with_timeout(request_timeout)
+        .build()
+        .context("创建 Ollama HTTP 客户端失败")?
+        .post(endpoint)
+        .json(&body);
+    if let Some(api_key) = provider.api_key() {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send()
+        .map_err(|err| anyhow!(format_ai_transport_error("ollama", &err)))?;
+    let status = response.status();
+    let response_body = response.text().context("读取 Ollama 响应失败")?;
+    if !status.is_success() {
+        return Err(anyhow!(format_ai_http_error("ollama", status, &response_body)));
+    }
+    let value: Value = serde_json::from_str(&response_body).context("解析 Ollama 响应失败")?;
+    let content = value.pointer("/message/content")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/response").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("Ollama 响应中没有返回消息内容"))?;
+
+    Ok(ChatResponse {
+        content,
+        provider: selection.provider.clone(),
+        model: selection.model.clone(),
+    })
+}
+
+fn send_ollama_native_chat_streaming<F>(
+    settings: &AiSettings,
+    provider: &ProviderSettings,
+    selection: &ModelSelection,
+    messages: &[ChatMessage],
+    mut on_delta: F,
+) -> anyhow::Result<ChatResponse>
+where
+    F: FnMut(&str),
+{
+    let api_url = provider.api_url.as_deref()
+        .ok_or_else(|| anyhow!("Ollama provider does not have api_url"))?;
+    let params = settings.model_parameters(selection);
+    let mut body = json!({
+        "model": selection.model,
+        "messages": ollama_native_messages(messages),
+        "stream": true,
+    });
+    if params.temperature.is_some() || params.max_output_tokens.is_some() {
+        body["options"] = json!({});
+        if let Some(temperature) = params.temperature {
+            body["options"]["temperature"] = json!(temperature);
+        }
+        if let Some(max_tokens) = params.max_output_tokens {
+            body["options"]["num_predict"] = json!(max_tokens);
+        }
+    }
+
+    let endpoint = format!("{}/api/chat", ollama_native_base_url(api_url));
+    let mut request = ai_http_client()
+        .build()
+        .context("创建 Ollama HTTP 客户端失败")?
+        .post(endpoint)
+        .json(&body);
+    if let Some(api_key) = provider.api_key() {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send()
+        .map_err(|err| anyhow!(format_ai_transport_error("ollama", &err)))?;
+    let status = response.status();
+    if !status.is_success() {
+        let response_body = response.text().context("读取 Ollama 响应失败")?;
+        return Err(anyhow!(format_ai_http_error("ollama", status, &response_body)));
+    }
+
+    let mut content = String::new();
+    let mut reader = BufReader::new(response);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).context("读取 Ollama 流式响应失败")? == 0 {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line.trim())
+            .context("解析 Ollama 流式响应失败")?;
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            anyhow::bail!("Ollama 返回错误：{error}");
+        }
+        if let Some(delta) = value.pointer("/message/content").and_then(Value::as_str) {
+            content.push_str(delta);
+            on_delta(delta);
+        }
+        if value.get("done").and_then(Value::as_bool) == Some(true) {
+            break;
+        }
+    }
+    if content.is_empty() {
+        anyhow::bail!("Ollama 响应中没有返回消息内容");
+    }
+    Ok(ChatResponse {
+        content,
+        provider: selection.provider.clone(),
+        model: selection.model.clone(),
+    })
 }
 
 fn send_anthropic_chat(
@@ -1666,6 +1927,14 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_ollama_native_base_urls() {
+        assert_eq!(ollama_native_base_url("http://localhost:11434"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/v1"), "http://localhost:11434");
+        assert_eq!(ollama_native_base_url("http://localhost:11434/api/chat"), "http://localhost:11434");
+    }
 
     #[test]
     fn default_settings_include_zed_style_agent_model() {
