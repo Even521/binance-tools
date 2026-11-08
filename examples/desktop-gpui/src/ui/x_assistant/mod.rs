@@ -894,7 +894,7 @@ impl Render for XAssistantPage {
                                 )
                                 .child(
                                     Button::new("x-auto-post-start")
-                                        .label(if self.replying { "自动发帖运行中…" } else { "启动自动发帖" })
+                                        .label(if self.replying && self.cancel_reply.load(Ordering::Acquire) { "正在停止…" } else if self.replying { "自动发帖运行中…" } else { "启动自动发帖" })
                                         .primary()
                                         .disabled(self.replying || !self.task_settings.auto_post_enabled)
                                         .on_click(cx.listener(|this, _, _, cx| this.start_auto_post(cx))),
@@ -989,7 +989,9 @@ impl Render for XAssistantPage {
                         Button::new("x-assistant-visual-reply-hover")
                             .outline()
                             .small()
-                            .label(if self.replying {
+                            .label(if self.replying && self.cancel_reply.load(Ordering::Acquire) {
+                                "正在停止…"
+                            } else if self.replying {
                                 "运行中…"
                             } else {
                                 "移到回复按钮"
@@ -1001,7 +1003,9 @@ impl Render for XAssistantPage {
                         Button::new("x-assistant-visual-reply-full")
                             .outline()
                             .small()
-                            .label(if self.replying {
+                            .label(if self.replying && self.cancel_reply.load(Ordering::Acquire) {
+                                "正在停止…"
+                            } else if self.replying {
                                 "自动回复中（视觉 AI 阶段二）…"
                             } else {
                                 "自动回复（视觉 AI 阶段二）"
@@ -1011,7 +1015,7 @@ impl Render for XAssistantPage {
                     )
                     .child(
                         Button::new("x-assistant-text-ocr-reply")
-                            .label(if self.replying { "自动回复中（文本 AI + OCR）…" } else { "自动回复（文本 AI + OCR 阶段二）" })
+                            .label(if self.replying && self.cancel_reply.load(Ordering::Acquire) { "正在停止…" } else if self.replying { "自动回复中（文本 AI + OCR）…" } else { "自动回复（文本 AI + OCR 阶段二）" })
                             .primary()
                             .small()
                             .disabled(self.replying)
@@ -1021,7 +1025,7 @@ impl Render for XAssistantPage {
                         Button::new("x-assistant-full-auto-reply")
                             .outline()
                             .small()
-                            .label(if self.replying { "全自动运行中…" } else { "全自动回复" })
+                            .label(if self.replying && self.cancel_reply.load(Ordering::Acquire) { "正在停止…" } else if self.replying { "全自动运行中…" } else { "全自动回复" })
                             .disabled(self.replying)
                             .on_click(cx.listener(|this, _, _, cx| this.start_visual_reply(false, true, true, cx))),
                     )
