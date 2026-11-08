@@ -16,9 +16,6 @@ use super::super::{
 };
 use crate::ui::x_assistant::core::task_queue::run_browser_task;
 
-/// 连续失败上限，防止异常状态下无限空转。
-const MAX_CONSECUTIVE_FAILURES: usize = 10;
-
 /// 全自动运行最长时间：4 小时。
 const MAX_RUNTIME: Duration = Duration::from_secs(4 * 60 * 60);
 
@@ -146,8 +143,8 @@ impl AutoReplyRunner {
             self.failures += 1;
 
             automation::log_event(&format!(
-                "全自动：本轮未完成发送（连续未完成 {}/{}）。",
-                self.failures, MAX_CONSECUTIVE_FAILURES
+                "全自动：本轮未完成发送（连续未完成 {} 次）；跳过当前帖子，主循环继续。",
+                self.failures
             ));
         }
 
@@ -155,9 +152,7 @@ impl AutoReplyRunner {
 
         // 正常轮次只滚动，不刷新页面。
         vision::scroll_to_next_post(cancel, "本轮处理结束，向下查找下一条帖子")
-            .context("全自动流程恢复动作失败")?;
-
-        self.check_failure_limit(None)
+            .context("全自动流程恢复动作失败")
     }
 
     /// 处理单轮执行异常。
@@ -194,12 +189,13 @@ impl AutoReplyRunner {
         self.failures += 1;
 
         automation::log_event(&format!(
-            "全自动：本轮报错（连续失败 {}/{}）：{error:#}",
-            self.failures, MAX_CONSECUTIVE_FAILURES
+            "全自动：本轮报错（连续失败 {} 次）：{error:#}",
+            self.failures
         ));
 
         self.recover(&error, cancel)?;
-        self.check_failure_limit(Some(&error))
+        automation::log_event("全自动：当前轮次恢复完成，继续主循环处理下一条帖子。");
+        Ok(())
     }
 
     /// 根据错误类型恢复运行环境。
@@ -213,27 +209,6 @@ impl AutoReplyRunner {
             vision::recover_by_error(cancel, error)
         };
         recovery.with_context(|| format!("全自动错误恢复失败；上一轮错误：{error:#}"))
-    }
-
-    /// 检查连续失败次数是否达到上限。
-    ///
-    /// 达到上限后返回错误，终止主循环。
-    fn check_failure_limit(&self, error: Option<&anyhow::Error>) -> Result<()> {
-        if self.failures < MAX_CONSECUTIVE_FAILURES {
-            return Ok(());
-        }
-
-        if let Some(error) = error {
-            anyhow::bail!(
-                "连续 {} 轮未能完成，已自动停止以避免持续误操作；最后错误：{error:#}",
-                MAX_CONSECUTIVE_FAILURES
-            );
-        }
-
-        anyhow::bail!(
-            "连续 {} 轮未完成回复，已自动停止以避免持续空转",
-            MAX_CONSECUTIVE_FAILURES
-        )
     }
 
     /// 检查用户是否请求停止。
