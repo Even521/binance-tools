@@ -379,8 +379,7 @@ impl XAssistantPage {
                             } else {
                                 reply.summary
                             });
-                            this.error = None;
-                        }
+                        this.error = None;
                     }
                 }
                 cx.notify();
