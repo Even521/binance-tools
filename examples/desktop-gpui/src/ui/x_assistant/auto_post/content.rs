@@ -85,13 +85,7 @@ struct NewsCandidate {
 #[derive(Clone, Debug)]
 pub struct PreparedPost {
     pub post_id: i64,
-    pub news_id: String,
-    pub news_kind: NewsKind,
-    pub source_title: String,
     pub content: String,
-    pub source_url: Option<String>,
-    pub original_hash: String,
-    pub content_hash: String,
 }
 
 fn hot_score(kind: NewsKind, title: &str, summary: &str, timestamp: &str) -> i64 {
@@ -442,13 +436,7 @@ pub fn prepare_next_post_blocking(filter: NewsFilter) -> anyhow::Result<Option<P
         app_log::post_info!("X 自动发帖内容准备：已预留发帖记录，post_id={}", post_id);
         return Ok(Some(PreparedPost {
             post_id,
-            news_id,
-            news_kind: candidate.kind,
-            source_title: candidate.title,
             content,
-            source_url: candidate.url,
-            original_hash,
-            content_hash,
         }));
     }
 
