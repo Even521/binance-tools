@@ -1,25 +1,16 @@
-use std::{fs, io::Write, path::PathBuf};
-
 pub(super) fn log_event(message: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("data")
-        .join("x_assistant")
-        .join("mouse-click.log");
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "[{timestamp}] {message}");
-    }
-    println!("[X辅助] {message}");
+    app_log::x_info!("{}", message);
+}
+
+/// 自动发帖流程日志与自动回复日志分开保存，便于按任务定位问题。
+pub(super) fn log_post_event(message: &str) {
+    // 调用方已经带有 [自动发帖] / [步骤] 标签，不再重复添加模块前缀。
+    let _ = app_log::write_to("auto-post.log", app_log::Level::Info, message);
 }
 
 #[cfg(windows)]
 pub(super) mod native {
     use std::{
-        fs,
         mem::{size_of, zeroed},
         path::Path,
         sync::atomic::{AtomicU64, Ordering},
@@ -180,6 +171,49 @@ pub(super) mod native {
         value ^= value >> 7;
         value ^= value << 17;
         60 + value % 141
+    }
+
+    /// 在当前浏览器标签页导航到固定的 X 发帖页面，不创建新窗口。
+    pub fn navigate_to_x_compose() -> anyhow::Result<()> {
+        navigate_to_x_url("https://x.com/compose/post")
+    }
+
+    /// 发帖成功后回到 X 首页，交还给自动回复流程继续处理时间线。
+    pub fn navigate_to_x_home() -> anyhow::Result<()> {
+        navigate_to_x_url("https://x.com/home")
+    }
+
+    /// 仅允许导航到自动化流程使用的固定 X 页面。
+    fn navigate_to_x_url(url: &str) -> anyhow::Result<()> {
+        activate_browser()?;
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，拒绝导航"
+        );
+
+        let key = |vk: u16, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { Default::default() },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let shortcut = [key(0x11, false), key(0x4C, false), key(0x4C, true), key(0x11, true)];
+        let sent = unsafe { SendInput(&shortcut, size_of::<INPUT>() as i32) };
+        anyhow::ensure!(sent == shortcut.len() as u32, "无法聚焦浏览器地址栏");
+        thread::sleep(Duration::from_millis(180));
+        type_text(url)?;
+        press_enter()
     }
 
     pub fn type_text(text: &str) -> anyhow::Result<()> {
@@ -375,6 +409,37 @@ pub(super) mod native {
         Ok(())
     }
 
+    /// 只移动鼠标，不产生点击；用于提交后将指针从按钮上移开。
+    pub fn move_cursor_to_client_position(client_x: i32, client_y: i32) -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "浏览器不在前台，拒绝移动鼠标"
+        );
+
+        let mut target = POINT { x: client_x, y: client_y };
+        anyhow::ensure!(
+            unsafe { ClientToScreen(hwnd, &mut target) }.as_bool(),
+            "无法将鼠标目标从浏览器客户区坐标转换为屏幕坐标"
+        );
+        let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        anyhow::ensure!(
+            target.x >= 0 && target.x < screen_width && target.y >= 0 && target.y < screen_height,
+            "鼠标移出目标屏幕范围"
+        );
+        send_mouse_absolute(target.x, target.y)?;
+        super::log_event(&format!(
+            "提交后鼠标已移开：客户区坐标 ({client_x}, {client_y}) -> 屏幕坐标 ({}, {})",
+            target.x, target.y
+        ));
+        Ok(())
+    }
+
     pub fn click_at_client_position(client_x: i32, client_y: i32) -> anyhow::Result<()> {
         let hwnd = unsafe { GetForegroundWindow() };
         anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
@@ -515,29 +580,25 @@ pub(super) mod native {
             ReleaseDC(None, screen);
         }
         anyhow::ensure!(rows == height, "读取屏幕截图像素失败");
-        for alpha in pixels.iter_mut().skip(3).step_by(4) {
-            *alpha = 255;
+        // GetDIBits 返回 32-bit BI_RGB 像素，内存通道顺序为 BGRA。
+        // 统一转换为 RGBA，再严格按调用方的文件扩展名编码，确保扩展名与文件签名一致。
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+            pixel[3] = 255;
         }
-        save_bmp(path, width, height, &pixels)
+        save_image(path, width, height, &pixels)
     }
 
-    fn save_bmp(path: &Path, width: i32, height: i32, pixels: &[u8]) -> anyhow::Result<()> {
-        let data_size = u32::try_from(pixels.len())?;
-        let mut bmp = Vec::with_capacity(pixels.len() + 54);
-        bmp.extend_from_slice(b"BM");
-        bmp.extend_from_slice(&(data_size + 54).to_le_bytes());
-        bmp.extend_from_slice(&[0; 4]);
-        bmp.extend_from_slice(&54u32.to_le_bytes());
-        bmp.extend_from_slice(&40u32.to_le_bytes());
-        bmp.extend_from_slice(&width.to_le_bytes());
-        bmp.extend_from_slice(&(-height).to_le_bytes());
-        bmp.extend_from_slice(&1u16.to_le_bytes());
-        bmp.extend_from_slice(&32u16.to_le_bytes());
-        bmp.extend_from_slice(&0u32.to_le_bytes());
-        bmp.extend_from_slice(&data_size.to_le_bytes());
-        bmp.extend_from_slice(&[0; 16]);
-        bmp.extend_from_slice(pixels);
-        fs::write(path, bmp)?;
+    fn save_image(path: &Path, width: i32, height: i32, pixels: &[u8]) -> anyhow::Result<()> {
+        let image = image::RgbaImage::from_raw(width as u32, height as u32, pixels.to_vec())
+            .ok_or_else(|| anyhow::anyhow!("创建截图图像缓冲区失败"))?;
+        let format = match path.extension().and_then(|extension| extension.to_str()) {
+            Some(extension) if extension.eq_ignore_ascii_case("png") => image::ImageFormat::Png,
+            Some(extension) if extension.eq_ignore_ascii_case("bmp") => image::ImageFormat::Bmp,
+            Some(extension) => anyhow::bail!("不支持的截图文件扩展名：.{extension}"),
+            None => anyhow::bail!("截图文件缺少扩展名，无法确定编码格式"),
+        };
+        image.save_with_format(path, format)?;
         Ok(())
     }
 }
@@ -556,6 +617,9 @@ pub(super) mod native {
     pub fn click_current_position() -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
+    pub fn move_cursor_to_client_position(_: i32, _: i32) -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
     pub fn click_at_client_position(_: i32, _: i32) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
@@ -572,6 +636,12 @@ pub(super) mod native {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn press_escape() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn navigate_to_x_compose() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn navigate_to_x_home() -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn type_text(_: &str) -> anyhow::Result<()> {

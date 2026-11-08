@@ -35,6 +35,240 @@ pub(super) fn recognize_compose_reply_page(path: &Path) -> anyhow::Result<serde_
     with_cached_ocr_engine(|engine| engine.recognize_compose_reply_page(path))
 }
 
+/// 使用自动回复相同的弹窗局部 OCR 策略定位 X 发帖输入区域。
+/// 先裁剪中央 compose 弹窗，再用多种 PP-OCR 预处理识别占位提示，
+/// 并把局部坐标映射回原始截图；不再在整页坐标范围内搜索相似文字。
+pub(super) fn locate_post_composer_input(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
+    let crop = crop_compose_dialog(path)?;
+    let expected = [
+        normalize_text("What's happening?").to_lowercase(),
+        normalize_text("What is happening?").to_lowercase(),
+        normalize_text("有什么新鲜事"),
+        normalize_text("有什么新鲜事？"),
+        normalize_text("发布你的帖子"),
+    ];
+    let modes = [
+        (4, 3, Some(200), "原始阈值 200"),
+        (2, 1, None, "2 倍灰度"),
+        (2, 1, Some(230), "2 倍阈值 230"),
+        (2, 1, Some(160), "2 倍阈值 160"),
+    ];
+
+    for (attempt, (scale_num, scale_den, threshold, mode_name)) in modes.iter().enumerate() {
+        let doc = recognize_document_image(
+            &image::DynamicImage::ImageRgba8(crop.image.clone()),
+            *scale_num,
+            *scale_den,
+            *threshold,
+        )?;
+        let best = doc.lines.iter().filter_map(|line| {
+            let normalized = normalize_text(&line.text).to_lowercase();
+            let line_len = normalized.chars().count();
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            if line_len < 4
+                || line_len > 36
+                || center_x < crop.width as f32 * 0.10
+                || center_x > crop.width as f32 * 0.90
+                || center_y < crop.height as f32 * 0.10
+                || center_y > crop.height as f32 * 0.90
+            {
+                return None;
+            }
+            let score = expected.iter()
+                .map(|phrase| text_match_ratio(&normalized, phrase))
+                .fold(0.0_f32, f32::max);
+            (score >= 0.72).then_some((center_x, center_y, score, line.text.as_str()))
+        }).max_by(|left, right| left.2.total_cmp(&right.2));
+
+        if let Some((center_x, center_y, score, recognized)) = best {
+            let point = (
+                (center_x + crop.left as f32).round() as i32,
+                (center_y + crop.top as f32).round() as i32,
+            );
+            super::automation::log_event(&format!(
+                "[自动发帖 OCR] 弹窗局部输入框识别成功：模式={mode_name}，文本={recognized:?}，匹配度={:.0}%，客户区坐标=({}, {})",
+                score * 100.0, point.0, point.1
+            ));
+            if attempt > 0 {
+                super::automation::log_event(&format!(
+                    "[自动发帖 OCR] 首选模式未命中，备用模式‘{mode_name}’识别成功"
+                ));
+            }
+            return Ok(Some(point));
+        }
+    }
+
+    super::automation::log_event(
+        "[自动发帖 OCR] compose 弹窗局部 OCR 未匹配到明确的发帖占位文字，停止操作",
+    );
+    Ok(None)
+}
+/// 使用自动回复的局部弹窗 OCR 方式定位发帖按钮。
+/// 必须同时满足发帖文字匹配和弹窗右下区域约束，不使用猜测坐标。
+pub(super) fn locate_post_submit_button(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
+    let crop = crop_compose_dialog(path)?;
+    let modes = [
+        (4, 3, Some(200), "原始阈值 200"),
+        (2, 1, None, "2 倍灰度"),
+        (2, 1, Some(230), "2 倍阈值 230"),
+        (2, 1, Some(160), "2 倍阈值 160"),
+    ];
+
+    for (attempt, (scale_num, scale_den, threshold, mode_name)) in modes.iter().enumerate() {
+        let doc = recognize_document_image(
+            &image::DynamicImage::ImageRgba8(crop.image.clone()),
+            *scale_num,
+            *scale_den,
+            *threshold,
+        )?;
+        let candidate = doc.lines.iter().filter_map(|line| {
+            let text = normalize_text(&line.text).to_lowercase();
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            let label_match = text.contains(&normalize_text("发帖"))
+                || text.contains(&normalize_text("发布"))
+                || text.contains("post");
+            // 发帖弹窗的按钮通常位于弹窗右下方，但不同窗口高度下
+            // 其相对位置可能高于回复弹窗按钮；按已采集的发帖截图覆盖 35%-90%。
+            let in_button_zone = center_x >= crop.width as f32 * 0.60
+                && center_x <= crop.width as f32 * 0.98
+                && center_y >= crop.height as f32 * 0.35
+                && center_y <= crop.height as f32 * 0.90;
+            super::automation::log_event(&format!(
+                "[自动发帖 OCR] 弹窗提交按钮候选：模式={mode_name}，文本={:?}，局部坐标=({center_x:.0},{center_y:.0})，文字匹配={label_match}，按钮区域匹配={in_button_zone}",
+                line.text
+            ));
+            (label_match && in_button_zone).then_some((center_x, center_y, line.text.as_str()))
+        }).max_by(|left, right| left.1.total_cmp(&right.1));
+
+        if let Some((center_x, center_y, recognized)) = candidate {
+            let point = (
+                (center_x + crop.left as f32).round() as i32,
+                (center_y + crop.top as f32).round() as i32,
+            );
+            super::automation::log_event(&format!(
+                "[自动发帖 OCR] 弹窗局部 OCR 识别到提交按钮：模式={mode_name}，文本={recognized:?}，客户区坐标=({}, {})",
+                point.0, point.1
+            ));
+            if attempt > 0 {
+                super::automation::log_event(&format!(
+                    "[自动发帖 OCR] 首选模式未命中，备用模式‘{mode_name}’识别成功"
+                ));
+            }
+            return Ok(Some(point));
+        }
+    }
+
+    super::automation::log_event(
+        "[自动发帖 OCR] compose 弹窗右下区域未识别到可信的发帖按钮；未点击，禁止猜测坐标",
+    );
+    Ok(None)
+}
+/// 只在 compose 弹窗内部核验正文，采用自动回复相同的局部裁剪与多模式 PP-OCR。
+/// 不扫描时间线，避免发布后正文出现在主页时被误认为编辑器仍然打开。
+pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow::Result<bool> {
+    let crop = crop_compose_dialog(path)?;
+    let expected = normalize_text(content.split(" · ").next().unwrap_or(content)).to_lowercase();
+    let expected = expected.chars().take(48).collect::<String>();
+    anyhow::ensure!(
+        expected.chars().count() >= 8,
+        "待核验的发帖正文过短，不能可靠验证输入结果"
+    );
+
+    let modes = [
+        (4, 3, Some(200), "原始阈值 200"),
+        (2, 1, None, "2 倍灰度"),
+        (2, 1, Some(230), "2 倍阈值 230"),
+        (2, 1, Some(160), "2 倍阈值 160"),
+    ];
+    let mut best_score = 0.0_f32;
+    let mut best_text = String::new();
+
+    for (scale_num, scale_den, threshold, mode_name) in modes {
+        let doc = recognize_document_image(
+            &image::DynamicImage::ImageRgba8(crop.image.clone()),
+            scale_num,
+            scale_den,
+            threshold,
+        )?;
+        let recognized = normalize_text(&doc.text).to_lowercase();
+        let score = text_match_ratio(&recognized, &expected);
+        super::automation::log_event(&format!(
+            "[自动发帖 OCR] 弹窗正文核验（{mode_name}）：匹配度={:.0}%，要求至少 80%；识别文本={:?}",
+            score * 100.0,
+            recognized
+        ));
+        if score > best_score {
+            best_score = score;
+            best_text = recognized;
+        }
+        if score >= 0.80 {
+            return Ok(true);
+        }
+    }
+
+    super::automation::log_event(&format!(
+        "[自动发帖 OCR] 弹窗正文核验未通过：最高匹配度={:.0}%，最佳识别文本={:?}",
+        best_score * 100.0,
+        best_text
+    ));
+    Ok(false)
+}
+/// 识别 X 发布成功 toast。
+/// X 的提示可能出现在页面底部左侧，不能只扫描中央区域；
+/// 因此覆盖截图底部全宽，并兼容中文、英文提示文本。
+pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
+    use image::imageops::crop_imm;
+
+    let source = image::open(path)?;
+    let width = source.width();
+    let height = source.height();
+    anyhow::ensure!(width >= 800 && height >= 600, "发布结果截图尺寸异常（{width}x{height}）");
+
+    // 旧实现只扫描 x=25%..75%、y=70%..96%，会漏掉位于左下方的 X toast，
+    // 也会漏掉贴近窗口底边的提示。新实现扫描整个底部 42% 区域。
+    let left = 0;
+    let top = height * 58 / 100;
+    let crop = crop_imm(&source, left, top, width, height - top).to_image();
+    let crop = image::DynamicImage::ImageRgba8(crop);
+
+    // 蓝色提示在深色/浅色背景下对比度不同，保留灰度与多阈值识别。
+    let modes = [
+        (3, 2, None, "1.5x grayscale"),
+        (2, 1, Some(160), "2x threshold-160"),
+        (2, 1, Some(210), "2x threshold-210"),
+    ];
+    let mut last_text = String::new();
+    for (scale_num, scale_den, threshold, mode) in modes {
+        let doc = recognize_document_image(&crop, scale_num, scale_den, threshold)?;
+        let recognized = doc.text.trim();
+        let matched = contains_sent_confirmation(recognized);
+        super::automation::log_event(&format!(
+            "[自动发帖 OCR] 底部全宽成功提示识别（{mode}）：匹配={}，识别文本={:?}",
+            matched, recognized
+        ));
+        last_text = recognized.to_string();
+        if matched {
+            return Ok(true);
+        }
+    }
+
+    super::automation::log_event(&format!(
+        "[自动发帖 OCR] 底部全宽区域未识别到成功提示，最后识别文本={:?}",
+        last_text
+    ));
+    Ok(false)
+}
+
+fn doc_width(path: &Path) -> anyhow::Result<u32> {
+    Ok(image::image_dimensions(path)?.0)
+}
+
+fn doc_height(path: &Path) -> anyhow::Result<u32> {
+    Ok(image::image_dimensions(path)?.1)
+}
+
 pub(super) fn recognize_current_url(path: &Path) -> anyhow::Result<Option<String>> {
     use image::imageops::crop_imm;
 
@@ -1287,13 +1521,28 @@ fn contains_reload_confirmation(text: &str) -> bool {
 }
 
 pub(super) fn contains_retryable_send_error(text: &str) -> bool {
-    let normalized = normalize_text(text);
-    [
+    let normalized = normalize_text(text).to_lowercase();
+
+    // 优先匹配完整提示；同时兼容 OCR 漏字、标点、空格和换行。
+    let exact_phrases = [
         "出错了别担心让我们再试一次",
         "出错了请稍后再尝试发送你的帖子",
-    ]
-    .iter()
-    .any(|message| normalized.contains(&normalize_text(message)))
+        "somethingwentwrongpleasetryagain",
+        "somethingwentwrongtryagain",
+        "please try again",
+    ];
+    if exact_phrases
+        .iter()
+        .any(|phrase| normalized.contains(&normalize_text(phrase).to_lowercase()))
+    {
+        return true;
+    }
+
+    // 中文提示允许少量 OCR 漏字，但必须同时识别“出错”与“再试/再尝试”语义。
+    let has_error = normalized.contains("出错") || normalized.contains("错误");
+    let has_retry = normalized.contains("再试") || normalized.contains("再尝试");
+    let has_reassurance = normalized.contains("别担心") || normalized.contains("稍后");
+    has_error && has_retry && has_reassurance
 }
 
 pub(super) fn contains_post_unavailable_error(text: &str) -> bool {
@@ -1495,7 +1744,6 @@ mod tests {
         let point = locate_discard_draft_button(Path::new(&path))
             .expect("local OCR failed to inspect the draft confirmation");
         assert!(point.is_some(), "OCR did not locate the discard button");
-        eprintln!("discard button point: {point:?}");
     }
 
     #[test]
@@ -1600,11 +1848,17 @@ mod tests {
         assert!(contains_retryable_send_error(
             "出错了！请稍后再尝试发送你的帖子。"
         ));
+        assert!(contains_retryable_send_error("出错了，别担心，让我们再试"));
+        assert!(contains_retryable_send_error("出错了！稍后再试一次"));
+        assert!(contains_retryable_send_error("Something went wrong, please try again"));
+        assert!(!contains_retryable_send_error("出错了，请检查网络连接"));
         assert!(!contains_retryable_send_error("你的回复已发送。"));
     }
 
     #[test]
     fn accepts_common_chinese_ocr_confusions_in_sent_toast() {
+        assert!(contains_sent_confirmation("你的贴已发送。查看"));
+        assert!(contains_sent_confirmation("你的帖子已发送。查看"));
         assert!(contains_sent_confirmation("你的帖孑已发送。查看"));
         assert!(contains_sent_confirmation("你的回复已发送。查看"));
         assert!(!contains_sent_confirmation("草稿内容仍在编辑框中"));

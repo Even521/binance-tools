@@ -18,6 +18,7 @@ pub mod spot;
 pub mod square;
 pub mod task_board;
 pub mod x_assistant;
+pub mod x_posting;
 
 pub const DEFAULT_DATABASE_PATH: &str = "db/binance_tools.sqlite";
 
@@ -360,8 +361,12 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
                 reply_text TEXT NOT NULL DEFAULT '',
                 completed_last_step INTEGER NOT NULL DEFAULT 0
                     CHECK (completed_last_step IN (0, 1)),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                completed_at TEXT
+                created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+                completed_at TEXT,
+                send_status TEXT NOT NULL DEFAULT 'pending',
+                send_attempt_count INTEGER NOT NULL DEFAULT 0,
+                send_attempted_at TEXT,
+                send_error TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_x_assistant_reply_records_created_at
@@ -409,6 +414,91 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
         )
         .context("run SQLite migrations failed")?;
 
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
+        );
+        "#
+    )?;
+
+    let reply_timezone_migration_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_reply_timestamps_beijing_v1')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !reply_timezone_migration_applied {
+        connection.execute_batch(
+            r#"
+            UPDATE x_assistant_reply_records
+            SET created_at = datetime(created_at, '+8 hours')
+            WHERE created_at IS NOT NULL;
+            UPDATE x_assistant_reply_records
+            SET completed_at = datetime(completed_at, '+8 hours')
+            WHERE completed_at IS NOT NULL;
+            INSERT INTO app_schema_migrations (version)
+            VALUES ('x_reply_timestamps_beijing_v1');
+            "#
+        )?;
+    }
+
+    add_column_if_missing(
+        connection,
+        "x_assistant_reply_records",
+        "send_status",
+        "TEXT NOT NULL DEFAULT 'pending'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "x_assistant_reply_records",
+        "send_attempt_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(connection, "x_assistant_reply_records", "send_attempted_at", "TEXT")?;
+    add_column_if_missing(connection, "x_assistant_reply_records", "send_error", "TEXT")?;
+
+    // 老数据库的表结构不会因 CREATE TABLE IF NOT EXISTS 自动更新 DEFAULT。
+    // 旧默认值可能仍是 UTC；如果创建时间与后续显式写入的北京时间相差约 8 小时，
+    // 只修正创建时间，避免把已经是北京时间的历史记录再次偏移。
+    let reply_timestamp_fix_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_reply_timestamps_beijing_v2')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !reply_timestamp_fix_applied {
+        connection.execute_batch(
+            r#"
+            UPDATE x_assistant_reply_records
+            SET created_at = datetime(created_at, '+8 hours')
+            WHERE created_at IS NOT NULL
+              AND (
+                    (completed_at IS NOT NULL
+                     AND julianday(completed_at) - julianday(created_at)
+                         BETWEEN 7.0 / 24.0 AND 9.0 / 24.0)
+                    OR
+                    (send_attempted_at IS NOT NULL
+                     AND julianday(send_attempted_at) - julianday(created_at)
+                         BETWEEN 7.0 / 24.0 AND 9.0 / 24.0)
+              );
+
+            INSERT INTO app_schema_migrations (version)
+            VALUES ('x_reply_timestamps_beijing_v2');
+            "#
+        )?;
+    }
+
+    // 上次运行留下的未完成记录无法证明是否已提交，启动时统一转为待人工核验，避免重复发送。
+    connection.execute_batch(
+        "UPDATE x_assistant_reply_records
+         SET send_status = 'sent'
+         WHERE completed_last_step = 1 AND send_status = 'pending';
+         UPDATE x_assistant_reply_records
+         SET send_status = 'uncertain',
+             send_error = COALESCE(send_error, '程序上次退出时发送状态尚未核验')
+         WHERE completed_last_step = 0 AND send_status IN ('pending', 'submitting');"
+    )?;
+
     add_column_if_missing(connection, "binance_square_tasks", "last_sent_at", "TEXT")?;
     add_column_if_missing(connection, "binance_square_tasks", "title", "TEXT")?;
     add_column_if_missing(connection, "binance_square_tasks", "scheduled_at", "TEXT")?;
@@ -435,7 +525,7 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
         .execute(
             r#"
             UPDATE binance_square_tasks
-            SET scheduled_at = COALESCE(scheduled_at, datetime('now', 'localtime')),
+            SET scheduled_at = COALESCE(scheduled_at, datetime('now', '+8 hours')),
                 send_status = COALESCE(NULLIF(send_status, ''), 'pending'),
                 source_type = COALESCE(NULLIF(source_type, ''), 'manual')
             "#,

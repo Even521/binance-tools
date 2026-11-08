@@ -2,10 +2,14 @@
 
 mod app;
 mod theme;
+mod tasks;
 mod ui;
 
 fn main() {
     set_working_directory_to_exe_dir();
+    let _ = app_log::init();
+    app_log::install_panic_hook();
+    app_log::info!("Binance Tools 启动");
     app::run();
 }
 
@@ -20,8 +24,9 @@ fn set_working_directory_to_exe_dir() {
     let working_dir = development_workspace_dir(&exe_dir).unwrap_or(exe_dir);
 
     if let Err(err) = std::env::set_current_dir(&working_dir) {
-        eprintln!(
-            "failed to set working directory to executable directory {}: {err}",
+        app_log::error!(
+            "设置程序工作目录失败：{}；目标路径：{}",
+            err,
             working_dir.display()
         );
     }

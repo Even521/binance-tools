@@ -4,7 +4,7 @@ use binance_tools::db::task_board::{
     list_tool_board_tasks_blocking, set_tool_board_task_completed_blocking,
     update_tool_board_task_blocking,
 };
-use chrono::{Duration as ChronoDuration, Local, NaiveDateTime};
+use chrono::{Duration as ChronoDuration, NaiveDateTime};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt,
@@ -671,7 +671,8 @@ impl TaskBoardPage {
                                     .text_color(palette::muted(app_theme))
                                     .child(format!(
                                         "创建：{}    更新：{}",
-                                        task.created_at, task.updated_at
+                                        app_log::format_utc_timestamp(&task.created_at),
+                                         app_log::format_utc_timestamp(&task.updated_at)
                                     )),
                             )
                             .child(
@@ -880,7 +881,7 @@ fn task_due_state(task: &ToolBoardTask) -> DueState {
     if task.completed {
         return DueState::Future;
     }
-    let now = Local::now().naive_local();
+    let now = app_log::beijing_now().naive_local();
     let due_at = parse_due_at(&task.due_at).unwrap_or(now);
     if due_at <= now {
         DueState::Due
@@ -906,7 +907,7 @@ fn parse_due_at(value: &str) -> Option<NaiveDateTime> {
 }
 
 fn default_due_text() -> String {
-    (Local::now() + ChronoDuration::hours(1))
+    (app_log::beijing_now() + ChronoDuration::hours(1))
         .format("%Y-%m-%d %H:%M")
         .to_string()
 }

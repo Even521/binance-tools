@@ -279,7 +279,7 @@ pub fn save_square_task(
             )
             VALUES (
                 ?1, ?2, ?3, 1, 1,
-                COALESCE(NULLIF(?4, ''), datetime('now', 'localtime')),
+                COALESCE(NULLIF(?4, ''), datetime('now', '+8 hours')),
                 ?5,
                 ?6,
                 CURRENT_TIMESTAMP
@@ -375,7 +375,7 @@ pub fn confirm_square_task(
             r#"
             UPDATE binance_square_tasks
             SET send_status = 'pending',
-                scheduled_at = COALESCE(NULLIF(?2, ''), datetime('now', 'localtime')),
+                scheduled_at = COALESCE(NULLIF(?2, ''), datetime('now', '+8 hours')),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?1
             "#,
@@ -400,7 +400,7 @@ pub fn claim_due_square_tasks(
                 FROM binance_square_tasks
                 WHERE enabled = 1
                     AND send_status = 'pending'
-                    AND datetime(scheduled_at) <= datetime('now', 'localtime')
+                    AND datetime(scheduled_at) <= datetime('now', '+8 hours')
                 ORDER BY scheduled_at ASC, id ASC
                 "#,
             )
@@ -419,7 +419,7 @@ pub fn claim_due_square_tasks(
                 r#"
                 UPDATE binance_square_tasks
                 SET send_status = 'sending',
-                    updated_at = datetime('now', 'localtime')
+                    updated_at = datetime('now', '+8 hours')
                 WHERE id = ?1
                     AND send_status = 'pending'
                 "#,
@@ -490,7 +490,7 @@ pub fn list_due_square_tasks(connection: &Connection) -> anyhow::Result<Vec<Bina
             FROM binance_square_tasks
             WHERE enabled = 1
                 AND send_status = 'pending'
-                AND datetime(scheduled_at) <= datetime('now', 'localtime')
+                AND datetime(scheduled_at) <= datetime('now', '+8 hours')
             ORDER BY scheduled_at ASC, id ASC
             "#,
         )
@@ -636,7 +636,7 @@ pub fn load_square_ai_settings(connection: &Connection) -> anyhow::Result<Binanc
         .execute(
             r#"
             INSERT INTO binance_square_ai_settings (id, enabled, next_run_at, updated_at)
-            VALUES (1, 0, datetime('now', 'localtime'), CURRENT_TIMESTAMP)
+            VALUES (1, 0, datetime('now', '+8 hours'), CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO NOTHING
             "#,
             [],
@@ -667,11 +667,11 @@ pub fn save_square_ai_settings(connection: &Connection, enabled: bool) -> anyhow
         .execute(
             r#"
             INSERT INTO binance_square_ai_settings (id, enabled, next_run_at, updated_at)
-            VALUES (1, ?1, datetime('now', 'localtime'), CURRENT_TIMESTAMP)
+            VALUES (1, ?1, datetime('now', '+8 hours'), CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 enabled = excluded.enabled,
                 next_run_at = CASE
-                    WHEN excluded.enabled = 1 THEN datetime('now', 'localtime')
+                    WHEN excluded.enabled = 1 THEN datetime('now', '+8 hours')
                     ELSE binance_square_ai_settings.next_run_at
                 END,
                 updated_at = CURRENT_TIMESTAMP
@@ -690,9 +690,9 @@ pub fn mark_square_ai_next_run(
     let sql = format!(
         r#"
         INSERT INTO binance_square_ai_settings (id, enabled, next_run_at, updated_at)
-        VALUES (1, 1, datetime('now', 'localtime', {next_run_expression}), CURRENT_TIMESTAMP)
+        VALUES (1, 1, datetime('now', '+8 hours', {next_run_expression}), CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
-            next_run_at = datetime('now', 'localtime', {next_run_expression}),
+            next_run_at = datetime('now', '+8 hours', {next_run_expression}),
             updated_at = CURRENT_TIMESTAMP
         "#
     );
@@ -714,7 +714,7 @@ pub fn square_ai_generation_due(connection: &Connection) -> anyhow::Result<bool>
             r#"
             SELECT CASE
                 WHEN next_run_at IS NULL THEN 1
-                WHEN datetime(next_run_at) <= datetime('now', 'localtime') THEN 1
+                WHEN datetime(next_run_at) <= datetime('now', '+8 hours') THEN 1
                 ELSE 0
             END
             FROM binance_square_ai_settings
@@ -741,15 +741,15 @@ pub fn list_today_ai_titles(connection: &Connection) -> anyhow::Result<Vec<Strin
                     AND date(
                         CASE
                             WHEN scheduled_at IS NOT NULL AND scheduled_at <> '' THEN scheduled_at
-                            ELSE datetime(updated_at, 'localtime')
+                            ELSE datetime(updated_at, '+8 hours')
                         END
-                    ) = date('now', 'localtime')
+                    ) = date('now', '+8 hours')
                 UNION ALL
                 SELECT title
                 FROM binance_square_ai_logs
                 WHERE title IS NOT NULL
                     AND title <> ''
-                    AND date(created_at, 'localtime') = date('now', 'localtime')
+                    AND date(created_at, '+8 hours') = date('now', '+8 hours')
             )
             ORDER BY title
             "#,
@@ -775,9 +775,9 @@ pub fn ai_title_exists_today(connection: &Connection, title: &str) -> anyhow::Re
                     AND date(
                         CASE
                             WHEN scheduled_at IS NOT NULL AND scheduled_at <> '' THEN scheduled_at
-                            ELSE datetime(updated_at, 'localtime')
+                            ELSE datetime(updated_at, '+8 hours')
                         END
-                    ) = date('now', 'localtime')
+                    ) = date('now', '+8 hours')
             )
             "#,
             params![title],

@@ -1,4 +1,5 @@
 target/
+logs/
 db/*.sqlite
 db/*.sqlite-*
 !db/.gitkeep

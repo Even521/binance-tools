@@ -8,7 +8,7 @@ use binance_tools::{
         SUPPORTED_SPOT_KLINE_INTERVALS, VisionKline, download_spot_daily_klines_blocking,
     },
 };
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, NaiveDate};
 use gpui::{InteractiveElement as _, prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, PixelsExt, Sizable, StyledExt,
@@ -77,7 +77,7 @@ pub struct SpotBacktestPage {
 
 impl SpotBacktestPage {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let today = Local::now().date_naive();
+        let today = app_log::beijing_now().date_naive();
         let default_start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap_or(today);
         let symbol_input = input(window, cx, "BTCUSDT");
         let interval_input = input(window, cx, "4h");
@@ -2403,7 +2403,7 @@ fn crosshair_color() -> Hsla {
 fn format_time(timestamp_ms: i64) -> String {
     DateTime::from_timestamp_millis(timestamp_ms)
         .map(|time| {
-            time.with_timezone(&Local)
+            time.with_timezone(&app_log::beijing_timezone())
                 .format("%Y-%m-%d %H:%M")
                 .to_string()
         })
@@ -2413,7 +2413,7 @@ fn format_time(timestamp_ms: i64) -> String {
 fn kline_tick_label(timestamp_ms: i64, interval: &str) -> String {
     DateTime::from_timestamp_millis(timestamp_ms)
         .map(|time| {
-            let time = time.with_timezone(&Local);
+            let time = time.with_timezone(&app_log::beijing_timezone());
             if is_intraday_interval(interval) {
                 time.format("%m/%d %H:%M").to_string()
             } else {

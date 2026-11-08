@@ -1,10 +1,18 @@
 mod automation;
+mod auto_comment;
+mod auto_post;
+mod auto_reply;
+mod core;
 mod crop;
 mod full_auto;
 mod ocr;
 mod ocr_status;
 mod option;
+mod post_history;
 mod reply_list;
+mod reply_filter;
+mod scheduler;
+mod own_post_reply;
 mod vision;
 use crate::ui::palette;
 
@@ -25,6 +33,15 @@ use std::{
     },
 };
 
+
+#[derive(Clone, Copy)]
+enum TaskSetting {
+    AutoReply,
+    AutoPost,
+    AutoComment,
+    OwnPostReply,
+}
+
 pub struct XAssistantPage {
     replying: bool,
     auto_send: bool,
@@ -41,7 +58,13 @@ pub struct XAssistantPage {
     error: Option<String>,
     _reply_task: Task<()>,
     show_reply_list: bool,
-    reply_list: Entity<reply_list::ReplyListPage>,
+    show_post_history: bool,
+    show_task_settings: bool,
+    show_auto_post: bool,
+    reply_list: Option<Entity<reply_list::ReplyListPage>>,
+    post_history: Option<Entity<post_history::PostHistoryPage>>,
+    task_settings: binance_tools::db::x_posting::XAssistantTaskSettings,
+    render_diagnostic_logged: bool,
 }
 
 impl Drop for XAssistantPage {
@@ -62,7 +85,8 @@ impl XAssistantPage {
         });
         let reply_rules_subscription =
             cx.subscribe_in(&reply_rules, window, Self::on_reply_rules_input);
-        let reply_list = cx.new(|cx| reply_list::ReplyListPage::new(window, cx));
+        let task_settings = binance_tools::db::x_posting::load_task_settings_blocking()
+            .unwrap_or_default();
 
         Self {
             replying: false,
@@ -80,8 +104,164 @@ impl XAssistantPage {
             error: None,
             _reply_task: Task::ready(()),
             show_reply_list: false,
-            reply_list,
+            show_post_history: false,
+            show_task_settings: false,
+            show_auto_post: false,
+            reply_list: None,
+            post_history: None,
+            task_settings,
+            render_diagnostic_logged: false,
         }
+    }
+
+    fn start_all_automation(&mut self, cx: &mut Context<Self>) {
+        if self.replying {
+            return;
+        }
+        if self.task_settings.auto_post_enabled {
+            // 自动回复与自动发帖同时启用时，必须先完成自动回复首轮。
+            // 若自动发送被关闭，不允许静默退化为“启动后立即发帖”。
+            if self.task_settings.auto_reply_enabled && !self.auto_send {
+                self.status = None;
+                self.error = Some(
+                    "自动回复调度已开启，但「自动发送」处于关闭状态。为避免启动后直接发帖，请先开启自动发送，再开始自动化。"
+                        .to_string(),
+                );
+                cx.notify();
+                return;
+            }
+            self.start_auto_post(cx);
+            return;
+        }
+        if !self.task_settings.auto_reply_enabled {
+            self.error = Some("没有可启动的自动化任务。请先在「任务设置」中开启自动回复或自动发帖。".to_string());
+            self.status = None;
+            cx.notify();
+            return;
+        }
+        self.start_visual_reply(false, true, true, cx);
+    }
+
+    fn start_auto_post(&mut self, cx: &mut Context<Self>) {
+        if self.replying || !self.task_settings.auto_post_enabled {
+            return;
+        }
+        self.replying = true;
+        self.error = None;
+        self.cancel_reply.store(false, Ordering::Release);
+        self.status = Some(if self.task_settings.auto_reply_enabled && self.auto_send {
+            "自动发帖与自动回复已启动；两类任务通过同一浏览器锁串行操作。点击停止可结束。".to_string()
+        } else if self.task_settings.auto_reply_enabled {
+            "自动发帖已启动；自动回复开关虽已开启，但自动发送关闭，本轮只执行发帖。".to_string()
+        } else {
+            "自动发帖已启动；点击停止可结束。".to_string()
+        });
+        cx.notify();
+
+        let cancel = Arc::clone(&self.cancel_reply);
+        let news_filter = auto_post::content::NewsFilter::from_setting(
+            &self.task_settings.auto_post_news_type,
+        );
+        let reply_options = if self.task_settings.auto_reply_enabled && self.auto_send {
+            Some(vision::VisionReplyOptions {
+                api_url: vision::DEFAULT_OLLAMA_URL.to_string(),
+                model: self.vision_model.clone(),
+                auto_send: true,
+                hover_only: false,
+                stage2_ocr: true,
+                reply_rules: self.reply_rules.read(cx).text().to_string(),
+            })
+        } else {
+            None
+        };
+        self._reply_task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    if let Some(options) = reply_options {
+                        auto_post::executor::run_with_auto_reply(Arc::clone(&cancel), options, news_filter)
+                    } else {
+                        auto_post::executor::run_loop(&cancel, news_filter)
+                    }
+                })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.replying = false;
+                match result {
+                    Ok(count) => {
+                        this.error = None;
+                        this.status = Some(format!("自动发帖已停止，本轮确认发布 {count} 条。"));
+                    }
+                    Err(error) => {
+                        this.status = None;
+                        this.error = Some(format!("自动发帖停止：{error:#}"));
+                    }
+                }
+                cx.notify();
+            });
+        });
+    }
+
+    fn set_auto_post_news_type(&mut self, news_type: &str, cx: &mut Context<Self>) {
+        self.task_settings.auto_post_news_type = match news_type {
+            "crypto" => "crypto".to_string(),
+            "entertainment" => "entertainment".to_string(),
+            _ => "all".to_string(),
+        };
+        self.persist_task_settings(cx);
+    }
+
+    fn start_test_auto_post(&mut self, cx: &mut Context<Self>) {
+        app_log::x_info!("X 自动发帖测试：收到测试按钮点击，当前 replying={}", self.replying);
+        if self.replying {
+            app_log::x_warn!("X 自动发帖测试：已有自动化任务运行，忽略本次点击");
+            return;
+        }
+        self.replying = true;
+        self.error = None;
+        self.cancel_reply.store(false, Ordering::Release);
+        self.status = Some(
+            "测试发帖已启动：只选取一条所选类型新闻，完成真实发布与结果核验；不会启动连续发布。".to_string(),
+        );
+        cx.notify();
+
+        let cancel = Arc::clone(&self.cancel_reply);
+        let filter = auto_post::content::NewsFilter::from_setting(
+            &self.task_settings.auto_post_news_type,
+        );
+        app_log::x_info!("X 自动发帖测试：任务已提交后台，新闻类型={:?}", filter);
+        self._reply_task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    app_log::x_info!("X 自动发帖测试：后台执行开始；先读取新闻并生成文案，准备完成后才会打开浏览器");
+                    auto_post::executor::run_test_once(&cancel, filter)
+                })
+                .await;
+            app_log::x_info!("X 自动发帖测试：后台执行结束，准备更新界面结果");
+            _ = this.update(cx, |this, cx| {
+                this.replying = false;
+                match result {
+                    Ok(result) if result.outcome == auto_post::submit::SubmitOutcome::Published => {
+                        this.error = None;
+                        this.status = Some(format!(
+                            "测试发帖成功：post_id={}。已完成提交和页面结果核验。",
+                            result.post_id
+                        ));
+                    }
+                    Ok(result) => {
+                        this.status = None;
+                        this.error = Some(format!(
+                            "测试发帖结果不确定：post_id={}。请先人工检查 X 页面，禁止直接重试。{}",
+                            result.post_id, result.message
+                        ));
+                    }
+                    Err(error) => {
+                        this.status = None;
+                        this.error = Some(format!("测试发帖失败：{error:#}"));
+                    }
+                }
+                cx.notify();
+            });
+        });
     }
 
     fn start_visual_reply(
@@ -128,9 +308,13 @@ impl XAssistantPage {
                         reply_rules,
                     };
                     if full_auto {
+                        // 全自动回复在每轮识图、滚动和恢复动作处分别取得浏览器锁，
+                        // 让自动发帖任务可以在两轮回复之间安全使用同一浏览器。
                         full_auto::run(options, &cancel)
                     } else {
-                        vision::run_visual_reply(options, &cancel)
+                        core::task_queue::run_browser_task(|| {
+                            vision::run_visual_reply(options, &cancel)
+                        })
                     }
                 })
                 .await;
@@ -177,15 +361,242 @@ impl XAssistantPage {
         });
     }
 
-    fn open_reply_list(&mut self, cx: &mut Context<Self>) {
+    fn toggle_task_setting(&mut self, setting: TaskSetting, cx: &mut Context<Self>) {
+        match setting {
+            TaskSetting::AutoReply => self.task_settings.auto_reply_enabled = !self.task_settings.auto_reply_enabled,
+            TaskSetting::AutoPost => self.task_settings.auto_post_enabled = !self.task_settings.auto_post_enabled,
+            TaskSetting::AutoComment => self.task_settings.auto_comment_enabled = !self.task_settings.auto_comment_enabled,
+            TaskSetting::OwnPostReply => self.task_settings.own_post_reply_enabled = !self.task_settings.own_post_reply_enabled,
+        }
+        self.persist_task_settings(cx);
+    }
+
+    fn adjust_posts_per_hour(&mut self, delta: i8, cx: &mut Context<Self>) {
+        let next = i16::from(self.task_settings.posts_per_hour) + i16::from(delta);
+        self.task_settings.posts_per_hour = next.clamp(1, 10) as u8;
+        self.persist_task_settings(cx);
+    }
+
+    fn persist_task_settings(&mut self, cx: &mut Context<Self>) {
+        match binance_tools::db::x_posting::save_task_settings_blocking(&self.task_settings) {
+            Ok(()) => {
+                self.status = Some("X 自动化任务设置已保存到本地 SQLite。".to_string());
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(format!("保存 X 自动化任务设置失败：{error:#}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_auto_reply_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("x-task-auto-reply")
+            .small()
+            .outline()
+            .label(if self.task_settings.auto_reply_enabled {
+                "自动回复调度：开"
+            } else {
+                "自动回复调度：关"
+            })
+            .when(self.task_settings.auto_reply_enabled, |button| button.primary())
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：点击自动回复开关");
+                this.toggle_task_setting(TaskSetting::AutoReply, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_auto_post_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("x-task-auto-post")
+            .small()
+            .outline()
+            .label(if self.task_settings.auto_post_enabled {
+                "自动发帖：开"
+            } else {
+                "自动发帖：关"
+            })
+            .when(self.task_settings.auto_post_enabled, |button| button.primary())
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：点击自动发帖开关");
+                this.toggle_task_setting(TaskSetting::AutoPost, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_auto_comment_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("x-task-auto-comment")
+            .small()
+            .outline()
+            .label(if self.task_settings.auto_comment_enabled {
+                "发布后自动评论：开"
+            } else {
+                "发布后自动评论：关"
+            })
+            .when(self.task_settings.auto_comment_enabled, |button| button.primary())
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：点击自动评论开关");
+                this.toggle_task_setting(TaskSetting::AutoComment, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_own_post_reply_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("x-task-own-post-reply")
+            .small()
+            .outline()
+            .label(if self.task_settings.own_post_reply_enabled {
+                "回复自己帖子评论：开（预留）"
+            } else {
+                "回复自己帖子评论：关（预留）"
+            })
+            .when(self.task_settings.own_post_reply_enabled, |button| button.primary())
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：点击回复自己帖子评论开关");
+                this.toggle_task_setting(TaskSetting::OwnPostReply, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn render_post_rate_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let minus_button = Button::new("x-task-post-rate-minus")
+            .small()
+            .outline()
+            .label("−")
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：每小时发帖数量减一");
+                this.adjust_posts_per_hour(-1, cx);
+            }))
+            .into_any_element();
+
+        let plus_button = Button::new("x-task-post-rate-plus")
+            .small()
+            .outline()
+            .label("+")
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：每小时发帖数量加一");
+                this.adjust_posts_per_hour(1, cx);
+            }))
+            .into_any_element();
+
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(div().text_size(px(12.)).child("每小时发布数量"))
+            .child(minus_button)
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_semibold()
+                    .child(format!("{} 条", self.task_settings.posts_per_hour)),
+            )
+            .child(plus_button)
+            .into_any_element()
+    }
+
+    fn render_task_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        app_log::x_info!("X 任务设置：开始渲染设置面板");
+
+        // 先创建需要可变借用 Context 的按钮，再读取主题，避免 cx 的借用冲突。
+        let auto_reply_button = self.render_auto_reply_setting_button(cx);
+        let auto_post_button = self.render_auto_post_setting_button(cx);
+        let auto_comment_button = self.render_auto_comment_setting_button(cx);
+        let own_post_reply_button = self.render_own_post_reply_setting_button(cx);
+        let rate_controls = self.render_post_rate_controls(cx);
+
+        let theme = cx.theme();
+        let panel = v_flex()
+            .gap_2()
+            .rounded(px(10.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .p_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_size(px(14.)).font_semibold().child("自动化任务开关"))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(palette::muted(theme))
+                            .child("开启后纳入任务调度；关闭后不会安排对应类型的任务。"),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(auto_reply_button)
+                    .child(auto_post_button)
+                    .child(auto_comment_button)
+                    .child(own_post_reply_button),
+            )
+            .child(rate_controls)
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(palette::muted(theme))
+                    .child("设置会保存到本地数据库。自动发帖按工作区选择的新闻类型筛选候选，并遵守每小时发布上限。"),
+            )
+            .into_any_element();
+
+        app_log::x_info!("X 任务设置：设置面板构建完成");
+        panel
+    }
+
+    fn open_reply_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(page) = &self.reply_list {
+            page.update(cx, |page, cx| page.reload(cx));
+        } else {
+            self.reply_list = Some(cx.new(|cx| reply_list::ReplyListPage::new(window, cx)));
+        }
         self.show_reply_list = true;
-        self.reply_list.update(cx, |page, cx| page.reload(cx));
+        self.show_post_history = false;
+        self.show_task_settings = false;
+        self.show_auto_post = false;
         cx.notify();
     }
 
     fn show_reply_flow(&mut self, cx: &mut Context<Self>) {
         self.show_reply_list = false;
+        self.show_post_history = false;
+        self.show_task_settings = false;
+        self.show_auto_post = false;
         self.error = None;
+        cx.notify();
+    }
+
+    fn open_post_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(page) = &self.post_history {
+            page.update(cx, |page, cx| page.reload(cx));
+        } else {
+            self.post_history = Some(cx.new(|cx| post_history::PostHistoryPage::new(window, cx)));
+        }
+        self.show_reply_list = false;
+        self.show_post_history = true;
+        self.show_task_settings = false;
+        self.show_auto_post = false;
+        cx.notify();
+    }
+
+    fn open_task_settings(&mut self, cx: &mut Context<Self>) {
+        app_log::x_info!("X 任务设置：收到打开页面事件");
+        self.show_reply_list = false;
+        self.show_post_history = false;
+        self.show_task_settings = true;
+        self.show_auto_post = false;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn open_auto_post(&mut self, cx: &mut Context<Self>) {
+        self.show_reply_list = false;
+        self.show_post_history = false;
+        self.show_task_settings = false;
+        self.show_auto_post = true;
+        self.error = None;
+        self.status = None;
         cx.notify();
     }
 
@@ -208,7 +619,7 @@ impl XAssistantPage {
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
         self.cancel_reply.store(true, Ordering::Relaxed);
-        self.status = Some("已停止，正在中断 AI 识图。".to_string());
+        self.status = Some("正在停止自动化任务；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
     }
 
@@ -237,38 +648,258 @@ fn load_reply_rules() -> String {
 }
 
 impl XAssistantPage {
+    // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
+    fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-reply-flow-tab")
+            .label("自动回复")
+            .when(
+                !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post,
+                |button| button.primary(),
+            )
+            .when(
+                self.show_reply_list || self.show_post_history || self.show_task_settings || self.show_auto_post,
+                |button| button.outline(),
+            )
+            .small()
+            .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_auto_post_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-auto-post-tab")
+            .label("自动发帖")
+            .when(self.show_auto_post, |button| button.primary())
+            .when(!self.show_auto_post, |button| button.outline())
+            .small()
+            .on_click(cx.listener(|this, _, _, cx| this.open_auto_post(cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-start-all-automation")
+            .label(if self.replying { "自动化运行中…" } else { "开始自动化" })
+            .when(!self.replying, |button| button.primary())
+            .when(self.replying, |button| button.outline())
+            .small()
+            .disabled(self.replying)
+            .on_click(cx.listener(|this, _, _, cx| this.start_all_automation(cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_stop_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-stop-all-automation")
+            .label("停止自动化")
+            .outline()
+            .small()
+            .disabled(!self.replying)
+            .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_reply_list_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-reply-list-tab")
+            .label("回复列表")
+            .when(self.show_reply_list, |button| button.primary())
+            .when(!self.show_reply_list, |button| button.outline())
+            .small()
+            .on_click(cx.listener(|this, _, window, cx| this.open_reply_list(window, cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_post_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-post-history-tab")
+            .label("发帖历史")
+            .when(self.show_post_history, |button| button.primary())
+            .when(!self.show_post_history, |button| button.outline())
+            .small()
+            .on_click(cx.listener(|this, _, window, cx| this.open_post_history(window, cx)))
+            .into_any_element();
+        button
+    }
+
+    fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let button = Button::new("x-assistant-task-settings-tab")
+            .label("任务设置")
+            .when(self.show_task_settings, |button| button.primary())
+            .when(!self.show_task_settings, |button| button.outline())
+            .small()
+            .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
+            .into_any_element();
+        button
+    }
+
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        h_flex()
+
+        let reply_flow_button = self.render_reply_flow_button(cx);
+        let auto_post_button = self.render_auto_post_button(cx);
+        let start_all_button = self.render_start_all_button(cx);
+        let stop_all_button = self.render_stop_all_button(cx);
+        let reply_list_button = self.render_reply_list_button(cx);
+        let post_history_button = self.render_post_history_button(cx);
+        let task_settings_button = self.render_task_settings_button(cx);
+
+        let menu = h_flex()
             .gap_2()
-            .child(
-                Button::new("x-assistant-reply-flow-tab")
-                    .label("自动回复")
-                    .when(!self.show_reply_list, |button| button.primary())
-                    .when(self.show_reply_list, |button| button.outline())
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx))),
-            )
-            .child(
-                Button::new("x-assistant-reply-list-tab")
-                    .label("回复列表")
-                    .when(self.show_reply_list, |button| button.primary())
-                    .when(!self.show_reply_list, |button| button.outline())
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.open_reply_list(cx))),
-            )
-            .into_any_element()
+            .child(reply_flow_button)
+            .child(auto_post_button)
+            .child(start_all_button)
+            .child(stop_all_button)
+            .child(reply_list_button)
+            .child(post_history_button)
+            .child(task_settings_button)
+            .into_any_element();
+        menu
     }
 }
 
 impl Render for XAssistantPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.show_reply_list {
+        if !self.render_diagnostic_logged {
+            self.render_diagnostic_logged = true;
+        }
+        if self.show_task_settings {
+            let menu = self.render_page_menu(cx);
+            let task_settings = self.render_task_settings(cx);
+            let theme = cx.theme();
+            return v_flex()
+                .size_full()
+                .gap_3()
+                .p_4()
+                .child(menu)
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(palette::border(theme))
+                        .bg(palette::surface(theme))
+                        .p_4()
+                        .child(div().text_size(px(20.)).font_semibold().child("任务设置"))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(palette::muted(theme))
+                                .child("集中管理自动回复、自动发帖、自动评论和发布频率。这里的开关只负责任务配置，不会和回复操作按钮混排。"),
+                        ),
+                )
+                .child(task_settings)
+                .into_any_element();
+        }
+
+        if self.show_auto_post {
+            let menu = self.render_page_menu(cx);
+            let theme = cx.theme();
+            return v_flex()
+                .size_full()
+                .gap_3()
+                .p_4()
+                .child(menu)
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(palette::border(theme))
+                        .bg(palette::surface(theme))
+                        .p_4()
+                        .child(div().text_size(px(20.)).font_semibold().child("自动发帖"))
+                        .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child("先选择新闻类型，再测试单条真实发帖或启动持续自动发布。"))
+                        .child(div().text_size(px(13.)).font_semibold().child("新闻类型"))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .flex_wrap()
+                                .child(
+                                    Button::new("x-auto-post-type-all")
+                                        .small()
+                                        .label("全部新闻")
+                                        .when(self.task_settings.auto_post_news_type == "all", |button| button.primary())
+                                        .when(self.task_settings.auto_post_news_type != "all", |button| button.outline())
+                                        .disabled(self.replying)
+                                        .on_click(cx.listener(|this, _, _, cx| this.set_auto_post_news_type("all", cx))),
+                                )
+                                .child(
+                                    Button::new("x-auto-post-type-crypto")
+                                        .small()
+                                        .label("币圈新闻")
+                                        .when(self.task_settings.auto_post_news_type == "crypto", |button| button.primary())
+                                        .when(self.task_settings.auto_post_news_type != "crypto", |button| button.outline())
+                                        .disabled(self.replying)
+                                        .on_click(cx.listener(|this, _, _, cx| this.set_auto_post_news_type("crypto", cx))),
+                                )
+                                .child(
+                                    Button::new("x-auto-post-type-entertainment")
+                                        .small()
+                                        .label("娱乐新闻")
+                                        .when(self.task_settings.auto_post_news_type == "entertainment", |button| button.primary())
+                                        .when(self.task_settings.auto_post_news_type != "entertainment", |button| button.outline())
+                                        .disabled(self.replying)
+                                        .on_click(cx.listener(|this, _, _, cx| this.set_auto_post_news_type("entertainment", cx))),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("x-auto-post-test")
+                                        .label("测试发帖（真实发布 1 条）")
+                                        .outline()
+                                        .disabled(self.replying)
+                                        .on_click(cx.listener(|this, _, _, cx| this.start_test_auto_post(cx))),
+                                )
+                                .child(
+                                    Button::new("x-auto-post-start")
+                                        .label(if self.replying { "自动发帖运行中…" } else { "启动自动发帖" })
+                                        .primary()
+                                        .disabled(self.replying || !self.task_settings.auto_post_enabled)
+                                        .on_click(cx.listener(|this, _, _, cx| this.start_auto_post(cx))),
+                                )
+                                .child(
+                                    Button::new("x-auto-post-stop")
+                                        .label("停止")
+                                        .outline()
+                                        .disabled(!self.replying)
+                                        .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx))),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(palette::border(theme))
+                                .bg(theme.background)
+                                .p_3()
+                                .text_size(px(12.))
+                                .text_color(palette::muted(theme))
+                                 .child(if self.task_settings.auto_post_enabled {
+                                    "自动发帖已启用。正式启动会按所选新闻类型持续筛选并发布，受每小时上限控制。"
+                                } else {
+                                    "测试按钮会真实发布一条帖子；正式连续发布前，请先在「任务设置」中开启自动发帖。"
+                                })
+                                .child("测试发帖同样计入每小时发布上限。若提交后结果不明确，会暂停并要求人工核验，不会自动重发。"),
+                        ),
+                )
+                .into_any_element();
+        }
+
+        if self.show_reply_list || self.show_post_history {
             return v_flex()
                 .size_full()
                 .gap_3()
                 .p_3()
                 .child(self.render_page_menu(cx))
-                .child(self.reply_list.clone())
+                .when_some(self.reply_list.clone(), |page, reply_list| {
+                    if self.show_reply_list { page.child(reply_list) } else { page }
+                })
+                .when_some(self.post_history.clone(), |page, post_history| {
+                    if self.show_post_history { page.child(post_history) } else { page }
+                })
                 .into_any_element();
         }
         let menu = self.render_page_menu(cx);
@@ -276,7 +907,7 @@ impl Render for XAssistantPage {
         let selected_image = self.screenshots.get(self.selected_screenshot).cloned();
         let zoom_image = selected_image.clone();
 
-        v_flex()
+        let element = v_flex()
             .size_full()
             .relative()
             .gap_3()
@@ -634,6 +1265,7 @@ impl Render for XAssistantPage {
                     )
                 })
             })
-            .into_any_element()
+            .into_any_element();
+        element
     }
 }

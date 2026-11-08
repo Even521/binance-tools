@@ -1134,7 +1134,7 @@ pub fn send_news_rewrite_chat_blocking(
         .and_then(Value::as_f64)
         .map(|n| n / 1_000_000_000.0);
     let eval_count = value.get("eval_count").and_then(Value::as_u64);
-    eprintln!(
+    app_log::info!(
         "[AI 新闻改写] model={} elapsed={:.2}s total={:?} load={:?} eval_count={:?}",
         selection.model, elapsed.as_secs_f64(), total_seconds, load_seconds, eval_count
     );

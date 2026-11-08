@@ -517,11 +517,20 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        app_log::info!("X 辅助诊断：收到打开页面事件");
         if self.x_assistant_page.is_none() {
-            self.x_assistant_page = Some(cx.new(|cx| XAssistantPage::new(window, cx)));
+            app_log::info!("X 辅助诊断：开始创建 XAssistantPage");
+            let page = cx.new(|cx| XAssistantPage::new(window, cx));
+            app_log::info!("X 辅助诊断：XAssistantPage 创建完成");
+            self.x_assistant_page = Some(page);
+        } else {
+            app_log::info!("X 辅助诊断：复用已创建的 XAssistantPage");
         }
+        app_log::info!("X 辅助诊断：开始切换活动页面");
         self.activate_page(ActivePage::XAssistant, cx);
+        app_log::info!("X 辅助诊断：页面切换完成，通知窗口刷新");
         cx.notify();
+        app_log::info!("X 辅助诊断：打开页面事件处理完成");
     }
 
     fn on_open_wallet_generator(

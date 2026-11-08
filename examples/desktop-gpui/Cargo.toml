@@ -18,6 +18,7 @@ icons = ["assets/app.ico"]
 
 [dependencies]
 anyhow = "1.0"
+app-log = { path = "../../crates/app-log" }
 binance_tools = { path = "../.." }
 crypto-rss = { path = "../../crates/crypto-rss" }
 evm-wallet = { path = "../../crates/evm-wallet" }

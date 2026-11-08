@@ -37,7 +37,7 @@ fn http_client(timeout: Duration) -> anyhow::Result<reqwest::blocking::Client> {
     Ok(client)
 }
 
-pub(super) fn send_openai_text_cancellable(
+pub(crate) fn send_openai_text_cancellable(
     api_url: &str,
     model: &str,
     system: &str,

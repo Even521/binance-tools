@@ -1235,7 +1235,7 @@ fn full_date(timestamp_ms: i64) -> String {
 }
 
 fn date_parts(timestamp_ms: i64) -> (i32, u32, u32) {
-    let days = timestamp_ms.div_euclid(86_400_000);
+    let days = timestamp_ms.saturating_add(8 * 60 * 60 * 1000).div_euclid(86_400_000);
     civil_from_days(days)
 }
 

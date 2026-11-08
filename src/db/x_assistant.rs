@@ -21,6 +21,7 @@ pub struct XAssistantReplyRecord {
     pub reply_text: String,
     pub completed_last_step: bool,
     pub created_at: String,
+    pub send_status: String,
 }
 
 pub fn reply_stats_blocking() -> anyhow::Result<XAssistantReplyStats> {
@@ -28,14 +29,14 @@ pub fn reply_stats_blocking() -> anyhow::Result<XAssistantReplyStats> {
     connection
         .query_row(
             "SELECT
-                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '-1 hour')
-                          AND created_at <= datetime('now') THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '-1 hour')
-                          AND created_at <= datetime('now') AND completed_last_step = 1
+                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '+7 hours')
+                          AND created_at <= datetime('now', '+8 hours') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN created_at >= datetime('now', '+7 hours')
+                          AND created_at <= datetime('now', '+8 hours') AND completed_last_step = 1
                           THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN date(created_at, 'localtime') = date('now', 'localtime')
+                COALESCE(SUM(CASE WHEN date(created_at) = date('now', '+8 hours')
                          THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN date(created_at, 'localtime') = date('now', 'localtime')
+                COALESCE(SUM(CASE WHEN date(created_at) = date('now', '+8 hours')
                           AND completed_last_step = 1 THEN 1 ELSE 0 END), 0)
              FROM x_assistant_reply_records",
             [],
@@ -62,7 +63,7 @@ pub fn delete_reply_records_older_than_three_days_blocking() -> anyhow::Result<u
     connection
         .execute(
             "DELETE FROM x_assistant_reply_records
-             WHERE created_at < datetime('now', '-3 days')",
+             WHERE created_at < datetime('now', '+8 hours', '-3 days')",
             [],
         )
         .map_err(Into::into)
@@ -72,7 +73,7 @@ pub fn list_reply_records_blocking() -> anyhow::Result<Vec<XAssistantReplyRecord
     let connection = super::open_default_connection()?;
     let mut statement = connection.prepare(
         "SELECT run_id, author_name, account_handle, posted_at_text, post_text,
-                reply_text, completed_last_step, created_at
+                reply_text, completed_last_step, created_at, send_status
          FROM x_assistant_reply_records
          ORDER BY id DESC",
     )?;
@@ -86,6 +87,7 @@ pub fn list_reply_records_blocking() -> anyhow::Result<Vec<XAssistantReplyRecord
             reply_text: row.get(5)?,
             completed_last_step: row.get(6)?,
             created_at: row.get(7)?,
+            send_status: row.get(8)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -127,10 +129,68 @@ pub fn mark_last_step_completed_blocking(run_id: &str) -> anyhow::Result<()> {
     mark_completed(&connection, run_id)
 }
 
+/// 在点击 X 的提交按钮之前持久化提交意图，应用崩溃后可识别未决发送。
+pub fn mark_reply_submitting_blocking(run_id: &str) -> anyhow::Result<()> {
+    let connection = super::open_default_connection()?;
+    let changed = connection.execute(
+        "UPDATE x_assistant_reply_records
+         SET send_status = 'submitting',
+             send_attempt_count = send_attempt_count + 1,
+             send_attempted_at = datetime('now', '+8 hours'),
+             send_error = NULL
+         WHERE run_id = ?1",
+        [run_id],
+    )?;
+    ensure!(changed == 1, "未找到 X 回复流程记录 {run_id}");
+    Ok(())
+}
+
+/// 发送状态无法确认时留下持久化标记，禁止后续任务误判为普通未发送。
+pub fn mark_reply_uncertain_blocking(run_id: &str, reason: &str) -> anyhow::Result<()> {
+    let connection = super::open_default_connection()?;
+    let changed = connection.execute(
+        "UPDATE x_assistant_reply_records
+         SET send_status = 'uncertain', send_error = ?2
+         WHERE run_id = ?1",
+        params![run_id, reason],
+    )?;
+    ensure!(changed == 1, "未找到 X 回复流程记录 {run_id}");
+    Ok(())
+}
+
+/// 明确失败且未再提交时，记录失败状态。
+pub fn mark_reply_failed_blocking(run_id: &str, reason: &str) -> anyhow::Result<()> {
+    let connection = super::open_default_connection()?;
+    let changed = connection.execute(
+        "UPDATE x_assistant_reply_records
+         SET send_status = 'failed', send_error = ?2
+         WHERE run_id = ?1",
+        params![run_id, reason],
+    )?;
+    ensure!(changed == 1, "未找到 X 回复流程记录 {run_id}");
+    Ok(())
+}
+
+/// X 已提示之前发送过：记录为 duplicate，但仍计入账号去重保护。
+pub fn mark_reply_duplicate_blocking(run_id: &str) -> anyhow::Result<()> {
+    let connection = super::open_default_connection()?;
+    let changed = connection.execute(
+        "UPDATE x_assistant_reply_records
+         SET completed_last_step = 1,
+             completed_at = datetime('now', '+8 hours'),
+             send_status = 'duplicate',
+             send_error = NULL
+         WHERE run_id = ?1",
+        [run_id],
+    )?;
+    ensure!(changed == 1, "未找到 X 回复流程记录 {run_id}");
+    Ok(())
+}
+
 pub fn seconds_since_last_completed_blocking() -> anyhow::Result<Option<u64>> {
     let connection = super::open_default_connection()?;
     let age: Option<i64> = connection.query_row(
-        "SELECT CAST(strftime('%s', 'now') AS INTEGER) -
+        "SELECT CAST(strftime('%s', 'now', '+8 hours') AS INTEGER) -
                 CAST(strftime('%s', MAX(completed_at)) AS INTEGER)
          FROM x_assistant_reply_records
          WHERE completed_last_step = 1 AND completed_at IS NOT NULL",
@@ -148,8 +208,13 @@ fn replied_to_account_within_day(
         "SELECT EXISTS(
             SELECT 1 FROM x_assistant_reply_records
             WHERE lower(account_handle) = lower(?1)
-              AND completed_last_step = 1
-              AND completed_at >= datetime('now', '-1 day')
+              AND (
+                    (completed_last_step = 1
+                     AND completed_at >= datetime('now', '+8 hours', '-1 day'))
+                    OR
+                    (send_status IN ('submitting', 'uncertain')
+                     AND created_at >= datetime('now', '+8 hours', '-1 day'))
+              )
         )",
         [account_handle],
         |row| row.get(0),
@@ -166,8 +231,8 @@ fn insert_reply_record(
 ) -> anyhow::Result<()> {
     connection.execute(
         "INSERT INTO x_assistant_reply_records (
-            run_id, author_name, account_handle, posted_at_text, post_text
-         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            run_id, author_name, account_handle, posted_at_text, post_text, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+8 hours'))",
         params![
             run_id,
             author_name,
@@ -204,7 +269,10 @@ fn save_reply_text(connection: &Connection, run_id: &str, reply_text: &str) -> a
 fn mark_completed(connection: &Connection, run_id: &str) -> anyhow::Result<()> {
     let changed = connection.execute(
         "UPDATE x_assistant_reply_records
-         SET completed_last_step = 1, completed_at = CURRENT_TIMESTAMP
+         SET completed_last_step = 1,
+             completed_at = datetime('now', '+8 hours'),
+             send_status = 'sent',
+             send_error = NULL
          WHERE run_id = ?1",
         [run_id],
     )?;
@@ -221,6 +289,42 @@ mod tests {
     };
 
     #[test]
+    fn unresolved_send_attempt_blocks_same_account_for_one_day() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE x_assistant_reply_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL UNIQUE,
+                author_name TEXT NOT NULL DEFAULT '',
+                account_handle TEXT NOT NULL DEFAULT '',
+                posted_at_text TEXT NOT NULL DEFAULT '',
+                post_text TEXT NOT NULL,
+                reply_text TEXT NOT NULL DEFAULT '',
+                completed_last_step INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+                completed_at TEXT,
+                send_status TEXT NOT NULL DEFAULT 'pending',
+                send_attempt_count INTEGER NOT NULL DEFAULT 0,
+                send_attempted_at TEXT,
+                send_error TEXT
+            );",
+        ).unwrap();
+
+        insert_reply_record(&connection, "uncertain-1", "Alice", "@alice", "刚刚", "帖子正文").unwrap();
+        connection.execute(
+            "UPDATE x_assistant_reply_records SET send_status = 'uncertain' WHERE run_id = 'uncertain-1'",
+            [],
+        ).unwrap();
+        assert!(replied_to_account_within_day(&connection, "@alice").unwrap());
+
+        connection.execute(
+            "UPDATE x_assistant_reply_records SET send_status = 'failed' WHERE run_id = 'uncertain-1'",
+            [],
+        ).unwrap();
+        assert!(!replied_to_account_within_day(&connection, "@alice").unwrap());
+    }
+
+    #[test]
     fn stores_post_metadata_and_tracks_final_step() {
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -234,8 +338,12 @@ mod tests {
                 post_text TEXT NOT NULL,
                 reply_text TEXT NOT NULL DEFAULT '',
                 completed_last_step INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                completed_at TEXT
+                created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+                completed_at TEXT,
+                send_status TEXT NOT NULL DEFAULT 'pending',
+                send_attempt_count INTEGER NOT NULL DEFAULT 0,
+                send_attempted_at TEXT,
+                send_error TEXT
             );",
             )
             .unwrap();
@@ -247,11 +355,19 @@ mod tests {
         assert!(replied_to_account_within_day(&connection, "@ALICE").unwrap());
         assert!(!replied_to_account_within_day(&connection, "@bob").unwrap());
 
-        let row: (String, String, String, String, bool) = connection.query_row(
-            "SELECT author_name, account_handle, posted_at_text, reply_text, completed_last_step
+        let row: (String, String, String, String, bool, String) = connection.query_row(
+            "SELECT author_name, account_handle, posted_at_text, reply_text,
+                    completed_last_step, send_status
              FROM x_assistant_reply_records WHERE run_id = ?1",
             ["run-1"],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            )),
         ).unwrap();
         assert_eq!(
             row,
@@ -260,7 +376,8 @@ mod tests {
                 "@alice".into(),
                 "3分钟".into(),
                 "回复内容".into(),
-                true
+                true,
+                "sent".into()
             )
         );
     }

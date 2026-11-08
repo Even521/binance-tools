@@ -7,7 +7,7 @@ use binance_tools::{
     },
     square::{SquareAiGenerationSummary, SquareAutomationSummary, SquareTaskRunSummary},
 };
-use chrono::{Duration as ChronoDuration, Local, NaiveDateTime, TimeZone, Timelike};
+use chrono::{Duration as ChronoDuration, FixedOffset, NaiveDateTime, TimeZone, Timelike};
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
@@ -63,7 +63,7 @@ impl SquareKeySettingsPage {
                         let masked_key = mask_key(&key.api_key);
                         this.status = Some(format!(
                             "已加载 {}，更新时间 {}",
-                            masked_key, key.updated_at
+                            masked_key, app_log::format_utc_timestamp(&key.updated_at)
                         ));
                     }
                     Ok(None) => {
@@ -494,7 +494,7 @@ impl SquareTasksPage {
     }
 
     fn set_scheduled_now(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_scheduled_at(format_local_datetime(Local::now()), window, cx);
+        self.set_scheduled_at(format_beijing_datetime(app_log::beijing_now()), window, cx);
     }
 
     fn set_scheduled_after_30m(
@@ -504,7 +504,7 @@ impl SquareTasksPage {
         cx: &mut Context<Self>,
     ) {
         self.set_scheduled_at(
-            format_local_datetime(Local::now() + ChronoDuration::minutes(30)),
+            format_beijing_datetime(app_log::beijing_now() + ChronoDuration::minutes(30)),
             window,
             cx,
         );
@@ -517,7 +517,7 @@ impl SquareTasksPage {
         cx: &mut Context<Self>,
     ) {
         self.set_scheduled_at(
-            format_local_datetime(Local::now() + ChronoDuration::hours(1)),
+            format_beijing_datetime(app_log::beijing_now() + ChronoDuration::hours(1)),
             window,
             cx,
         );
@@ -529,13 +529,13 @@ impl SquareTasksPage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let tomorrow = Local::now() + ChronoDuration::days(1);
+        let tomorrow = app_log::beijing_now() + ChronoDuration::days(1);
         let value = tomorrow
             .with_hour(9)
             .and_then(|value| value.with_minute(0))
             .and_then(|value| value.with_second(0))
             .unwrap_or(tomorrow);
-        self.set_scheduled_at(format_local_datetime(value), window, cx);
+        self.set_scheduled_at(format_beijing_datetime(value), window, cx);
     }
 
     fn on_table_event(
@@ -727,8 +727,8 @@ impl SquareTasksPage {
         }
 
         self.scheduler_running = true;
-        self.scheduler_next_run_at = Some(format_local_datetime(
-            Local::now() + ChronoDuration::minutes(30),
+        self.scheduler_next_run_at = Some(format_beijing_datetime(
+            app_log::beijing_now() + ChronoDuration::minutes(30),
         ));
         self.scheduler_enabled.store(true, Ordering::SeqCst);
         self.status = Some("调度器已启动，每 30 分钟检查一次 AI 分析和到期任务".to_string());
@@ -753,8 +753,8 @@ impl SquareTasksPage {
                         Ok(summary) => format!("调度器：{}", format_automation_summary(&summary)),
                         Err(err) => err.to_string(),
                     });
-                    this.scheduler_next_run_at = Some(format_local_datetime(
-                        Local::now() + ChronoDuration::minutes(30),
+                    this.scheduler_next_run_at = Some(format_beijing_datetime(
+                        app_log::beijing_now() + ChronoDuration::minutes(30),
                     ));
                     cx.notify();
                     this.load_tasks(cx);
@@ -1539,13 +1539,13 @@ fn extract_task_title(message: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn format_local_datetime(value: chrono::DateTime<Local>) -> String {
+fn format_beijing_datetime(value: chrono::DateTime<FixedOffset>) -> String {
     value.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn parse_local_datetime(value: &str) -> Option<chrono::DateTime<Local>> {
+fn parse_beijing_datetime(value: &str) -> Option<chrono::DateTime<FixedOffset>> {
     let naive = NaiveDateTime::parse_from_str(value.trim(), "%Y-%m-%d %H:%M:%S").ok()?;
-    Local.from_local_datetime(&naive).single()
+    app_log::beijing_timezone().from_local_datetime(&naive).single()
 }
 
 fn format_countdown_seconds(total_seconds: i64) -> String {
@@ -1571,12 +1571,12 @@ fn format_ai_next_run_countdown(enabled: bool, next_run_at: Option<&str>) -> Str
         return "计算中".to_string();
     };
 
-    let Some(next_run_time) = parse_local_datetime(next_run_at) else {
+    let Some(next_run_time) = parse_beijing_datetime(next_run_at) else {
         return next_run_at.to_string();
     };
 
     let remaining = next_run_time
-        .signed_duration_since(Local::now())
+        .signed_duration_since(app_log::beijing_now())
         .num_seconds();
     if remaining <= 0 {
         format!("已到期，等待执行（{next_run_at}）")
@@ -1597,12 +1597,12 @@ fn format_scheduler_countdown(running: bool, next_run_at: Option<&str>) -> Strin
         return "计算中".to_string();
     };
 
-    let Some(next_run_time) = parse_local_datetime(next_run_at) else {
+    let Some(next_run_time) = parse_beijing_datetime(next_run_at) else {
         return next_run_at.to_string();
     };
 
     let remaining = next_run_time
-        .signed_duration_since(Local::now())
+        .signed_duration_since(app_log::beijing_now())
         .num_seconds();
     if remaining <= 0 {
         format!("即将检查（{next_run_at}）")
@@ -1671,7 +1671,7 @@ impl TableDelegate for SquareTasksTableDelegate {
             "message" => Self::cell(non_empty(&task.message)),
             "scheduled_at" => Self::cell(non_empty(&task.scheduled_at)),
             "send_status" => Self::cell(non_empty(&task.send_status)),
-            "updated_at" => Self::cell(task.updated_at.clone()),
+            "updated_at" => Self::cell(app_log::format_utc_timestamp(&task.updated_at)),
             _ => Self::cell(""),
         }
     }
@@ -2051,7 +2051,7 @@ impl SquareSendLogsTableDelegate {
             "status" => log.status.clone(),
             "response_code" => log.response_code.clone().unwrap_or_default(),
             "retry_count" => log.retry_count.to_string(),
-            "sent_at" => log.sent_at.clone(),
+            "sent_at" => app_log::format_utc_timestamp(&log.sent_at),
             "message_digest" => log.message_digest.clone(),
             "error_message" => log.error_message.clone().unwrap_or_default(),
             _ => String::new(),

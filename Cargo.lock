@@ -626,6 +626,7 @@ name = "binance_tools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-log",
  "binance-sdk",
  "chrono",
  "num_cpus",

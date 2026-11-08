@@ -21,6 +21,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
     table::{Column, Table as DataTable, TableDelegate, TableState},
     v_flex,
@@ -42,6 +43,8 @@ pub struct DbNewsItem {
 
 pub struct EntertainmentNewsPage {
     table: Entity<TableState<EntertainmentNewsTableDelegate>>,
+    search_input: Entity<InputState>,
+    _search_subscription: Subscription,
     _table_subscription: Subscription,
     news_items: Vec<DbNewsItem>,
     status: Option<String>,
@@ -74,10 +77,20 @@ impl EntertainmentNewsPage {
                 .row_selectable(true)
         });
 
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("搜索新闻 ID")
+                .default_value("")
+        });
+        let search_subscription =
+            cx.subscribe_in(&search_input, window, Self::on_search_input_event);
+
         let table_subscription =
             cx.subscribe_in(&table, window, Self::on_rewrite_requested);
         let mut instance = Self {
             table,
+            search_input,
+            _search_subscription: search_subscription,
             _table_subscription: table_subscription,
             news_items: Vec::new(),
             status: None,
@@ -95,6 +108,19 @@ impl EntertainmentNewsPage {
         };
         instance.reload_news(cx);
         instance
+    }
+
+    fn on_search_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.refresh_table_page(cx);
+            cx.notify();
+        }
     }
 
     fn reload_news(&mut self, cx: &mut Context<Self>) {
@@ -216,9 +242,14 @@ impl EntertainmentNewsPage {
 
     // 与 Alpha Token 列表保持一致：完整数据交给 DataTable，由表格自身滚动浏览。
     fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
-        let all_items = self.news_items.clone();
+        let query = self.search_input.read(cx).value().trim().to_string();
+        let visible_items = if query.is_empty() {
+            self.news_items.clone()
+        } else {
+            self.news_items.iter().filter(|item| item.id.to_string() == query).cloned().collect()
+        };
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().set_news(all_items);
+            table.delegate_mut().set_news(visible_items);
             table.refresh(cx);
         });
     }
@@ -344,7 +375,7 @@ impl EntertainmentNewsPage {
                             .join("；");
                         for report in &reports {
                             if let Some(error) = &report.error {
-                                eprintln!("[EntertainmentNews] Feed {} error: {}", report.source, error);
+                                app_log::news_warn!("娱乐新闻 RSS 源同步失败：{}：{}", report.source, error);
                             }
                         }
 
@@ -396,12 +427,12 @@ impl EntertainmentNewsPage {
                         ));
                     }
                     Ok(Err(err)) => {
-                        eprintln!("[EntertainmentNews] Sync error: {err:?}");
+                        app_log::news_error!("娱乐新闻 RSS 同步失败：{err:?}");
                         this.error = Some(format!("同步失败: {err}"));
                         this.status = None;
                     }
                     Err(_) => {
-                        eprintln!("[EntertainmentNews] Sync thread stopped unexpectedly");
+                        app_log::news_error!("娱乐新闻 RSS 同步线程异常退出");
                         this.error = Some("同步线程异常退出".to_string());
                         this.status = None;
                     }
@@ -481,7 +512,7 @@ impl EntertainmentNewsPage {
         // 新鲜度加权：24 小时内优先，避免旧新闻因关键词多而长期置顶。
         let timestamp = item.published_at.as_deref().unwrap_or(&item.collected_at);
         if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            let age_hours = (chrono::Utc::now() - parsed.with_timezone(&chrono::Utc))
+            let age_hours = (app_log::beijing_now() - parsed.with_timezone(&app_log::beijing_timezone()))
                 .num_hours()
                 .max(0);
             score += match age_hours {
@@ -510,6 +541,7 @@ impl EntertainmentNewsTableDelegate {
     fn new() -> Self {
         Self {
             columns: vec![
+                Column::new("id", "ID").width(px(76.)).sortable(),
                 Column::new("source", "来源").width(px(120.)).sortable(),
                 Column::new("title", "标题").width(px(360.)).sortable(),
                 Column::new("content", "内容").width(px(520.)),
@@ -538,7 +570,7 @@ impl EntertainmentNewsTableDelegate {
         chrono::DateTime::parse_from_rfc3339(value)
             .map(|time| {
                 time.with_timezone(
-                    &chrono::FixedOffset::east_opt(8 * 60 * 60).expect("UTC+8 offset is valid"),
+                    &app_log::beijing_timezone(),
                 )
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
@@ -574,6 +606,7 @@ impl TableDelegate for EntertainmentNewsTableDelegate {
         let key = self.columns[col_ix].key.as_ref();
 
         match key {
+            "id" => Self::text_cell(item.id.to_string(), palette::muted(theme)),
             "source" => Self::text_cell(item.source.clone(), palette::text(theme)),
             "title" => {
                 let title = match item.hot_rank {
@@ -709,6 +742,11 @@ impl Render for EntertainmentNewsPage {
                                 h_flex()
                                     .justify_end()
                                     .gap_2()
+                                    .child(
+                                        div().w(px(260.)).max_w(px(320.)).child(
+                                            Input::new(&self.search_input).small().cleanable(true),
+                                        ),
+                                    )
                                     .child(
                                         Button::new("sync_news_btn")
                                             .outline()

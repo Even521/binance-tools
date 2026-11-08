@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs","crates/crypto-rss"]
+members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs", "crates/crypto-rss", "crates/app-log"]
 default-members = ["."]
 resolver = "3"
 
@@ -13,6 +13,7 @@ debug = 0
 incremental = false
 
 [dependencies]
+app-log = { path = "crates/app-log" }
 anyhow = "1.0"
 binance-sdk = { version = "74.1.1", default-features = false, features = ["spot", "rustls-tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

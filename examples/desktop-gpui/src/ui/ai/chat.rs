@@ -9,7 +9,7 @@ use binance_tools::{
         load_ai_chat_thread_blocking, save_ai_chat_thread_blocking,
     },
 };
-use chrono::{Local, NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDateTime, TimeZone, Utc};
 use gpui::{actions, prelude::FluentBuilder, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt,
@@ -2164,7 +2164,7 @@ fn relative_time(timestamp: &str) -> String {
         return timestamp.to_string();
     };
 
-    let elapsed = Local::now().with_timezone(&Utc) - updated_at;
+    let elapsed = Utc::now() - updated_at;
     let minutes = elapsed.num_minutes().max(0);
     if minutes < 1 {
         "now".to_string()

@@ -28,13 +28,14 @@ impl Default for ReplyRecordsTableDelegate {
     fn default() -> Self {
         Self {
             columns: vec![
-                Column::new("created_at", "运行时间").width(px(160.)),
+                Column::new("created_at", "运行时间（北京时间）").width(px(160.)),
                 Column::new("author", "发帖人").width(px(150.)),
                 Column::new("account", "账号").width(px(150.)),
-                Column::new("posted_at", "发帖时间").width(px(100.)),
+                Column::new("posted_at", "发帖时间（北京时间）").width(px(100.)),
                 Column::new("post", "帖子正文").width(px(280.)),
                 Column::new("reply", "生成回复").width(px(220.)),
                 Column::new("completed", "最后一步完成").width(px(120.)),
+                Column::new("send_status", "发送状态").width(px(110.)),
             ],
             records: Vec::new(),
         }
@@ -73,16 +74,26 @@ impl TableDelegate for ReplyRecordsTableDelegate {
         };
         let key = self.columns[col_ix].key.as_ref();
         let value = match key {
-            "created_at" => record.created_at.clone(),
+            "created_at" => app_log::format_beijing_timestamp(&record.created_at),
             "author" => record.author_name.clone(),
             "account" => record.account_handle.clone(),
-            "posted_at" => record.posted_at_text.clone(),
+            "posted_at" => app_log::format_beijing_timestamp(&record.posted_at_text),
             "post" => record.post_text.clone(),
             "reply" => record.reply_text.clone(),
             "completed" => if record.completed_last_step {
                 "是"
             } else {
                 "否"
+            }
+            .to_string(),
+            "send_status" => match record.send_status.as_str() {
+                "pending" => "待提交",
+                "submitting" => "提交中 / 待核验",
+                "sent" => "已发送",
+                "duplicate" => "已发送过",
+                "failed" => "发送失败",
+                "uncertain" => "待人工核验",
+                _ => "未知",
             }
             .to_string(),
             _ => String::new(),
