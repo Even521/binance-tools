@@ -157,9 +157,9 @@ impl AutoReplyRunner {
 
     /// 处理单轮执行异常。
     ///
-    /// 取消请求直接交回主循环；
-    /// 限流立即退出；
-    /// 普通错误尝试恢复后检查失败上限。
+    /// 取消请求立即停止；
+    /// 限流或发送状态不明时安全退出；
+    /// 普通错误恢复后继续主循环，不设置连续失败上限。
     fn handle_error(&mut self, error: anyhow::Error, cancel: &AtomicBool) -> Result<()> {
         if Self::is_cancelled(cancel) {
             automation::log_event(&format!(
