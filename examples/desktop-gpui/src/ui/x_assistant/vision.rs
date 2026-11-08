@@ -648,9 +648,9 @@ fn run_visual_reply_inner(
 
                 if cancel.load(Ordering::Acquire) {
                     automation::log_event(
-                        "阶段 1/3：首次识别失败后发现取消信号；保留上方原始 OCR 错误，不再执行删除状态复核。",
+                        "阶段 1/3：首次识别失败后发现取消信号；返回首次识别错误，不再执行删除状态复核。",
                     );
-                    check_cancel(cancel)?;
+                    return Err(error);
                 }
                 if !action_coordinate_failed {
                     let unavailable_check_start = Instant::now();
@@ -664,10 +664,10 @@ fn run_visual_reply_inner(
                     ));
                     if cancel.load(Ordering::Acquire) {
                         automation::log_event(
-                            "阶段 1/3：删除状态复核期间收到取消信号；首次识别错误已在前方日志保留。",
+                            "阶段 1/3：删除状态复核期间收到取消信号；返回首次识别错误，避免取消信号覆盖根因。",
                         );
+                        return Err(error);
                     }
-                    check_cancel(cancel)?;
                     if unavailable {
                         automation::log_event(
                             "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
