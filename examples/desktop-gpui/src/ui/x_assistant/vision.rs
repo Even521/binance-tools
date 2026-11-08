@@ -1062,9 +1062,15 @@ fn run_visual_reply_inner(
 
         let reply_input_detected = compose_page["reply_input"].is_object();
 
-        let account_matched = !expected_account.is_empty()
-            && !actual_account.is_empty()
-            && expected_account.eq_ignore_ascii_case(actual_account);
+        let display_name_matched = identity_text_matches(
+            &author_name,
+            compose_page["dialog_text"].as_str().unwrap_or(""),
+        );
+        let account_matched = reply_target_account_matches(
+            expected_account,
+            actual_account,
+            display_name_matched,
+        );
 
         // compose/post 可以继续；
         // home 必须同时确认回复输入框和回复对象账号。
@@ -1087,17 +1093,20 @@ fn run_visual_reply_inner(
             .trim_start_matches('@');
 
         anyhow::ensure!(
-            !expected_account.is_empty()
-                && !actual_account.is_empty()
-                && expected_account.eq_ignore_ascii_case(actual_account),
-            "回复对象不匹配：预期 @{}，实际 @{}，禁止发送",
+            reply_target_account_matches(
+                expected_account,
+                actual_account,
+                display_name_matched,
+            ),
+            "回复对象不匹配：预期 @{}，实际 @{}，昵称匹配={}，禁止发送",
             expected_account,
-            actual_account
+            actual_account,
+            display_name_matched
         );
 
         automation::log_event(&format!(
-            "阶段 2/3：回复对象验证通过，预期 @{}，实际 @{}",
-            expected_account, actual_account
+            "阶段 2/3：回复对象验证通过，预期 @{}，实际 @{}，昵称匹配={}",
+            expected_account, actual_account, display_name_matched
         ));
         let api_input_point = compose_page["reply_input"].as_object().and_then(|point| {
             Some((
@@ -2899,6 +2908,34 @@ fn require_named_point(
     })
 }
 
+fn normalize_identity_text(value: &str) -> String {
+    value.chars().filter(|ch| ch.is_alphanumeric()).collect()
+}
+
+fn identity_text_matches(expected_name: &str, dialog_text: &str) -> bool {
+    let expected = normalize_identity_text(expected_name);
+    let actual = normalize_identity_text(dialog_text);
+    !expected.is_empty() && actual.contains(&expected)
+}
+
+fn reply_target_account_matches(
+    expected: &str,
+    actual: &str,
+    display_name_matched: bool,
+) -> bool {
+    if expected.is_empty() || actual.is_empty() {
+        return false;
+    }
+    if expected.eq_ignore_ascii_case(actual) {
+        return true;
+    }
+
+    // 仅当显示名称也在当前回复弹窗的现有 OCR 文本中匹配时，
+    // 才容忍 OCR 漏掉/多识别下划线；其他账号差异仍然拒绝发送。
+    display_name_matched
+        && expected.replace('_', "").eq_ignore_ascii_case(&actual.replace('_', ""))
+}
+
 fn fallback_reason(decision: &VisionDecision, fallback: &str) -> String {
     if decision.reason.trim().is_empty() {
         fallback.to_string()
@@ -2921,9 +2958,22 @@ fn check_cancel(cancel: &AtomicBool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Point, parse_decision, validate_action_targets,
-        validate_composer_input_point,
+        Point, identity_text_matches, parse_decision, reply_target_account_matches,
+        validate_action_targets, validate_composer_input_point,
     };
+
+    #[test]
+    fn accepts_missing_underscore_only_when_display_name_matches() {
+        assert!(identity_text_matches("特立独行", "回复给 @Ai_SoloWalker\n特立独行"));
+        assert!(reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", true));
+        assert!(!reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", false));
+    }
+
+    #[test]
+    fn rejects_other_account_mismatches_even_when_display_name_matches() {
+        assert!(!reply_target_account_matches("AiSoloWalker", "AiSoloWalkerr", true));
+        assert!(!reply_target_account_matches("", "Ai_SoloWalker", true));
+    }
 
     #[test]
     fn manual_move_button_accepts_reply_point_below_visible_media() {
