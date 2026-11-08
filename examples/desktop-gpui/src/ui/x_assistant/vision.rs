@@ -942,11 +942,22 @@ fn run_visual_reply_inner(
             hover_y,
             offset_y
         ));
+        automation::log_event(&format!(
+            "阶段 1/3：悬停前取消状态={}。",
+            cancel.load(Ordering::Acquire)
+        ));
+        check_cancel(cancel)?;
         native::move_cursor_to_reply(reply_button.x, hover_y)?;
+        automation::log_event(&format!(
+            "阶段 1/3：鼠标移动完成，取消状态={}；开始等待悬停提示。",
+            cancel.load(Ordering::Acquire)
+        ));
         wait_cancel(
             cancel,
             Duration::from_millis(if attempt == 0 { 900 } else { 700 }),
-        )?;
+        )
+        .map_err(|error| error.context("回复按钮悬停等待期间收到取消信号或等待失败"))?;
+        automation::log_event("阶段 1/3：悬停等待完成，准备采集提示截图。");
         let label = format!("01-reply-tooltip-hover-{}", attempt + 1);
         let tooltip_shot = capture(&dir, &id, &label, &mut screenshots)?;
         tooltip_verified =
