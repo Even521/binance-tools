@@ -98,7 +98,16 @@ fn send_text_request(
     cancel: &AtomicBool,
     think: bool,
 ) -> anyhow::Result<String> {
-    anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已停止");
+    if cancel.load(Ordering::Acquire) {
+        super::super::automation::log_event(
+            "文本 AI 请求启动前检测到取消标记=true；请结合 X 助手页面 Drop/停止按钮日志确认来源。",
+        );
+        anyhow::bail!("已停止（文本 AI 请求启动前检测到取消标记）");
+    }
+    super::super::automation::log_event(&format!(
+        "文本 AI 请求准备发送：model={}，think={}，取消标记=false。",
+        model, think
+    ));
 
     let mut base = api_url.trim().trim_end_matches('/').to_string();
 
@@ -143,7 +152,12 @@ fn send_text_request(
         response.status()
     );
 
-    anyhow::ensure!(!cancel.load(Ordering::Relaxed), "已停止");
+    if cancel.load(Ordering::Acquire) {
+        super::super::automation::log_event(
+            "文本 AI HTTP 响应返回后检测到取消标记=true；丢弃响应，不继续解析或输入。",
+        );
+        anyhow::bail!("已停止（文本 AI 响应返回后检测到取消标记）");
+    }
 
     let value: Value = response.json().context("解析文本 AI 响应失败")?;
 
