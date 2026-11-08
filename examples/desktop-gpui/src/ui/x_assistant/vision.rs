@@ -474,7 +474,7 @@ fn activate_browser_for_scroll(reason: &str) -> anyhow::Result<()> {
                 "滚动前：浏览器激活失败，耗时 {:.2} 秒：{error:#}",
                 started.elapsed().as_secs_f64()
             ));
-            Err(error).context("滚动前激活浏览器失败")
+            Err(error.context("滚动前激活浏览器失败"))
         }
     }
 }
