@@ -638,22 +638,44 @@ fn run_visual_reply_inner(
         match identify_post_for_mode(&options, &feed, cancel) {
             Ok(post) => post,
             Err(error) => {
-                if ocr::recognize_post_unavailable_error(&feed.png).unwrap_or(false) {
+                // 局部互动栏坐标失败与帖子删除无关，不要再对同一张截图执行一次完整 OCR。
+                let error_detail = format!("{error:#}");
+                let action_coordinate_failed =
+                    error_detail.contains("局部 OCR 两轮均未识别到回复坐标");
+
+                check_cancel(cancel)?;
+                if !action_coordinate_failed {
+                    let unavailable_check_start = Instant::now();
+                    automation::log_event("阶段 1/3：开始复核帖子是否已删除或不可用。");
+                    let unavailable = ocr::recognize_post_unavailable_error(&feed.png)
+                        .unwrap_or(false);
+                    automation::log_event(&format!(
+                        "阶段 1/3：帖子删除状态复核结束，结果={}，耗时={} ms。",
+                        if unavailable { "已删除或不可用" } else { "未发现删除提示" },
+                        unavailable_check_start.elapsed().as_millis()
+                    ));
+                    check_cancel(cancel)?;
+                    if unavailable {
+                        automation::log_event(
+                            "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
+                        );
+                        let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
+                        return Ok(VisionReplyResult {
+                            screenshots,
+                            author_name: String::new(),
+                            account_handle: String::new(),
+                            posted_at: String::new(),
+                            post_text: String::new(),
+                            reply_text: String::new(),
+                            completed: false,
+                            skipped_duplicate: true,
+                            summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
+                        });
+                    }
+                } else {
                     automation::log_event(
-                        "阶段 1/3：检测到该帖子已被删除或不可用；安全关闭页面并跳过。",
+                        "阶段 1/3：回复坐标识别失败，跳过重复的整页删除状态 OCR，直接返回错误。",
                     );
-                    let _ = close_reply_composer_safely(&dir, &id, &mut screenshots, cancel);
-                    return Ok(VisionReplyResult {
-                        screenshots,
-                        author_name: String::new(),
-                        account_handle: String::new(),
-                        posted_at: String::new(),
-                        post_text: String::new(),
-                        reply_text: String::new(),
-                        completed: false,
-                        skipped_duplicate: true,
-                        summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
-                    });
                 }
 
                 if is_incomplete_post_error(&error) {
