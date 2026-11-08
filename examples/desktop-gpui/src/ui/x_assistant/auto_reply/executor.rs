@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 
 use super::super::{
     automation,
-    reply_filter::ReplyQualityRejected,
     vision::{self, VisionReplyOptions, VisionReplyResult},
 };
 use crate::ui::x_assistant::core::task_queue::run_browser_task;
