@@ -69,9 +69,11 @@ pub struct XAssistantPage {
 impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
+        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
         let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
         app_log::x_info!(
-            "X 助手页面 Drop：replying={}，销毁前取消标记={}，本次是否新发送取消信号={}",
+            "X 助手页面 Drop：token=0x{:x}，replying={}，销毁前取消标记={}，本次是否新发送取消信号={}",
+            token_id,
             self.replying,
             was_cancelled,
             !was_cancelled
@@ -290,6 +292,14 @@ impl XAssistantPage {
         self.replying = true;
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
+        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
+        app_log::x_info!(
+            "X 视觉回复启动：创建独立取消令牌 token=0x{:x}，hover_only={}，stage2_ocr={}，full_auto={}",
+            token_id,
+            hover_only,
+            stage2_ocr,
+            full_auto
+        );
         self.status = Some(if full_auto {
             "全自动循环已启动；每轮完成后随机距离滚动，异常时按安全流程恢复，点击停止可结束。"
                 .to_string()
@@ -329,8 +339,10 @@ impl XAssistantPage {
                 .await;
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
+            let token_id = Arc::as_ptr(&cancel_for_ui) as usize;
             app_log::x_info!(
-                "X 视觉回复：后台任务已结束，取消标记={}，准备回收 UI 状态",
+                "X 视觉回复：后台任务已结束，token=0x{:x}，取消标记={}，准备回收 UI 状态",
+                token_id,
                 was_cancelled
             );
 
@@ -660,10 +672,13 @@ impl XAssistantPage {
     }
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
+        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
         let was_running = self.cancel_reply.swap(true, Ordering::AcqRel);
-        app_log::x_warn!(
-            "X 助手：用户点击停止按钮，之前取消状态={}",
-            was_running
+        app_log::x_info!(
+            "X 助手：停止按钮点击事件触发，token=0x{:x}，点击前取消状态={}，本次是否新发送取消信号={}",
+            token_id,
+            was_running,
+            !was_running
         );
         self.status = Some("已收到停止请求，正在等待后台任务安全退出；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
