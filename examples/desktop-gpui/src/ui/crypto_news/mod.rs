@@ -22,7 +22,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
-    scroll::ScrollableElement,
     table::{Column, Table as DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -32,8 +31,6 @@ pub struct DbNewsItem {
     pub id: i64,
     pub source: String,
     pub title: String,
-    pub chinese_title: Option<String>,
-    pub url: Option<String>,
     pub summary: Option<String>,
     pub chinese_summary: Option<String>,
     pub published_at: Option<String>,
@@ -258,19 +255,17 @@ impl CryptoNewsPage {
     fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
         let conn = open_default_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source, title, chinese_title, url, summary, chinese_summary, published_at, collected_at FROM crypto_news ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
+            "SELECT id, source, title, summary, chinese_summary, published_at, collected_at ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DbNewsItem {
                 id: row.get(0)?,
                 source: row.get(1)?,
                 title: row.get(2)?,
-                chinese_title: row.get(3)?,
-                url: row.get(4)?,
-                summary: row.get(5)?,
-                chinese_summary: row.get(6)?,
-                published_at: row.get(7)?,
-                collected_at: row.get(8)?,
+                summary: row.get(3)?,
+                chinese_summary: row.get(4)?,
+                published_at: row.get(5)?,
+                collected_at: row.get(6)?,
                 hot_rank: None,
             })
         })?;
