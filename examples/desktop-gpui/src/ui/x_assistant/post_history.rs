@@ -4,7 +4,6 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt,
     button::Button,
     h_flex,
-    scroll::ScrollableElement,
     table::{Column, Table as DataTable, TableDelegate, TableState},
     v_flex,
 };
