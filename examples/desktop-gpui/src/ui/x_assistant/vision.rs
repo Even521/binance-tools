@@ -640,10 +640,18 @@ fn run_visual_reply_inner(
             Err(error) => {
                 // 局部互动栏坐标失败与帖子删除无关，不要再对同一张截图执行一次完整 OCR。
                 let error_detail = format!("{error:#}");
+                automation::log_event(&format!(
+                    "阶段 1/3：首次帖子/互动栏识别失败，原始错误：{error_detail}"
+                ));
                 let action_coordinate_failed =
                     error_detail.contains("局部 OCR 两轮均未识别到回复坐标");
 
-                check_cancel(cancel)?;
+                if cancel.load(Ordering::Acquire) {
+                    automation::log_event(
+                        "阶段 1/3：首次识别失败后发现取消信号；保留上方原始 OCR 错误，不再执行删除状态复核。",
+                    );
+                    check_cancel(cancel)?;
+                }
                 if !action_coordinate_failed {
                     let unavailable_check_start = Instant::now();
                     automation::log_event("阶段 1/3：开始复核帖子是否已删除或不可用。");
@@ -654,6 +662,11 @@ fn run_visual_reply_inner(
                         if unavailable { "已删除或不可用" } else { "未发现删除提示" },
                         unavailable_check_start.elapsed().as_millis()
                     ));
+                    if cancel.load(Ordering::Acquire) {
+                        automation::log_event(
+                            "阶段 1/3：删除状态复核期间收到取消信号；首次识别错误已在前方日志保留。",
+                        );
+                    }
                     check_cancel(cancel)?;
                     if unavailable {
                         automation::log_event(
