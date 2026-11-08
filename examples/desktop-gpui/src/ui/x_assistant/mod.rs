@@ -149,7 +149,7 @@ impl XAssistantPage {
         }
         self.replying = true;
         self.error = None;
-        self.cancel_reply.store(false, Ordering::Release);
+        self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.status = Some(if self.task_settings.auto_reply_enabled && self.auto_send {
             "自动发帖与自动回复已启动；两类任务通过同一浏览器锁串行操作。点击停止可结束。".to_string()
         } else if self.task_settings.auto_reply_enabled {
@@ -219,7 +219,7 @@ impl XAssistantPage {
         }
         self.replying = true;
         self.error = None;
-        self.cancel_reply.store(false, Ordering::Release);
+        self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.status = Some(
             "测试发帖已启动：只选取一条所选类型新闻，完成真实发布与结果核验；不会启动连续发布。".to_string(),
         );
@@ -282,7 +282,7 @@ impl XAssistantPage {
         }
         self.replying = true;
         self.error = None;
-        self.cancel_reply.store(false, Ordering::Relaxed);
+        self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.status = Some(if full_auto {
             "全自动循环已启动；每轮完成后随机距离滚动，异常时按安全流程恢复，点击停止可结束。"
                 .to_string()
