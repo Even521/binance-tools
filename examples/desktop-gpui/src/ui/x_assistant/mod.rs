@@ -11,7 +11,6 @@ mod option;
 mod post_history;
 mod reply_list;
 mod reply_filter;
-mod scheduler;
 mod own_post_reply;
 mod vision;
 use crate::ui::palette;
