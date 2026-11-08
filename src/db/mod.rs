@@ -3,8 +3,11 @@
 use anyhow::Context;
 use rusqlite::Connection;
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 pub mod ai;
@@ -21,6 +24,9 @@ pub mod x_assistant;
 pub mod x_posting;
 
 pub const DEFAULT_DATABASE_PATH: &str = "db/binance_tools.sqlite";
+
+// 同一进程内按数据库路径串行执行迁移，避免每次打开连接都重复写入 schema。
+static MIGRATED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 pub fn default_database_path() -> PathBuf {
     PathBuf::from(DEFAULT_DATABASE_PATH)
@@ -39,7 +45,29 @@ pub fn open_connection(path: impl AsRef<Path>) -> anyhow::Result<Connection> {
 
     let connection = Connection::open(path)
         .with_context(|| format!("open SQLite database failed: {}", path.display()))?;
-    run_migrations(&connection)?;
+
+    // 多个识别/统计任务并发访问时，给短暂写锁冲突留出等待时间。
+    connection
+        .busy_timeout(Duration::from_secs(10))
+        .context("configure SQLite busy timeout failed")?;
+
+    // WAL 允许读取与写入并行，降低 UI 统计查询与识别记录写入之间的锁竞争。
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .with_context(|| format!("enable SQLite WAL failed: {}", path.display()))?;
+
+    let migration_key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let migrated = MIGRATED_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut migrated = migrated
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !migrated.contains(&migration_key) {
+        // 持有进程内迁移锁，确保并发首次打开连接时只会有一个线程执行迁移。
+        run_migrations(&connection)?;
+        migrated.insert(migration_key);
+    }
+
     Ok(connection)
 }
 
