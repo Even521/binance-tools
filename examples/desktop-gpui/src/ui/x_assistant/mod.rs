@@ -335,7 +335,7 @@ impl XAssistantPage {
                         if was_cancelled
                             && format!("{err:#}").contains("视觉回复流程已停止") =>
                     {
-                        this.status = Some("已停止，后台任务已结束。".to_string());
+                        this.status = Some("任务已中断，后台任务已结束。".to_string());
                         this.error = None;
                     }
                     Err(err) => {
@@ -347,7 +347,7 @@ impl XAssistantPage {
                         });
                     }
                     Ok(_reply) if was_cancelled => {
-                        this.status = Some("已收到停止请求，后台任务已安全结束。".to_string());
+                        this.status = Some("任务已中断，后台任务已安全结束。".to_string());
                         this.error = None;
                     }
                     Ok(reply) => {
@@ -1118,11 +1118,15 @@ impl Render for XAssistantPage {
                         .border_1()
                         .border_color(if self.error.is_some() {
                             palette::error_border()
+                        } else if self.replying {
+                            palette::border(theme)
                         } else {
                             theme.success.opacity(0.35)
                         })
                         .bg(if self.error.is_some() {
                             palette::error_background()
+                        } else if self.replying {
+                            theme.background
                         } else {
                             theme.success.opacity(0.10)
                         })
@@ -1131,6 +1135,8 @@ impl Render for XAssistantPage {
                         .text_size(px(12.))
                         .text_color(if self.error.is_some() {
                             palette::error_text()
+                        } else if self.replying {
+                            palette::muted(theme)
                         } else {
                             palette::text(theme)
                         })
