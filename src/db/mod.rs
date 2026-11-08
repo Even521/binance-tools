@@ -25,7 +25,8 @@ pub mod x_posting;
 
 pub const DEFAULT_DATABASE_PATH: &str = "db/binance_tools.sqlite";
 
-// 同一进程内按数据库路径串行执行迁移，避免每次打开连接都重复写入 schema。
+// 同一进程内按数据库路径缓存 WAL 初始化及迁移状态，避免每次打开连接都争抢 SQLite 写锁。
+static WAL_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 static MIGRATED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 pub fn default_database_path() -> PathBuf {
@@ -51,18 +52,31 @@ pub fn open_connection(path: impl AsRef<Path>) -> anyhow::Result<Connection> {
         .busy_timeout(Duration::from_secs(10))
         .context("configure SQLite busy timeout failed")?;
 
-    // WAL 允许读取与写入并行，降低 UI 统计查询与识别记录写入之间的锁竞争。
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .with_context(|| format!("enable SQLite WAL failed: {}", path.display()))?;
-
-    // 每个 :memory: 连接都是独立数据库，不能套用文件数据库的“一次迁移”缓存。
+    // 每个 :memory: 连接都是独立数据库，不能套用文件数据库的 WAL/迁移缓存。
     if path == Path::new(":memory:") {
         run_migrations(&connection)?;
         return Ok(connection);
     }
 
     let migration_key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    // journal_mode=WAL 是写入型 PRAGMA；不能在每次打开连接时重复执行，
+    // 否则 UI 统计查询和后台回复记录同时开连接时，会额外争抢数据库锁。
+    let wal_databases = WAL_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut wal_databases = wal_databases
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !wal_databases.contains(&migration_key) {
+        let journal_mode: String =
+            connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            connection
+                .pragma_update(None, "journal_mode", "WAL")
+                .with_context(|| format!("enable SQLite WAL failed: {}", path.display()))?;
+        }
+        wal_databases.insert(migration_key.clone());
+    }
+    drop(wal_databases);
     let migrated = MIGRATED_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
     let mut migrated = migrated
         .lock()
