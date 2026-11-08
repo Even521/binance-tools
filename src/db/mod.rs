@@ -56,6 +56,12 @@ pub fn open_connection(path: impl AsRef<Path>) -> anyhow::Result<Connection> {
         .pragma_update(None, "journal_mode", "WAL")
         .with_context(|| format!("enable SQLite WAL failed: {}", path.display()))?;
 
+    // 每个 :memory: 连接都是独立数据库，不能套用文件数据库的“一次迁移”缓存。
+    if path == Path::new(":memory:") {
+        run_migrations(&connection)?;
+        return Ok(connection);
+    }
+
     let migration_key = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let migrated = MIGRATED_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
     let mut migrated = migrated
