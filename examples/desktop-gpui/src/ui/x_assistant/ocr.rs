@@ -261,14 +261,6 @@ pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-fn doc_width(path: &Path) -> anyhow::Result<u32> {
-    Ok(image::image_dimensions(path)?.0)
-}
-
-fn doc_height(path: &Path) -> anyhow::Result<u32> {
-    Ok(image::image_dimensions(path)?.1)
-}
-
 pub(super) fn recognize_current_url(path: &Path) -> anyhow::Result<Option<String>> {
     use image::imageops::crop_imm;
 
@@ -1688,14 +1680,6 @@ fn text_block_bounds(block: &TextBlock) -> Option<(u32, u32, u32, u32)> {
         block.box_points.iter().map(|point| point.x).max()?,
         block.box_points.iter().map(|point| point.y).max()?,
     ))
-}
-
-fn is_numeric_count(text: &str) -> bool {
-    text.split_whitespace().last().is_some_and(|token| {
-        !token.is_empty()
-            && token.chars().any(|ch| ch.is_ascii_digit())
-            && token.chars().all(|ch| ch.is_ascii_digit() || ch == ',')
-    })
 }
 
 fn text_match_ratio(recognized: &str, expected: &str) -> f32 {
