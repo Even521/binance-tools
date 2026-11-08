@@ -1325,6 +1325,9 @@ fn run_visual_reply_inner(
 
     let mut done = capture(&dir, &id, "04-result", &mut screenshots)?;
     check_cancel(cancel)?;
+    // 结果截图可能仍显示回复弹窗，这是正常的；但必须确认仍处于 X 首页/回复路由。
+    // 如果意外跳到 Grok 或其他页面，不再对该截图执行状态点击或恢复操作。
+    ensure_reply_page_route(&done, "发送结果截图")?;
 
     // ============================================================
     // 第一次发送结果检查：同一张截图只执行一次 OCR
