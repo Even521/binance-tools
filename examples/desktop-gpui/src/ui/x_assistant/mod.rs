@@ -69,7 +69,14 @@ pub struct XAssistantPage {
 impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
-        if !self.cancel_reply.swap(true, Ordering::AcqRel) {
+        let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
+        app_log::x_info!(
+            "X 助手页面 Drop：replying={}，销毁前取消标记={}，本次是否新发送取消信号={}",
+            self.replying,
+            was_cancelled,
+            !was_cancelled
+        );
+        if !was_cancelled {
             app_log::x_warn!("X 助手页面销毁：向后台任务发送取消信号");
         }
     }
