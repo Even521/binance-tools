@@ -376,10 +376,6 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub fn scroll_down_once() -> anyhow::Result<()> {
-        scroll_down_by_notches(1)
-    }
-
     pub fn scroll_down_by_notches(notches: i32) -> anyhow::Result<()> {
         anyhow::ensure!((1..=12).contains(&notches), "滚动格数必须在 1..=12");
         let hwnd = unsafe { GetForegroundWindow() };
@@ -624,9 +620,6 @@ pub(super) mod native {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn press_f5() -> anyhow::Result<()> {
-        bail!("X 辅助桌面控制仅支持 Windows")
-    }
-    pub fn scroll_down_once() -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn scroll_down_by_notches(_: i32) -> anyhow::Result<()> {
