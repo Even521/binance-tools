@@ -2329,18 +2329,33 @@ fn target_region_unchanged(
     target: &Point,
     label: &str,
 ) -> anyhow::Result<bool> {
-    anyhow::ensure!(
-        before.width == after.width && before.height == after.height,
-        "识别前后截图尺寸发生变化，{label}坐标已失效；请重新开始"
-    );
+    let common_width = before.width.min(after.width);
+    let common_height = before.height.min(after.height);
+    if before.width != after.width || before.height != after.height {
+        automation::log_event(&format!(
+            "目标区域复核：前后客户区尺寸不同（{}x{} -> {}x{}），仅比较共同可见区域。",
+            before.width, before.height, after.width, after.height
+        ));
+    }
+    if target.x < 0
+        || target.y < 0
+        || target.x >= common_width as i32
+        || target.y >= common_height as i32
+    {
+        automation::log_event(&format!(
+            "目标区域复核失败：{label}坐标 ({}, {}) 不在前后截图共同区域 {}x{} 内。",
+            target.x, target.y, common_width, common_height
+        ));
+        return Ok(false);
+    }
     let before_image = image::open(&before.png)?.to_rgb8();
     let after_image = image::open(&after.png)?.to_rgb8();
     let radius_x = 120i32;
     let radius_y = 72i32;
     let left = (target.x - radius_x).max(0) as u32;
-    let right = (target.x + radius_x).min(before.width as i32) as u32;
+    let right = (target.x + radius_x).min(common_width as i32) as u32;
     let top = (target.y - radius_y).max(0) as u32;
-    let bottom = (target.y + radius_y).min(before.height as i32) as u32;
+    let bottom = (target.y + radius_y).min(common_height as i32) as u32;
     anyhow::ensure!(right > left && bottom > top, "无法校验{label}附近截图区域");
 
     let mut sampled = 0usize;
