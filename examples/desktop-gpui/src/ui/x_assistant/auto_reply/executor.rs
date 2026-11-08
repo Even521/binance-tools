@@ -167,7 +167,9 @@ impl AutoReplyRunner {
     /// 普通错误尝试恢复后检查失败上限。
     fn handle_error(&mut self, error: anyhow::Error, cancel: &AtomicBool) -> Result<()> {
         if Self::is_cancelled(cancel) {
-            automation::log_event(&format!("全自动：收到手动停止请求：{error:#}"));
+            automation::log_event(&format!(
+                "全自动：检测到取消标记，退出当前循环；取消来源需结合页面 Drop/停止按钮日志确认：{error:#}"
+            ));
             return Ok(());
         }
 
