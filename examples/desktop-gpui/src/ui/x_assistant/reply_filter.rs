@@ -2,8 +2,6 @@
 
 use std::{sync::atomic::AtomicBool, time::Duration};
 
-use anyhow::anyhow;
-
 use super::{automation, vision::text_ai};
 use super::vision::VisionReplyOptions;
 
