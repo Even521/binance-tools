@@ -118,6 +118,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "app-log"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1797,6 +1804,7 @@ name = "desktop-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-log",
  "binance_tools",
  "chrono",
  "crypto-rss",
