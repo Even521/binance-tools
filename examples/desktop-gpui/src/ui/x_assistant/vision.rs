@@ -457,6 +457,28 @@ pub(super) fn scroll_down_to_complete_post(
     scroll_down_random_steps(cancel, reason, 5, 12)
 }
 
+fn activate_browser_for_scroll(reason: &str) -> anyhow::Result<()> {
+    let started = Instant::now();
+    automation::log_event(&format!("滚动前：开始激活浏览器，原因={reason}。"));
+
+    match automation::native::activate_browser() {
+        Ok(()) => {
+            automation::log_event(&format!(
+                "滚动前：浏览器激活成功，耗时 {:.2} 秒。",
+                started.elapsed().as_secs_f64()
+            ));
+            Ok(())
+        }
+        Err(error) => {
+            automation::log_event(&format!(
+                "滚动前：浏览器激活失败，耗时 {:.2} 秒：{error:#}",
+                started.elapsed().as_secs_f64()
+            ));
+            Err(error).context("滚动前激活浏览器失败")
+        }
+    }
+}
+
 fn scroll_down_random_steps(
     cancel: &AtomicBool,
     reason: &str,
@@ -464,7 +486,7 @@ fn scroll_down_random_steps(
     max_steps: u32,
 ) -> anyhow::Result<()> {
     check_cancel(cancel)?;
-    automation::native::activate_browser()?;
+    activate_browser_for_scroll(reason)?;
     let range = max_steps.saturating_sub(min_steps).saturating_add(1);
     let total = min_steps + (next_random_u64() % u64::from(range)) as u32;
     automation::log_event(&format!(
