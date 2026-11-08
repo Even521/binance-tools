@@ -295,6 +295,7 @@ impl XAssistantPage {
         let reply_rules = self.reply_rules.read(cx).text().to_string();
         let model = self.vision_model.clone();
         let cancel = Arc::clone(&self.cancel_reply);
+        let cancel_for_ui = Arc::clone(&cancel);
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -317,46 +318,69 @@ impl XAssistantPage {
                     }
                 })
                 .await;
-            _ = this.update(cx, |this, cx| {
+
+            let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
+            app_log::x_info!(
+                "X 视觉回复：后台任务已结束，取消标记={}，准备回收 UI 状态",
+                was_cancelled
+            );
+
+            if let Err(update_error) = this.update(cx, |this, cx| {
+                // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
                 this.replying = false;
-                match result {
-                    Ok(reply) => {
-                        this.screenshots = reply.screenshots;
-                        this.selected_screenshot = this.screenshots.len().saturating_sub(1);
-                        this.extracted_fields = format!(
-                            "发送者：{}\n账号：{}\n时间：{}\n\n帖子：\n{}\n\n回复：\n{}\n\n{}",
-                            if reply.author_name.is_empty() {
-                                "未识别"
+                if was_cancelled {
+                    this.status = Some("已手动停止，后台任务已结束。".to_string());
+                    this.error = None;
+                } else {
+                    match result {
+                        Ok(reply) => {
+                            this.screenshots = reply.screenshots;
+                            this.selected_screenshot = this.screenshots.len().saturating_sub(1);
+                            this.extracted_fields = format!(
+                                "发送者：{}\n账号：{}\n时间：{}\n\n帖子：\n{}\n\n回复：\n{}\n\n{}",
+                                if reply.author_name.is_empty() {
+                                    "未识别"
+                                } else {
+                                    &reply.author_name
+                                },
+                                if reply.account_handle.is_empty() {
+                                    "未识别"
+                                } else {
+                                    &reply.account_handle
+                                },
+                                if reply.posted_at.is_empty() {
+                                    "未识别"
+                                } else {
+                                    &reply.posted_at
+                                },
+                                reply.post_text,
+                                reply.reply_text,
+                                reply.summary
+                            );
+                            this.status = Some(if reply.completed {
+                                format!("已完成。{}", reply.summary)
                             } else {
-                                &reply.author_name
-                            },
-                            if reply.account_handle.is_empty() {
-                                "未识别"
-                            } else {
-                                &reply.account_handle
-                            },
-                            if reply.posted_at.is_empty() {
-                                "未识别"
-                            } else {
-                                &reply.posted_at
-                            },
-                            reply.post_text,
-                            reply.reply_text,
-                            reply.summary
-                        );
-                        this.status = Some(if reply.completed {
-                            format!("已完成。{}", reply.summary)
-                        } else {
-                            reply.summary
-                        });
-                    }
-                    Err(err) => {
-                        this.status = None;
-                        this.error = Some(format!("{err:#}"));
+                                reply.summary
+                            });
+                            this.error = None;
+                        }
+                        Err(err) => {
+                            this.status = None;
+                            this.error = Some(format!("{err:#}"));
+                        }
                     }
                 }
                 cx.notify();
-            });
+                app_log::x_info!(
+                    "X 视觉回复：UI 状态已回收，replying={}",
+                    this.replying
+                );
+            }) {
+                app_log::x_error!(
+                    "X 视觉回复：后台已结束，但 GPUI UI 状态更新失败：{}",
+                    update_error
+                );
+            }
         });
     }
 
