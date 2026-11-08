@@ -18,7 +18,6 @@ pub(super) mod text_ai;
 
 pub const DEFAULT_OLLAMA_URL: &str = "http://192.168.31.60:11434/v1";
 pub const DEFAULT_VISION_MODEL: &str = "qwen3.5:4b";
-pub const AUTO_SCROLL_ENABLED: bool = true;
 
 // 连续滚动达到阈值后刷新时间线，避免反复处理旧帖子。
 const SCROLLS_BEFORE_REFRESH: u64 = 8;
