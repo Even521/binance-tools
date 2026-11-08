@@ -1809,6 +1809,21 @@ fn already_sent_result(
     })
 }
 
+fn ensure_reply_page_route(shot: &Shot, phase: &str) -> anyhow::Result<()> {
+    let current_url = ocr::recognize_current_url(&shot.png)?;
+    let allowed = current_url.as_deref().is_some_and(|url| {
+        ocr::is_x_home_address(url) || ocr::is_x_compose_post_address(url)
+    });
+    automation::log_event(&format!(
+        "{phase}：页面路由核验，识别地址={current_url:?}，允许继续={allowed}。"
+    ));
+    anyhow::ensure!(
+        allowed,
+        "{phase}：当前页面不是允许的 X 首页/回复页面（地址：{current_url:?}）；可能误进入 Grok 或其他页面，停止所有点击"
+    );
+    Ok(())
+}
+
 fn close_reply_composer_safely(
     dir: &Path,
     id: &impl std::fmt::Display,
@@ -1816,84 +1831,58 @@ fn close_reply_composer_safely(
     cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
     for attempt in 0..2 {
+        check_cancel(cancel)?;
+        // 只发送 Escape，不再点击固定比例的“窗口外坐标”。
+        // 固定坐标可能命中侧栏里的 Grok 导航入口，导致自动回复跳转页面。
         native::press_escape()?;
-        wait_cancel(cancel, Duration::from_millis(700))?;
+        wait_cancel(cancel, Duration::from_millis(900))?;
         let shot = capture(
             dir,
             id,
             &format!("05-network-error-close-{}", attempt + 1),
             screenshots,
         )?;
+        ensure_reply_page_route(&shot, "网络错误关闭回复框")?;
 
         if let Some((discard_x, discard_y)) = ocr::locate_discard_draft_button(&shot.png)? {
             automation::log_event(&format!(
-                "阶段 3/3：网络错误后识别到草稿确认框，点击‘放弃’关闭未发送回复 ({discard_x}, {discard_y})。"
+                "阶段 3/3：识别到草稿确认框，点击 OCR 精确定位的‘放弃’按钮 ({discard_x}, {discard_y})。"
             ));
+            ensure_reply_page_route(&shot, "点击放弃草稿前")?;
             native::click_at_client_position(discard_x, discard_y)?;
-            wait_cancel(cancel, Duration::from_millis(700))?;
+            wait_cancel(cancel, Duration::from_millis(900))?;
             let after_discard = capture(
                 dir,
                 id,
                 &format!("05-network-error-discard-{}", attempt + 1),
                 screenshots,
             )?;
+            ensure_reply_page_route(&after_discard, "放弃草稿后")?;
             if !ocr::reply_composer_is_open(&after_discard.png)? {
-                automation::log_event("阶段 3/3：草稿已放弃，确认回复窗口关闭。");
+                automation::log_event("阶段 3/3：草稿确认后回复框文字已消失；页面路由仍在 X，结束关闭流程。");
                 return Ok(());
             }
         } else if ocr::recognize_save_draft_confirmation(&shot.png)? {
-            automation::log_event(
-                "阶段 3/3：发现草稿确认框但未精确匹配‘放弃’按钮坐标，尝试直接点击弹窗中央偏下区域‘放弃’。",
+            // 不能在无法定位按钮时猜测坐标；保留页面供人工处理。
+            anyhow::bail!(
+                "识别到草稿确认框，但未能精确定位‘放弃’按钮；为避免误点 Grok/其他入口，停止自动操作"
             );
-            let fallback_discard_x = shot.width as i32 * 50 / 100;
-            let fallback_discard_y = shot.height as i32 * 60 / 100;
-            native::click_at_client_position(fallback_discard_x, fallback_discard_y)?;
-            wait_cancel(cancel, Duration::from_millis(700))?;
-            let after_fallback = capture(
-                dir,
-                id,
-                &format!("05-network-error-fallback-discard-{}", attempt + 1),
-                screenshots,
-            )?;
-            if !ocr::reply_composer_is_open(&after_fallback.png)? {
-                automation::log_event("阶段 3/3：点击备用位置后草稿已放弃，确认回复窗口关闭。");
-                return Ok(());
-            }
         } else if !ocr::reply_composer_is_open(&shot.png)? {
-            // “发布你的回复”未被 OCR 识别，不等于编辑窗口已经关闭。
-            // 首次未识别时先点击窗口外的安全区域，再采集一张新截图复核；
-            // 只有这次主动关闭动作之后，第二次截图仍未检测到回复框，才结束关闭流程。
+            // OCR 未识别到输入框不是关闭成功的证据。再按一次 Escape 并重新截图，
+            // 不执行任何固定坐标点击。
             if attempt == 0 {
-                let dismiss_x = (shot.width as f32 * 0.23).round() as i32;
-                let dismiss_y = (shot.height as f32 * 0.50).round() as i32;
                 automation::log_event(
-                    "阶段 3/3：OCR 未识别到“发布你的回复”，但不能据此判定窗口已关闭；点击窗口外安全区域后重新截图核验。",
+                    "阶段 3/3：OCR 未识别到回复输入框，但不据此判断已关闭；再次按 Escape 后重新核验。",
                 );
-                native::click_at_client_position(dismiss_x, dismiss_y)?;
-                wait_cancel(cancel, Duration::from_millis(700))?;
                 continue;
             }
-
-            automation::log_event(
-                "阶段 3/3：点击窗口外安全区域并重新截图后，仍未检测到回复框文字；这仍不是窗口已关闭的可靠证据，停止自动流程并保留当前页面供人工检查。",
-            );
             anyhow::bail!(
-                "OCR 连续两次未识别到回复框，但无法取得窗口已关闭的正向证据；不将其误判为已关闭"
+                "连续两次未识别到回复输入框，且无法取得关闭成功的正向证据；保留页面供人工检查"
             );
-        }
-
-        if attempt == 0 {
-            let dismiss_x = (shot.width as f32 * 0.23).round() as i32;
-            let dismiss_y = (shot.height as f32 * 0.50).round() as i32;
-            automation::log_event(
-                "阶段 3/3：Escape 后回复窗口仍打开；点击窗口外安全区域，再尝试关闭一次。",
-            );
-            native::click_at_client_position(dismiss_x, dismiss_y)?;
-            wait_cancel(cancel, Duration::from_millis(400))?;
         }
     }
 
-    anyhow::bail!("网络错误重试失败；两次关闭尝试后回复窗口仍未关闭，已停止自动操作")
+    anyhow::bail!("网络错误后回复窗口仍未能确认关闭；已停止自动操作，未执行盲目点击")
 }
 
 fn identify_post_for_mode(
