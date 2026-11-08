@@ -69,7 +69,9 @@ pub struct XAssistantPage {
 impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
-        self.cancel_reply.store(true, Ordering::Release);
+        if !self.cancel_reply.swap(true, Ordering::AcqRel) {
+            app_log::x_warn!("X 助手页面销毁：向后台任务发送取消信号");
+        }
     }
 }
 
@@ -328,12 +330,27 @@ impl XAssistantPage {
             if let Err(update_error) = this.update(cx, |this, cx| {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
                 this.replying = false;
-                if was_cancelled {
-                    this.status = Some("已手动停止，后台任务已结束。".to_string());
-                    this.error = None;
-                } else {
-                    match result {
-                        Ok(reply) => {
+                match result {
+                    Err(err)
+                        if was_cancelled
+                            && format!("{err:#}").contains("视觉回复流程已停止") =>
+                    {
+                        this.status = Some("已停止，后台任务已结束。".to_string());
+                        this.error = None;
+                    }
+                    Err(err) => {
+                        this.status = None;
+                        this.error = Some(if was_cancelled {
+                            format!("任务异常退出（同时收到停止信号）：{err:#}")
+                        } else {
+                            format!("{err:#}")
+                        });
+                    }
+                    Ok(_reply) if was_cancelled => {
+                        this.status = Some("已收到停止请求，后台任务已安全结束。".to_string());
+                        this.error = None;
+                    }
+                    Ok(reply) => {
                             this.screenshots = reply.screenshots;
                             this.selected_screenshot = this.screenshots.len().saturating_sub(1);
                             this.extracted_fields = format!(
@@ -363,10 +380,6 @@ impl XAssistantPage {
                                 reply.summary
                             });
                             this.error = None;
-                        }
-                        Err(err) => {
-                            this.status = None;
-                            this.error = Some(format!("{err:#}"));
                         }
                     }
                 }
@@ -641,8 +654,12 @@ impl XAssistantPage {
     }
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
-        self.cancel_reply.store(true, Ordering::Relaxed);
-        self.status = Some("正在停止自动化任务；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
+        let was_running = self.cancel_reply.swap(true, Ordering::AcqRel);
+        app_log::x_warn!(
+            "X 助手：用户点击停止按钮，之前取消状态={}",
+            was_running
+        );
+        self.status = Some("已收到停止请求，正在等待后台任务安全退出；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
     }
 
