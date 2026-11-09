@@ -177,7 +177,8 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
             applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
         );
         "#
-) ?;
+    )?;
+
     // The previous application default was 50. Upgrade untouched defaults to 1000.
     let reply_limit_default_migration_applied: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_daily_reply_limit_default_1000_v1')",
