@@ -778,53 +778,75 @@ fn load_reply_rules() -> String {
 impl XAssistantPage {
     // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
     fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-assistant-status-tab")
-            .small()
+        let selected = self.show_run_status;
+        let theme = cx.theme();
+        v_flex()
             .w(px(112.))
-            .label(if self.replying { "● 运行状态" } else { "○ 运行状态" })
-            .when(self.show_run_status, |button| button.primary())
-            .when(!self.show_run_status, |button| button.outline())
-            .on_click(cx.listener(|this, _, _, cx| {
+            .gap_1()
+            .child(
+                Button::new("x-assistant-status-tab")
+                    .ghost()
+                    .small()
+                    .label("运行状态")
+                    .on_click(cx.listener(|this, _, _, cx| {
                 this.show_run_status = true;
                 this.show_reply_list = false;
                 this.show_post_history = false;
                 this.show_task_settings = false;
                 this.show_auto_post = false;
                 cx.notify();
-            }))
+            })),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
             .into_any_element()
     }
-
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-reply-flow-tab")
+        let selected = !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post;
+        let theme = cx.theme();
+        v_flex()
             .w(px(112.))
-            .label("自动回复")
-            .when(
-                !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post,
-                |button| button.primary(),
+            .gap_1()
+            .child(
+                Button::new("x-assistant-reply-flow-tab")
+                    .ghost()
+                    .small()
+                    .label("自动回复")
+                    .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx))),
             )
-            .when(
-                self.show_run_status || self.show_reply_list || self.show_post_history || self.show_task_settings || self.show_auto_post,
-                |button| button.outline(),
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
             )
-            .small()
-            .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx)))
-            .into_any_element();
-        button
+            .into_any_element()
     }
-
     fn render_auto_post_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-auto-post-tab")
+        let selected = self.show_auto_post;
+        let theme = cx.theme();
+        v_flex()
             .w(px(112.))
-            .label("自动发帖")
-            .when(self.show_auto_post, |button| button.primary())
-            .when(!self.show_auto_post, |button| button.outline())
-            .small()
-            .on_click(cx.listener(|this, _, _, cx| this.open_auto_post(cx)))
-            .into_any_element();
-        button
+            .gap_1()
+            .child(
+                Button::new("x-assistant-auto-post-tab")
+                    .ghost()
+                    .small()
+                    .label("自动发帖")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_auto_post(cx))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
+            .into_any_element()
     }
-
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = Button::new("x-assistant-start-all-automation")
             .label(if self.replying { "自动化运行中…" } else { "开始自动化" })
@@ -849,40 +871,69 @@ impl XAssistantPage {
     }
 
     fn render_reply_list_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-reply-list-tab")
-            .label("回复列表")
-            .when(self.show_reply_list, |button| button.primary())
-            .when(!self.show_reply_list, |button| button.outline())
-            .small()
-            .on_click(cx.listener(|this, _, window, cx| this.open_reply_list(window, cx)))
-            .into_any_element();
-        button
+        let selected = self.show_reply_list;
+        let theme = cx.theme();
+        v_flex()
+            .w(px(112.))
+            .gap_1()
+            .child(
+                Button::new("x-assistant-reply-list-tab")
+                    .ghost()
+                    .small()
+                    .label("回复列表")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_reply_list(window, cx))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
+            .into_any_element()
     }
-
     fn render_post_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-post-history-tab")
-            .label("发帖历史")
-            .when(self.show_post_history, |button| button.primary())
-            .when(!self.show_post_history, |button| button.outline())
-            .small()
-            .on_click(cx.listener(|this, _, window, cx| this.open_post_history(window, cx)))
-            .into_any_element();
-        button
+        let selected = self.show_post_history;
+        let theme = cx.theme();
+        v_flex()
+            .w(px(112.))
+            .gap_1()
+            .child(
+                Button::new("x-assistant-post-history-tab")
+                    .ghost()
+                    .small()
+                    .label("发帖历史")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_post_history(window, cx))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
+            .into_any_element()
     }
-
     fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-task-settings-tab")
-            .label("任务设置")
-            .when(self.show_task_settings, |button| button.primary())
-            .when(!self.show_task_settings, |button| button.outline())
-            .small()
-            .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
-            .into_any_element();
-        button
+        let selected = self.show_task_settings;
+        let theme = cx.theme();
+        v_flex()
+            .w(px(112.))
+            .gap_1()
+            .child(
+                Button::new("x-assistant-task-settings-tab")
+                    .ghost()
+                    .small()
+                    .label("任务设置")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
+            .into_any_element()
     }
-
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-
         let status_button = self.render_status_tab_button(cx);
         let reply_flow_button = self.render_reply_flow_button(cx);
         let auto_post_button = self.render_auto_post_button(cx);
@@ -910,23 +961,14 @@ impl XAssistantPage {
                 "● 已停止"
             })
             .into_any_element();
-        // 三个核心工作区使用同一个分段 Tab 容器；所有页面复用此导航，确保尺寸和选中样式一致。
-        let workbench_tabs = h_flex()
-            .items_center()
-            .gap_1()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(palette::border(theme))
-            .bg(palette::surface(theme))
-            .p_1()
+
+        // 六个页面入口统一使用下划线 Tabs，所有页面共用同一导航栏。
+        h_flex()
+            .items_end()
+            .gap_3()
             .child(status_button)
             .child(reply_flow_button)
             .child(auto_post_button)
-            .into_any_element();
-        let menu = h_flex()
-            .items_center()
-            .gap_2()
-            .child(workbench_tabs)
             .child(reply_list_button)
             .child(post_history_button)
             .child(task_settings_button)
@@ -934,8 +976,7 @@ impl XAssistantPage {
             .child(run_state)
             .child(start_all_button)
             .child(stop_all_button)
-            .into_any_element();
-        menu
+            .into_any_element()
     }
 }
 
