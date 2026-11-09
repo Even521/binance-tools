@@ -96,22 +96,19 @@ impl AutoReplyRunner {
             self.failures = 0;
 
             automation::log_event(&format!("全自动：已完成第 {} 条回复。", self.completed));
+        } else if result.summary.starts_with("提交结果未知") {
+            // uncertain 不是明确失败，不累计连续失败次数；当前帖子仍然跳过，继续主循环。
+            automation::log_event(&format!(
+                "全自动：本轮提交结果未知；已记录 uncertain，不重复提交当前回复，跳过当前帖子并继续主循环。{}",
+                result.summary
+            ));
         } else {
             self.failures += 1;
-
-            if result.summary.starts_with("提交结果未知") {
-                automation::log_event(&format!(
-                    "全自动：本轮提交结果未知（连续未完成 {} 次）；已记录 uncertain，不重复提交当前回复，跳过当前帖子并继续主循环。{}",
-                    self.failures,
-                    result.summary
-                ));
-            } else {
-                automation::log_event(&format!(
-                    "全自动：本轮未完成发送（连续未完成 {} 次）；跳过当前帖子，主循环继续。{}",
-                    self.failures,
-                    result.summary
-                ));
-            }
+            automation::log_event(&format!(
+                "全自动：本轮未完成发送（连续未完成 {} 次）；跳过当前帖子，主循环继续。{}",
+                self.failures,
+                result.summary
+            ));
         }
 
         self.last_result = Some(result);
