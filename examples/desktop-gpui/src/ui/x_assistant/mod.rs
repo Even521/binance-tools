@@ -25,6 +25,7 @@ use gpui_component::{
     v_flex,
 };
 use std::{
+    backtrace::Backtrace,
     path::PathBuf,
     sync::{
         Arc,
@@ -72,20 +73,21 @@ impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
         let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
-        let _ = self.cancel_reason.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+        let reason_set = self.cancel_reason.compare_exchange(
+            0, 2, Ordering::AcqRel, Ordering::Acquire
+        ).is_ok();
         let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
         let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
-        app_log::x_info!(
-            "X 助手页面 Drop：token=0x{:x}，replying={}，销毁前取消标记={}，本次是否新发送取消信号={}，取消来源={}",
+        app_log::x_warn!(
+            "X 取消来源诊断：页面 Drop 写入取消标记，token=0x{:x}，replying={}，此前已取消={}，本次新发送={}，本次设置来源={}，最终来源={}，调用栈：{}",
             token_id,
             self.replying,
             was_cancelled,
             !was_cancelled,
-            cancel_reason
+            reason_set,
+            cancel_reason,
+            Backtrace::force_capture()
         );
-        if !was_cancelled {
-            app_log::x_warn!("X 助手页面销毁：向后台任务发送取消信号");
-        }
     }
 }
 
@@ -685,15 +687,19 @@ impl XAssistantPage {
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
         let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
-        let _ = self.cancel_reason.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+        let reason_set = self.cancel_reason.compare_exchange(
+            0, 1, Ordering::AcqRel, Ordering::Acquire
+        ).is_ok();
         let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
         let was_running = self.cancel_reply.swap(true, Ordering::AcqRel);
-        app_log::x_info!(
-            "X 助手：停止按钮点击事件触发，token=0x{:x}，点击前取消状态={}，本次是否新发送取消信号={}，取消来源={}",
+        app_log::x_warn!(
+            "X 取消来源诊断：停止按钮写入取消标记，token=0x{:x}，此前已取消={}，本次新发送={}，本次设置来源={}，最终来源={}，调用栈：{}",
             token_id,
             was_running,
             !was_running,
-            cancel_reason
+            reason_set,
+            cancel_reason,
+            Backtrace::force_capture()
         );
         self.status = Some("已收到停止请求，正在等待后台任务安全退出；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
