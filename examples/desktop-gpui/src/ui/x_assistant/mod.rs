@@ -78,16 +78,24 @@ impl Drop for XAssistantPage {
         ).is_ok();
         let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
         let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
-        app_log::x_warn!(
-            "X 取消来源诊断：页面 Drop 写入取消标记，token=0x{:x}，replying={}，此前已取消={}，本次新发送={}，本次设置来源={}，最终来源={}，调用栈：{}",
-            token_id,
-            self.replying,
-            was_cancelled,
-            !was_cancelled,
-            reason_set,
-            cancel_reason,
-            Backtrace::force_capture()
-        );
+        if self.replying && !was_cancelled {
+            app_log::x_warn!(
+                "X 取消来源诊断：页面 Drop 中断运行任务，token=0x{:x}，本次设置来源={}，最终来源={}，调用栈：{}",
+                token_id,
+                reason_set,
+                cancel_reason,
+                Backtrace::force_capture()
+            );
+        } else {
+            app_log::x_info!(
+                "X 助手页面 Drop：token=0x{:x}，replying={}，此前已取消={}，本次新发送={}，最终来源={}",
+                token_id,
+                self.replying,
+                was_cancelled,
+                !was_cancelled,
+                cancel_reason
+            );
+        }
     }
 }
 
