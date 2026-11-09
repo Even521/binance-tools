@@ -1262,8 +1262,8 @@ pub(super) fn locate_reply_input(
 pub(super) fn locate_reply_submit_button(
     path: &Path,
     reply_text: &str,
-    _screenshot_width: u32,
-    _screenshot_height: u32,
+    screenshot_width: u32,
+    screenshot_height: u32,
 ) -> anyhow::Result<Option<(i32, i32)>> {
     let crop = crop_compose_dialog(path)?;
     let doc = recognize_document_image(
@@ -1277,84 +1277,82 @@ pub(super) fn locate_reply_submit_button(
         .lines
         .iter()
         .filter(|line| {
-            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-            let recognized = normalize_text(&line.text);
-            text_match_ratio(&recognized, &reply_text) >= 0.80
-                && center_x >= crop.width as f32 * 0.10
-                && center_x <= crop.width as f32 * 0.90
-                && center_y >= crop.height as f32 * 0.10
-                && center_y <= crop.height as f32 * 0.90
+            text_match_ratio(&normalize_text(&line.text), &reply_text) >= 0.80
         })
         .collect::<Vec<_>>();
     let normalized_document = normalize_text(&doc.text);
     let reply_text_verified =
         !matching_lines.is_empty() || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
-    if !reply_text_verified {
-        let candidates = doc
-            .lines
-            .iter()
-            .filter(|line| {
-                let x = (line.left + line.right) * 0.5 / doc.scale_x;
-                let y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-                x >= crop.width as f32 * 0.10
-                    && x <= crop.width as f32 * 0.90
-                    && y >= crop.height as f32 * 0.10
-                    && y <= crop.height as f32 * 0.90
-            })
-            .map(|line| {
-                format!(
-                    "{}({:.0},{:.0})",
-                    line.text,
-                    (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
-                    (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32
-                )
-            })
-            .take(30)
-            .collect::<Vec<_>>()
-            .join(" | ");
+    if !reply_text_verified || matching_lines.is_empty() {
+        let candidates = doc.lines.iter()
+            .map(|line| format!("{}({:.0},{:.0})", line.text,
+                (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
+                (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32))
+            .take(30).collect::<Vec<_>>().join(" | ");
         super::automation::log_event(&format!(
-            "阶段 2/3：提交前 PP-OCR 未匹配回复文本‘{reply_text}’。输入区域识别行：{candidates}"
+            "阶段 2/3：提交前 PP-OCR 未能在单行中可靠匹配回复文本‘{reply_text}’，禁止使用视觉模型猜测提交坐标。识别行：{candidates}"
         ));
         return Ok(None);
     }
 
-    let ocr_button = doc
-        .lines
-        .iter()
-        .filter_map(|line| {
-            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-            let center_y = ((line.top + line.bottom) * 0.5 - 3.0) / doc.scale_y;
-            (normalize_text(&line.text) == normalize_text("回复")
-                && center_x >= crop.width as f32 * 0.60
-                && center_x <= crop.width as f32 * 0.98
-                && center_y >= crop.height as f32 * 0.55
-                && center_y <= crop.height as f32 * 0.98)
-                .then_some((center_x, center_y))
-        })
-        .max_by(|left, right| left.1.total_cmp(&right.1));
-    if let Some((x, y)) = ocr_button {
-        let point = (
-            x.round() as i32 + crop.left as i32,
-            y.round() as i32 + crop.top as i32,
-        );
-        super::automation::log_event(&format!(
-            "阶段 2/3：弹窗 OCR 直接识别到右下方‘回复’提交按钮，坐标=({}, {})。",
-            point.0, point.1
-        ));
-        return Ok(Some(point));
-    }
+    // 以已核验的回复正文行作为锚点，只允许在正文右侧、同一行附近寻找提交按钮。
+    // 不再在整块弹窗/时间线中搜索任意深色矩形，避免把弹窗外的卡片误认为按钮。
+    let reply_right = matching_lines.iter()
+        .map(|line| line.right / doc.scale_x)
+        .fold(0.0_f32, f32::max);
+    let reply_top = matching_lines.iter()
+        .map(|line| line.top / doc.scale_y)
+        .fold(f32::MAX, f32::min);
+    let reply_bottom = matching_lines.iter()
+        .map(|line| line.bottom / doc.scale_y)
+        .fold(0.0_f32, f32::max);
 
-    let crop_rgb = image::DynamicImage::ImageRgba8(crop.image.clone()).to_rgb8();
-    match find_dark_submit_button(&crop_rgb, crop.width, crop.height)? {
-        Some((x, y)) => Ok(Some((x + crop.left as i32, y + crop.top as i32))),
-        None => {
-            super::automation::log_event(
-                "阶段 2/3：PP-OCR 已匹配回复文本，但本地图像检测未找到符合尺寸的深色提交按钮。",
-            );
-            Ok(None)
-        }
-    }
+    let ocr_button = doc.lines.iter().filter_map(|line| {
+        let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+        let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+        let label = normalize_text(&line.text);
+        let label_match = label == normalize_text("回复");
+        let right_of_reply = center_x >= (reply_right + 12.0).max(crop.width as f32 * 0.52);
+        let same_compose_row = center_y >= reply_top - 18.0
+            && center_y <= reply_bottom + 70.0;
+        (label_match && right_of_reply && same_compose_row)
+            .then_some((center_x, center_y, line.text.as_str()))
+    }).min_by(|left, right| {
+        let left_distance = (left.1 - reply_bottom).abs();
+        let right_distance = (right.1 - reply_bottom).abs();
+        left_distance.total_cmp(&right_distance)
+    });
+
+    let Some((x, y, recognized)) = ocr_button else {
+        super::automation::log_event(&format!(
+            "阶段 2/3：已核对回复正文，但弹窗正文右侧同一行附近未识别到‘回复’提交按钮；不使用深色区域或 AI 坐标兜底，未点击发送。正文范围 x={reply_right:.0} y={reply_top:.0}..{reply_bottom:.0}"
+        ));
+        return Ok(None);
+    };
+
+    let point = (
+        (x + crop.left as f32).round() as i32,
+        (y + crop.top as f32).round() as i32,
+    );
+    anyhow::ensure!(
+        point.0 >= 0 && point.1 >= 0
+            && point.0 < screenshot_width as i32
+            && point.1 < screenshot_height as i32,
+        "OCR 提交按钮坐标 ({}, {}) 超出截图范围 {}x{}",
+        point.0, point.1, screenshot_width, screenshot_height
+    );
+    anyhow::ensure!(
+        x >= reply_right + 12.0
+            && x <= crop.width as f32 * 0.98
+            && y >= reply_top - 18.0
+            && y <= reply_bottom + 70.0,
+        "OCR 提交按钮不在已核验回复正文的右侧安全区域"
+    );
+    super::automation::log_event(&format!(
+        "阶段 2/3：弹窗 OCR 在已核验回复正文右侧识别到‘回复’提交按钮：文本={recognized:?}，正文右边界={reply_right:.0}，按钮局部坐标=({x:.0},{y:.0})，客户区坐标=({}, {})。",
+        point.0, point.1
+    ));
+    Ok(Some(point))
 }
 
 pub(super) fn recognize_document(path: &Path) -> anyhow::Result<OcrDocument> {
