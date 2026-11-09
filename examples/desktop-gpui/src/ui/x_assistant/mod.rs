@@ -341,13 +341,10 @@ impl XAssistantPage {
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
-        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
         app_log::x_info!(
-            "X 视觉回复启动：创建独立取消令牌 token=0x{:x}，hover_only={}，stage2_ocr={}，full_auto={}",
-            token_id,
-            hover_only,
-            stage2_ocr,
-            full_auto
+            "自动回复启动：模式={}，本地 OCR={}",
+            if full_auto { "全自动" } else if hover_only { "仅悬停识别" } else { "单次回复" },
+            stage2_ocr
         );
         self.status = Some(if full_auto {
             "全自动循环已启动；每轮完成后随机距离滚动，异常时按安全流程恢复，点击停止可结束。"
