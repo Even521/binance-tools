@@ -1092,10 +1092,7 @@ fn run_visual_reply_inner(
         let ocr_started = std::time::Instant::now();
         let compose_page = ocr::recognize_compose_reply_page(&composer.png)?;
 
-        automation::log_event(&format!(
-            "[自动回复][02/03]：回复页面局部 OCR JSON（地址栏及弹窗）：{}",
-            serde_json::to_string(&compose_page)?
-        ));
+        automation::log_event("[OCR][回复弹窗] 页面局部识别完成，正在校验页面地址和输入框");
         let mut current_url = compose_page["current_url"].as_str().map(str::to_owned);
 
         // 局部 OCR 能识别出有效的 X 页面地址时，使用通用地址栏识别作为备用。
@@ -2578,17 +2575,11 @@ fn ask(
     let elapsed = started.elapsed();
 
     match &response {
-        Ok((content, response_body)) => {
+        Ok((content, _response_body)) => {
             automation::log_event(&format!(
-                "[{}] AI HTTP response_body（{}ms）：{}",
+                "[{}] AI 视觉识别请求成功，耗时 {} ms。",
                 phase_label(&shot.stage),
-                elapsed.as_millis(),
-                response_body
-            ));
-            automation::log_event(&format!(
-                "[{}] AI 返回 content（完整 JSON）：{}",
-                phase_label(&shot.stage),
-                content
+                elapsed.as_millis()
             ));
         }
         Err(e) => automation::log_event(&format!(
@@ -2605,9 +2596,8 @@ fn ask(
         Ok(d) => d,
         Err(e) => {
             automation::log_event(&format!(
-                "[{}] JSON 解析失败，原始返回：{}",
-                phase_label(&shot.stage),
-                content
+                "[{}] AI 返回内容解析失败，未输出原始响应。",
+                phase_label(&shot.stage)
             ));
             return Err(e);
         }
@@ -2615,10 +2605,8 @@ fn ask(
     let mut decision = decision;
     convert_normalized_coordinates(&mut decision, shot.width, shot.height)?;
     automation::log_event(&format!(
-        "[{}] AI 解析并换算后的完整数据：{:?}；坐标已从 0..1000 归一化值换算为截图像素，截图={}（{}x{}）。",
+        "[{}] AI 识别结果解析成功，坐标校验完成；截图尺寸={}x{}。",
         phase_label(&shot.stage),
-        decision,
-        shot.png.display(),
         shot.width,
         shot.height
     ));
