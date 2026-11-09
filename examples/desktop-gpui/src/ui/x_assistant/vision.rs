@@ -1394,7 +1394,7 @@ fn run_visual_reply_inner(
         }
         Err(error) => {
             automation::log_event(&format!(
-                "[自动回复][03/03]：ppocr-rs 耗时 {} ms，OCR 识别失败：${error:#}；继续执行专用成功提示 OCR，不自动重试。",
+                "[OCR][发送状态] 识别失败，耗时 {} ms：{error:#}；继续检查专用发送提示，不自动重试。",
                 ocr_started.elapsed().as_millis()
             ));
             Default::default()
