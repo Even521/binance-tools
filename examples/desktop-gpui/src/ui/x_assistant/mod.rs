@@ -238,7 +238,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                let accent = cx.theme().primary.to_rgb();
+                let accent = cx.theme().background.to_rgb();
                 let accent = (
                     (accent.r * 255.0).round() as u8,
                     (accent.g * 255.0).round() as u8,
@@ -352,7 +352,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                let accent = cx.theme().primary.to_rgb();
+                let accent = cx.theme().background.to_rgb();
                 let accent = (
                     (accent.r * 255.0).round() as u8,
                     (accent.g * 255.0).round() as u8,
@@ -464,7 +464,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                let accent = cx.theme().primary.to_rgb();
+                let accent = cx.theme().background.to_rgb();
                 let accent = (
                     (accent.r * 255.0).round() as u8,
                     (accent.g * 255.0).round() as u8,
