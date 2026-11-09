@@ -24,7 +24,7 @@ impl Default for XAssistantTaskSettings {
             auto_comment_enabled: false,
             own_post_reply_enabled: false,
             posts_per_hour: 3,
-            daily_reply_limit: 50,
+            daily_reply_limit: 1000,
             auto_post_news_type: "all".to_string(),
         }
     }
@@ -85,7 +85,7 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
             own_post_reply_enabled INTEGER NOT NULL DEFAULT 0,
             posts_per_hour INTEGER NOT NULL DEFAULT 3 CHECK (posts_per_hour BETWEEN 1 AND 10),
             auto_post_news_type TEXT NOT NULL DEFAULT 'all',
-            daily_reply_limit INTEGER NOT NULL DEFAULT 50,
+            daily_reply_limit INTEGER NOT NULL DEFAULT 1000,
             updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
         );
 
@@ -165,7 +165,24 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
     if !has_daily_reply_limit {
         connection.execute(
             "ALTER TABLE x_assistant_task_settings
-             ADD COLUMN daily_reply_limit INTEGER NOT NULL DEFAULT 50",
+             ADD COLUMN daily_reply_limit INTEGER NOT NULL DEFAULT 1000",
+            [],
+        )?;
+    }
+
+    // The previous application default was 50. Upgrade untouched defaults to 1000.
+    let reply_limit_default_migration_applied: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_daily_reply_limit_default_1000_v1')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !reply_limit_default_migration_applied {
+        connection.execute(
+            "UPDATE x_assistant_task_settings SET daily_reply_limit = 1000 WHERE id = 1 AND daily_reply_limit = 50",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO app_schema_migrations (version) VALUES ('x_daily_reply_limit_default_1000_v1')",
             [],
         )?;
     }
@@ -268,7 +285,7 @@ pub fn load_task_settings_blocking() -> anyhow::Result<XAssistantTaskSettings> {
                         "entertainment" => "entertainment".to_string(),
                         _ => "all".to_string(),
                     },
-                    daily_reply_limit: row.get::<_, i64>(6)?.clamp(1, 500) as u16,
+                    daily_reply_limit: row.get::<_, i64>(6)?.clamp(1, 10_000) as u16,
                 })
             },
         )
@@ -279,7 +296,7 @@ pub fn save_task_settings_blocking(settings: &XAssistantTaskSettings) -> anyhow:
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
     let posts_per_hour = settings.posts_per_hour.clamp(1, 10);
-    let daily_reply_limit = settings.daily_reply_limit.clamp(1, 500);
+    let daily_reply_limit = settings.daily_reply_limit.clamp(1, 10_000);
     connection.execute(
         "UPDATE x_assistant_task_settings
          SET auto_reply_enabled = ?1,
