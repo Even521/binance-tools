@@ -85,7 +85,7 @@ pub(super) mod native {
         let image_path = String::from_utf16_lossy(&image_path[..image_path_len as usize]);
         Some(
             image_path
-                .rsplit(['\\\\', '/'])
+                .rsplit(['\\', '/'])
                 .next()
                 .unwrap_or_default()
                 .to_string(),
