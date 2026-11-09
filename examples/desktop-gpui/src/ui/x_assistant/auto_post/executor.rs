@@ -288,7 +288,7 @@ pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> 
 }
 
 /// 启动时先完成一轮自动回复，再启动自动发帖循环。
-/// 两个循环随后通过同一把 browser lease 串行访问 X；任一循环遇到严重错误会停止另一循环。
+/// 两个循环通过同一把 browser lease 串行访问 X；自动发帖自身失败只终止发帖线程，不取消正在进行的回复。
 pub fn run_with_auto_reply(
     cancel: Arc<AtomicBool>,
     reply_options: crate::ui::x_assistant::vision::VisionReplyOptions,
@@ -334,8 +334,10 @@ pub fn run_with_auto_reply(
     let post_cancel = Arc::clone(&cancel);
     let post_worker = thread::spawn(move || {
         let result = run_loop(&post_cancel, filter);
-        if result.is_err() {
-            mark_linked_cancel(&post_cancel, "自动发帖工作线程返回错误");
+        if let Err(error) = &result {
+            crate::ui::x_assistant::automation::log_post_event(&format!(
+                "自动发帖工作线程失败，已停止自动发帖；不会取消正在执行的自动回复：{error:#}"
+            ));
         }
         result
     });
