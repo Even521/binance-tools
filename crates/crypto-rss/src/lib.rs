@@ -36,6 +36,7 @@ pub struct FeedResult {
     pub error: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Collector {
     client: Client,
 }
@@ -147,11 +148,50 @@ impl Collector {
     }
 
     pub async fn collect_all(&self, feeds: &[FeedConfig]) -> (Vec<NewsItem>, Vec<FeedResult>) {
-        let mut all = Vec::new();
-        let mut reports = Vec::new();
+        // 同时最多处理两个订阅源，避免 RSS 同步占用过多 CPU/网络资源。
+        const MAX_CONCURRENT_FEEDS: usize = 2;
 
-        for feed in feeds {
-            match self.collect_feed(feed).await {
+        let mut pending = tokio::task::JoinSet::new();
+        let mut next_index = 0usize;
+        let mut results: Vec<Option<Result<Vec<NewsItem>, String>>> =
+            (0..feeds.len()).map(|_| None).collect();
+
+        // 只启动两个任务；每完成一个，再补充下一个，避免一次性创建大量等待任务。
+        while next_index < feeds.len() && pending.len() < MAX_CONCURRENT_FEEDS {
+            let index = next_index;
+            let feed = feeds[index].clone();
+            let collector = self.clone();
+            pending.spawn(async move { (index, collector.collect_feed(&feed).await) });
+            next_index += 1;
+        }
+
+        while let Some(joined) = pending.join_next().await {
+            match joined {
+                Ok((index, result)) => {
+                    results[index] = Some(result.map_err(|err| format!("{err:#}")));
+                }
+                Err(err) => {
+                    // 单个 feed 任务异常退出不影响其他订阅源继续同步。
+                    eprintln!("RSS feed task join failed: {err}");
+                }
+            }
+
+            if next_index < feeds.len() {
+                let index = next_index;
+                let feed = feeds[index].clone();
+                let collector = self.clone();
+                pending.spawn(async move { (index, collector.collect_feed(&feed).await) });
+                next_index += 1;
+            }
+        }
+
+        // 按 feeds 原始顺序汇总，保证并发完成顺序不会改变列表优先级。
+        let mut all = Vec::new();
+        let mut reports = Vec::with_capacity(feeds.len());
+        for (index, feed) in feeds.iter().enumerate() {
+            match results[index].take().unwrap_or_else(|| {
+                Err("RSS 任务异常退出".to_string())
+            }) {
                 Ok(items) => {
                     let fetched = items.len();
                     all.extend(items);
@@ -163,12 +203,12 @@ impl Collector {
                         error: None,
                     });
                 }
-                Err(err) => reports.push(FeedResult {
+                Err(error) => reports.push(FeedResult {
                     source: feed.name.clone(),
                     feed_url: feed.url.clone(),
                     fetched: 0,
                     unique: 0,
-                    error: Some(format!("{err:#}")),
+                    error: Some(error),
                 }),
             }
         }
