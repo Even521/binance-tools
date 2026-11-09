@@ -959,6 +959,9 @@ impl XAssistantPage {
                     .small()
                     .label("运行状态")
                     .on_click(cx.listener(|this, _, _, cx| {
+                // 每次打开运行状态页都重新读取当天（北京时间）的日志，
+                // 避免任务停止后跨日仍显示上一次打开时缓存的旧日志。
+                this.log_tail = Some(run_log::LogTail::new());
                 this.show_run_status = true;
                 this.show_reply_list = false;
                 this.show_post_history = false;
