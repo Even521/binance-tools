@@ -14,17 +14,17 @@ pub struct FloatingStatus {
 
 impl FloatingStatus {
     /// Show the application logo and a running indicator over the browser toolbar.
-    pub fn show(task_label: &'static str) -> Self {
+    pub fn show(task_label: &'static str, accent_color: (u8, u8, u8)) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
 
         #[cfg(windows)]
         {
             let thread_stop = Arc::clone(&stop);
-            std::thread::spawn(move || windows_overlay::run(thread_stop, task_label));
+            std::thread::spawn(move || windows_overlay::run(thread_stop, task_label, accent_color));
         }
 
         #[cfg(not(windows))]
-        let _ = task_label;
+        let _ = (task_label, accent_color);
 
         Self { stop }
     }
@@ -45,7 +45,7 @@ impl Drop for FloatingStatus {
 mod windows_overlay {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    pub(super) fn run(_: Arc<AtomicBool>, _: &'static str) {}
+    pub(super) fn run(_: Arc<AtomicBool>, _: &'static str, _: (u8, u8, u8)) {}
 }
 
 #[cfg(windows)]
@@ -86,7 +86,7 @@ mod windows_overlay {
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
-    pub(super) fn run(stop: Arc<AtomicBool>, task_label: &'static str) {
+    pub(super) fn run(stop: Arc<AtomicBool>, task_label: &'static str, accent_color: (u8, u8, u8)) {
         unsafe {
             let instance = match GetModuleHandleW(None) {
                 Ok(module) => HINSTANCE(module.0),
@@ -274,7 +274,11 @@ mod windows_overlay {
                 let _ = TextOutW(dc, 44, 25, &task);
 
                 // Green dot means the automation task is active.
-                let dot = CreateSolidBrush(COLORREF(0x0000C853));
+                let (red, green, blue) = accent_color;
+                let accent = COLORREF(
+                    red as u32 | ((green as u32) << 8) | ((blue as u32) << 16),
+                );
+                let dot = CreateSolidBrush(accent);
                 let previous = SelectObject(dc, dot.into());
                 let _ = Ellipse(dc, 163, 8, 173, 18);
                 let _ = SelectObject(dc, previous);
