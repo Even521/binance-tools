@@ -908,23 +908,11 @@ impl XAssistantPage {
             .into_any_element()
     }
     fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self.show_task_settings;
-        v_flex()
-            .w(px(112.))
-            .gap_1()
-            .child(
-                Button::new("x-assistant-task-settings-tab")
-                    .ghost()
-                    .small()
-                    .label("任务设置")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx))),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .h(px(2.))
-                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
-            )
+        Button::new("x-assistant-task-settings")
+            .ghost()
+            .small()
+            .label("任务设置")
+            .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
             .into_any_element()
     }
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -956,7 +944,7 @@ impl XAssistantPage {
             })
             .into_any_element();
 
-        // 六个页面入口统一使用下划线 Tabs，所有页面共用同一导航栏。
+        // 五个主要页面使用下划线 Tabs；任务设置保留为独立入口。
         h_flex()
             .items_end()
             .gap_3()
