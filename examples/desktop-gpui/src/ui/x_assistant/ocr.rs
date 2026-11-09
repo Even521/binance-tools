@@ -134,7 +134,7 @@ pub(super) fn locate_post_submit_button(path: &Path) -> anyhow::Result<Option<(i
             let in_button_zone = center_x >= crop.width as f32 * 0.60
                 && center_x <= crop.width as f32 * 0.98
                 && center_y >= crop.height as f32 * 0.35
-                && center_y <= crop.height as f32 * 0.90;
+                && center_y <= crop.height as f32 * 0.98;
             super::automation::log_event(&format!(
                 "[自动发帖 OCR] 弹窗提交按钮候选：模式={mode_name}，文本={:?}，局部坐标=({center_x:.0},{center_y:.0})，文字匹配={label_match}，按钮区域匹配={in_button_zone}",
                 line.text
@@ -395,20 +395,111 @@ struct ComposeDialogCrop {
 fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
     use image::imageops::crop_imm;
 
-    let image = image::open(path)?.to_rgba8();
-    let left = image.width() * 28 / 100;
-    let right = image.width() * 72 / 100;
-    let top = image.height() * 10 / 100;
-    let bottom = image.height() * 82 / 100;
-    anyhow::ensure!(right > left && bottom > top, "回复弹窗 OCR 裁剪区域无效");
-    let crop_image = crop_imm(&image, left, top, right - left, bottom - top).to_image();
+    let source = image::open(path)?.to_rgba8();
+    let (width, height) = source.dimensions();
+    anyhow::ensure!(width >= 800 && height >= 600, "截图尺寸不足，无法检测 compose 弹窗");
+    let background = estimate_overlay_luminance(&source);
+    let threshold = background.saturating_add(18).min(250);
+    let x_start = width * 15 / 100;
+    let x_end = width * 85 / 100;
+    let y_start = height * 8 / 100;
+    let y_end = height * 92 / 100;
+    let row_counts = bright_row_projection(&source, x_start, x_end, y_start, y_end, threshold);
+    let (top_offset, bottom_offset) = projection_span(&row_counts, (x_end - x_start) / 8, 14)
+        .ok_or_else(|| anyhow::anyhow!("未检测到可信的明亮 compose 弹窗边界"))?;
+    let top = y_start + top_offset as u32;
+    let bottom = y_start + bottom_offset as u32;
+    let column_counts = bright_column_projection(&source, y_start + top_offset as u32,
+        y_start + bottom_offset as u32, x_start, x_end, threshold);
+    let (left_offset, right_offset) = projection_span(&column_counts, (bottom - top) / 8, 14)
+        .ok_or_else(|| anyhow::anyhow!("未检测到可信的 compose 弹窗左右边界"))?;
+    let left = x_start + left_offset as u32;
+    let right = x_start + right_offset as u32;
+    let padding = 8_u32;
+    let left = left.saturating_sub(padding);
+    let top = top.saturating_sub(padding);
+    let right = (right + padding).min(width);
+    let bottom = (bottom + padding).min(height);
+    let crop_width = right.saturating_sub(left);
+    let crop_height = bottom.saturating_sub(top);
+    anyhow::ensure!(
+        crop_width >= width * 18 / 100
+            && crop_height >= height * 12 / 100
+            && crop_width <= width * 75 / 100
+            && crop_height <= height * 85 / 100,
+        "检测到的弹窗尺寸不合理：{}x{}，截图={}x{}",
+        crop_width, crop_height, width, height
+    );
+    let crop_image = crop_imm(&source, left, top, crop_width, crop_height).to_image();
+    super::automation::log_event(&format!(
+        "[弹窗边界] 动态检测成功：背景亮度={}，分割阈值={}，边界=({},{})-({},{}), 尺寸={}x{}",
+        background, threshold, left, top, right, bottom, crop_width, crop_height
+    ));
     Ok(ComposeDialogCrop {
         image: crop_image,
         left,
         top,
-        width: right - left,
-        height: bottom - top,
+        width: crop_width,
+        height: crop_height,
     })
+}
+
+fn estimate_overlay_luminance(image: &image::RgbaImage) -> u8 {
+    let (width, height) = image.dimensions();
+    let mut samples = Vec::new();
+    for y in (height / 10..height * 9 / 10).step_by(6) {
+        for x in (width / 20..width * 3 / 20).step_by(6)
+            .chain((width * 17 / 20..width * 19 / 20).step_by(6))
+        {
+            samples.push(pixel_luminance(image.get_pixel(x, y).0));
+        }
+    }
+    samples.sort_unstable();
+    samples.get(samples.len() / 2).copied().unwrap_or(180)
+}
+
+fn pixel_luminance(pixel: [u8; 4]) -> u8 {
+    ((u16::from(pixel[0]) * 299 + u16::from(pixel[1]) * 587
+        + u16::from(pixel[2]) * 114) / 1000) as u8
+}
+
+fn bright_row_projection(
+    image: &image::RgbaImage, x_start: u32, x_end: u32,
+    y_start: u32, y_end: u32, threshold: u8,
+) -> Vec<u32> {
+    (y_start..y_end).map(|y| {
+        (x_start..x_end).filter(|&x| pixel_luminance(image.get_pixel(x, y).0) >= threshold).count() as u32
+    }).collect()
+}
+
+fn bright_column_projection(
+    image: &image::RgbaImage, y_start: u32, y_end: u32,
+    x_start: u32, x_end: u32, threshold: u8,
+) -> Vec<u32> {
+    (x_start..x_end).map(|x| {
+        (y_start..y_end).filter(|&y| pixel_luminance(image.get_pixel(x, y).0) >= threshold).count() as u32
+    }).collect()
+}
+
+fn projection_span(values: &[u32], minimum: u32, max_gap: usize) -> Option<(usize, usize)> {
+    let mut best = None;
+    let (mut start, mut last, mut score) = (0, 0, 0_u64);
+    for (index, &value) in values.iter().enumerate() {
+        if value >= minimum {
+            if score == 0 { start = index; }
+            last = index;
+            score += u64::from(value);
+        } else if score > 0 && index.saturating_sub(last) > max_gap {
+            if best.is_none_or(|(_, _, best_score)| score > best_score) {
+                best = Some((start, last + 1, score));
+            }
+            score = 0;
+        }
+    }
+    if score > 0 && best.is_none_or(|(_, _, best_score)| score > best_score) {
+        best = Some((start, last + 1, score));
+    }
+    best.map(|(start, end, _)| (start, end))
 }
 
 pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalPostIdentification> {
@@ -1308,7 +1399,7 @@ pub(super) fn locate_reply_submit_button(
         .map(|line| line.bottom / doc.scale_y)
         .fold(0.0_f32, f32::max);
     let submit_region_top = (reply_bottom + 40.0).max(crop.height as f32 * 0.45);
-    let submit_region_bottom = crop.height as f32 * 0.90;
+    let submit_region_bottom = crop.height as f32 * 0.98;
 
     let ocr_button = doc.lines.iter().filter_map(|line| {
         let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
