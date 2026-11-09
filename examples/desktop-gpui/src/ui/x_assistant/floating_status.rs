@@ -81,7 +81,7 @@ mod windows_overlay {
     use windows::core::w;
 
     const OVERLAY_WIDTH: i32 = 180;
-    const OVERLAY_HEIGHT: i32 = 46;
+    const OVERLAY_HEIGHT: i32 = 40;
     const COLOR_KEY: COLORREF = COLORREF(0x00FF00FF);
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
@@ -262,16 +262,16 @@ mod windows_overlay {
 
                 let icon = HICON(ICON_HANDLE.load(Ordering::Acquire) as _);
                 if !icon.is_invalid() {
-                    let _ = DrawIconEx(dc, 8, 9, icon, 28, 28, 0, None, DI_NORMAL);
+                    let _ = DrawIconEx(dc, 8, 7, icon, 26, 26, 0, None, DI_NORMAL);
                 }
 
                 let _ = SetBkMode(dc, TRANSPARENT);
                 let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
                 let task: Vec<u16> = format!("当前任务：{task_label}").encode_utf16().collect();
                 let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
-                let _ = TextOutW(dc, 44, 6, &title);
+                let _ = TextOutW(dc, 44, 4, &title);
                 let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
-                let _ = TextOutW(dc, 44, 25, &task);
+                let _ = TextOutW(dc, 44, 21, &task);
 
                 // Green dot means the automation task is active.
                 let (red, green, blue) = accent_color;
@@ -280,7 +280,7 @@ mod windows_overlay {
                 );
                 let dot = CreateSolidBrush(accent);
                 let previous = SelectObject(dc, dot.into());
-                let _ = Ellipse(dc, 163, 8, 173, 18);
+                let _ = Ellipse(dc, 163, 7, 173, 17);
                 let _ = SelectObject(dc, previous);
                 let _ = DeleteObject(dot.into());
 
