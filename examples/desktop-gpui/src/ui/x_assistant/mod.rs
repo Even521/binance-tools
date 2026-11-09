@@ -911,6 +911,8 @@ impl Render for XAssistantPage {
         }
         if self.show_run_status {
             let menu = self.render_page_menu(cx);
+            let start_button = self.render_start_all_button(cx);
+            let stop_button = self.render_stop_all_button(cx);
             let theme = cx.theme();
             let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
             let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
@@ -949,8 +951,8 @@ impl Render for XAssistantPage {
                             palette::error_text()
                         } else if self.replying { theme.success } else { palette::muted(theme) })
                             .child(if self.error.is_some() { "● 运行异常" } else if self.replying { "● 运行中" } else { "● 已停止" }))
-                        .child(self.render_start_all_button(cx))
-                        .child(self.render_stop_all_button(cx))))
+                        .child(start_button)
+                        .child(stop_button)))
                 .child(menu)
                 .child(v_flex().gap_2()
                     .child(div().text_size(px(13.)).font_semibold().child("自动回复统计"))
