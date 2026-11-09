@@ -16,48 +16,6 @@ use super::super::{
 };
 use crate::ui::x_assistant::core::task_queue::run_browser_task;
 
-/// 全自动运行最长时间：4 小时。
-const MAX_RUNTIME: Duration = Duration::from_secs(4 * 60 * 60);
-
-/// 运行超时守护器。
-///
-/// 超过运行时限后强制结束进程；
-/// 正常退出时通过 Drop 通知守护线程停止。
-struct RuntimeWatchdog(Arc<AtomicBool>);
-
-impl RuntimeWatchdog {
-    /// 启动独立守护线程，监控运行时长。
-    fn start() -> Self {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let signal = Arc::clone(&cancelled);
-
-        thread::spawn(move || {
-            let started = Instant::now();
-
-            while started.elapsed() < MAX_RUNTIME {
-                if signal.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                thread::sleep(Duration::from_secs(1));
-            }
-
-            if !signal.load(Ordering::Relaxed) {
-                automation::log_event("全自动运行满 4 小时，强制结束整个应用进程。");
-                std::process::exit(0);
-            }
-        });
-
-        Self(cancelled)
-    }
-}
-
-impl Drop for RuntimeWatchdog {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
 /// 全自动回复运行器。
 ///
 /// 集中管理回复状态、失败次数和最后一轮结果。
@@ -78,8 +36,6 @@ impl AutoReplyRunner {
         cancel: &AtomicBool,
         mut first_cycle_sender: Option<SyncSender<()>>,
     ) -> Result<VisionReplyResult> {
-        let _watchdog = RuntimeWatchdog::start();
-
         loop {
             if Self::is_cancelled(cancel) {
                 return self.stop();
@@ -130,8 +86,10 @@ impl AutoReplyRunner {
                 "全自动：该账号 24 小时内已回复，按正常跳过处理；不计失败、不刷新，改为滚动寻找下一帖。",
             );
 
-            return vision::scroll_to_next_post(cancel, "跳过已回复账号，向下查找下一条帖子")
-                .context("跳过重复账号后的滚动失败");
+            return self.scroll_or_recover(
+                cancel,
+                "跳过已回复账号，向下查找下一条帖子",
+            );
         }
 
         if result.completed {
@@ -151,8 +109,22 @@ impl AutoReplyRunner {
         self.last_result = Some(result);
 
         // 正常轮次只滚动，不刷新页面。
-        vision::scroll_to_next_post(cancel, "本轮处理结束，向下查找下一条帖子")
-            .context("全自动流程恢复动作失败")
+        self.scroll_or_recover(cancel, "本轮处理结束，向下查找下一条帖子")
+    }
+
+    /// 滚动失败属于普通恢复错误：再尝试一次分类恢复，成功后回到主循环。
+    /// 取消信号仍由底层检查并立即生效；恢复失败才向上返回错误。
+    fn scroll_or_recover(&self, cancel: &AtomicBool, reason: &str) -> Result<()> {
+        match vision::scroll_to_next_post(cancel, reason) {
+            Ok(()) => Ok(()),
+            Err(error) if Self::is_cancelled(cancel) => Err(error),
+            Err(error) => {
+                automation::log_event(&format!(
+                    "全自动：滚动下一帖失败，尝试分类恢复后继续：{error:#}"
+                ));
+                self.recover(&error, cancel)
+            }
+        }
     }
 
     /// 处理单轮执行异常。
