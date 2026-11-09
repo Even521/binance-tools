@@ -387,7 +387,7 @@ impl XAssistantPage {
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
             let _cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
-            app_log::x_info!(if was_cancelled { "自动回复后台任务已停止" } else { "自动回复后台任务已结束" });
+            app_log::x_info!("{}", if was_cancelled { "自动回复后台任务已停止" } else { "自动回复后台任务已结束" });
 
             if let Err(update_error) = this.update(cx, |this, cx| {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
