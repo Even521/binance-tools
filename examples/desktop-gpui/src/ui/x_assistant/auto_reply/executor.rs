@@ -4,8 +4,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::SyncSender,
     },
-    thread,
-    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
