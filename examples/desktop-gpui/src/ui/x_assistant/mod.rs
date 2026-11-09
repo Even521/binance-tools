@@ -45,6 +45,8 @@ enum TaskSetting {
 }
 
 pub struct XAssistantPage {
+    // 保存创建页面时所属窗口的句柄，供后台任务结束/启动回调控制窗口状态。
+    window_handle: AnyWindowHandle,
     replying: bool,
     auto_send: bool,
     vision_model: String,
@@ -104,6 +106,7 @@ impl XAssistantPage {
             .unwrap_or_default();
 
         Self {
+            window_handle: window.window_handle(),
             replying: false,
             auto_send: true,
             vision_model: vision::DEFAULT_VISION_MODEL.to_string(),
@@ -242,7 +245,7 @@ impl XAssistantPage {
                     (accent.b * 255.0).round() as u8,
                 );
                 this.floating_status = Some(floating_status::FloatingStatus::show("自动发帖", accent));
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
             });
@@ -260,7 +263,7 @@ impl XAssistantPage {
             _ = this.update(cx, |this, cx| {
                 this.floating_status.take();
                 this.replying = false;
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 match result {
                     Ok(count) => {
@@ -356,7 +359,7 @@ impl XAssistantPage {
                     (accent.b * 255.0).round() as u8,
                 );
                 this.floating_status = Some(floating_status::FloatingStatus::show("测试发帖", accent));
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
             });
@@ -372,7 +375,7 @@ impl XAssistantPage {
             _ = this.update(cx, |this, cx| {
                 this.floating_status.take();
                 this.replying = false;
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 match result {
                     Ok(result) if result.outcome == auto_post::submit::SubmitOutcome::Published => {
@@ -468,7 +471,7 @@ impl XAssistantPage {
                     (accent.b * 255.0).round() as u8,
                 );
                 this.floating_status = Some(floating_status::FloatingStatus::show("自动回复", accent));
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
             });
@@ -504,7 +507,7 @@ impl XAssistantPage {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
                 this.floating_status.take();
                 this.replying = false;
-                let window_handle = cx.window_handle();
+                let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 match result {
                     Err(err)
