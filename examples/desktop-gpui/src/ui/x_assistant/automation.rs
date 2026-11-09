@@ -19,7 +19,7 @@ pub(super) mod native {
     };
 
     use windows::Win32::{
-        Foundation::{POINT, RECT},
+        Foundation::{CloseHandle, POINT, RECT},
         Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, ClientToScreen, CreateCompatibleBitmap,
             CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits,
@@ -33,7 +33,8 @@ pub(super) mod native {
             },
             WindowsAndMessaging::{
                 FindWindowW, GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow,
-                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SW_MAXIMIZE, SetCursorPos,
+                GetSystemMetrics, GetWindowThreadProcessId, SM_CXSCREEN, SM_CYSCREEN,
+                SW_MAXIMIZE, SetCursorPos,
                 SetForegroundWindow, ShowWindow,
             },
         },
@@ -47,6 +48,32 @@ pub(super) mod native {
         anyhow::ensure!(
             !chrome.is_invalid(),
             "未找到 Google Chrome 窗口，请先打开 Chrome 并登录 X 后再启动自动化"
+        );
+
+        let mut process_id = 0u32;
+        unsafe { GetWindowThreadProcessId(chrome, Some(&mut process_id)) };
+        anyhow::ensure!(process_id != 0, "无法确认浏览器窗口所属进程");
+
+        let process = unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
+        }?;
+        let mut image_path = [0u16; 1024];
+        let mut image_path_len = image_path.len() as u32;
+        let image_result = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_FORMAT(0),
+                windows::core::PWSTR(image_path.as_mut_ptr()),
+                &mut image_path_len,
+            )
+        };
+        let _ = unsafe { CloseHandle(process) };
+        image_result?;
+        let image_path = String::from_utf16_lossy(&image_path[..image_path_len as usize]);
+        let executable = image_path.rsplit(['\\', '/']).next().unwrap_or_default();
+        anyhow::ensure!(
+            executable.eq_ignore_ascii_case("chrome.exe"),
+            "找到的是 Chromium 内核浏览器，但不是 Google Chrome：{executable}"
         );
 
         let _ = unsafe { ShowWindow(chrome, SW_MAXIMIZE) };
