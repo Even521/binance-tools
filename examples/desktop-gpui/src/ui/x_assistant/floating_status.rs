@@ -58,21 +58,21 @@ mod windows_overlay {
     };
 
     use windows::Win32::{
-        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateSolidBrush, DeleteObject, DrawIconEx, Ellipse, EndPaint, FillRect,
-            PAINTSTRUCT, SelectObject, DI_NORMAL,
+            BeginPaint, COLORREF, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+            PAINTSTRUCT, SelectObject,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-            DispatchMessageW, FindWindowW, GetMessageW, GetWindowRect, IsIconic, LoadCursorW,
+            DispatchMessageW, DrawIconEx, FindWindowW, GetWindowRect, IsIconic, LoadCursorW,
             MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos,
             ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-            DI_NORMAL as _, GWLP_USERDATA, HICON, HWND_TOPMOST, ICONINFO, IMAGE_FLAGS,
-            LWA_COLORKEY, LR_DEFAULTCOLOR, MSG as _, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-            SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            DI_NORMAL, HICON, HWND_TOPMOST, IMAGE_FLAGS, LWA_COLORKEY, SW_HIDE,
+            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY,
+            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_POPUP,
         },
     };
     use windows::core::w;
@@ -230,15 +230,7 @@ mod windows_overlay {
         let image_end = image_offset.checked_add(image_size)?;
         let image = bytes.get(image_offset..image_end)?;
 
-        CreateIconFromResourceEx(
-            image.as_ptr(),
-            image.len() as u32,
-            true,
-            0x0003_0000,
-            24,
-            24,
-            IMAGE_FLAGS(LR_DEFAULTCOLOR.0),
-        )
+        CreateIconFromResourceEx(image, true, 0x0003_0000, 24, 24, IMAGE_FLAGS(0))
         .ok()
     }
 
@@ -253,7 +245,7 @@ mod windows_overlay {
             WM_PAINT => {
                 let mut paint = PAINTSTRUCT::default();
                 let dc = BeginPaint(hwnd, &mut paint);
-                let mut rect = RECT {
+                let rect = RECT {
                     left: 0,
                     top: 0,
                     right: OVERLAY_WIDTH,
