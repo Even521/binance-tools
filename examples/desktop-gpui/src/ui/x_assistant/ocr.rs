@@ -1458,6 +1458,9 @@ pub(super) fn locate_reply_submit_button(
         super::automation::log_event(&format!(
             "[OCR][回复提交按钮诊断] OCR 全部识别行（最多 40 条）：{ocr_lines}"
         ));
+        super::automation::log_event(
+            "[OCR][回复提交按钮诊断] 标注颜色：蓝=回复正文，红=按钮搜索区域，黄=包含‘回复’的普通文字，橙=精确‘回复’但位置未通过，绿=位置条件通过的按钮候选。"
+        );
         match save_reply_submit_ocr_diagnostic(
             path,
             &crop,
@@ -1576,7 +1579,10 @@ fn save_reply_submit_ocr_diagnostic(
         );
     }
 
-    let stem = source_path.file_stem().and_then(|value| value.to_str()).unwrap_or("reply-typed");
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("reply-typed");
     let output_path = source_path.with_file_name(format!("{stem}-ocr-annotation.png"));
     image.save(&output_path)?;
     Ok(output_path)
