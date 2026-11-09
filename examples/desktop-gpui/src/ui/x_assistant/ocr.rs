@@ -81,7 +81,7 @@ pub(super) fn locate_post_composer_input(path: &Path) -> anyhow::Result<Option<(
             (score >= 0.72).then_some((center_x, center_y, score, line.text.as_str()))
         }).max_by(|left, right| left.2.total_cmp(&right.2));
 
-        if let Some((center_x, center_y, score, recognized)) = best {
+        if let Some((center_x, center_y, score, _recognized)) = best {
             let point = (
                 (center_x + crop.left as f32).round() as i32,
                 (center_y + crop.top as f32).round() as i32,
@@ -200,7 +200,6 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
         ));
         if score > best_score {
             best_score = score;
-            // 不记录正文原文，仅保留匹配度。
         }
         if score >= 0.80 {
             return Ok(true);
