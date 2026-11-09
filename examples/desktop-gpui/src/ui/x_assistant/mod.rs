@@ -417,6 +417,25 @@ impl XAssistantPage {
             cx.notify();
             return;
         }
+        if full_auto {
+            match binance_tools::db::x_assistant::today_sent_reply_count_blocking() {
+                Ok(completed) if completed >= u64::from(self.task_settings.daily_reply_limit) => {
+                    self.error = None;
+                    self.status = Some(format!(
+                        "今日已成功回复 {completed}/{} 条，已达到每日上限。请到「任务设置」手动调高每日最大回复数后再启动。",
+                        self.task_settings.daily_reply_limit
+                    ));
+                    cx.notify();
+                    return;
+                }
+                Err(error) => {
+                    self.error = Some(format!("读取今日回复数量失败，为避免超额发送已阻止启动：{error:#}"));
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
         self.replying = true;
         self.start_log_monitor(cx);
         self.error = None;
@@ -588,6 +607,12 @@ impl XAssistantPage {
         self.persist_task_settings(cx);
     }
 
+    fn adjust_daily_reply_limit(&mut self, delta: i16, cx: &mut Context<Self>) {
+        let next = i32::from(self.task_settings.daily_reply_limit) + i32::from(delta);
+        self.task_settings.daily_reply_limit = next.clamp(1, 500) as u16;
+        self.persist_task_settings(cx);
+    }
+
     fn persist_task_settings(&mut self, cx: &mut Context<Self>) {
         match binance_tools::db::x_posting::save_task_settings_blocking(&self.task_settings) {
             Ok(()) => {
@@ -705,6 +730,56 @@ impl XAssistantPage {
             .into_any_element()
     }
 
+    fn render_daily_reply_limit_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let minus_button = Button::new("x-task-daily-reply-limit-minus")
+            .small()
+            .outline()
+            .label("−")
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：每日最大回复数减 10");
+                this.adjust_daily_reply_limit(-10, cx);
+            }))
+            .into_any_element();
+
+        let plus_button = Button::new("x-task-daily-reply-limit-plus")
+            .small()
+            .outline()
+            .label("+")
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("X 任务设置：每日最大回复数加 10");
+                this.adjust_daily_reply_limit(10, cx);
+            }))
+            .into_any_element();
+
+        let today_count = binance_tools::db::x_assistant::today_sent_reply_count_blocking()
+            .map(|count| count.to_string())
+            .unwrap_or_else(|_| "读取失败".to_string());
+
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_size(px(12.)).child("每日最大回复数量"))
+                    .child(minus_button)
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_semibold()
+                            .child(format!("{} 条", self.task_settings.daily_reply_limit)),
+                    )
+                    .child(plus_button)
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(palette::muted(cx.theme()))
+                    .child(format!("今日已成功回复：{today_count} 条。达到上限后自动停止；当日重启仍会锁定，需手动调高此数字。"))
+            )
+            .into_any_element()
+    }
+
     fn render_task_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         app_log::x_info!("X 任务设置：开始渲染设置面板");
 
@@ -714,6 +789,7 @@ impl XAssistantPage {
         let auto_comment_button = self.render_auto_comment_setting_button(cx);
         let own_post_reply_button = self.render_own_post_reply_setting_button(cx);
         let rate_controls = self.render_post_rate_controls(cx);
+        let daily_reply_controls = self.render_daily_reply_limit_controls(cx);
 
         let theme = cx.theme();
         let panel = v_flex()
@@ -744,6 +820,7 @@ impl XAssistantPage {
                     .child(own_post_reply_button),
             )
             .child(rate_controls)
+            .child(daily_reply_controls)
             .child(
                 div()
                     .text_size(px(11.))
