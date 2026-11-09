@@ -1295,8 +1295,9 @@ pub(super) fn locate_reply_submit_button(
         return Ok(None);
     }
 
-    // 以已核验的回复正文行作为锚点，只允许在正文右侧、同一行附近寻找提交按钮。
-    // 不再在整块弹窗/时间线中搜索任意深色矩形，避免把弹窗外的卡片误认为按钮。
+    // X 的回复弹窗提交按钮固定在弹窗右下方，不与回复正文处于同一行。
+    // 先用已核验的回复正文确定横向锚点，再限定在弹窗下半部的右侧查找“回复”文字。
+    // 不搜索任意深色矩形，也不接受正文/引用区里的“回复”文字，避免误点。
     let reply_right = matching_lines.iter()
         .map(|line| line.right / doc.scale_x)
         .fold(0.0_f32, f32::max);
@@ -1306,6 +1307,8 @@ pub(super) fn locate_reply_submit_button(
     let reply_bottom = matching_lines.iter()
         .map(|line| line.bottom / doc.scale_y)
         .fold(0.0_f32, f32::max);
+    let submit_region_top = (reply_bottom + 40.0).max(crop.height as f32 * 0.45);
+    let submit_region_bottom = crop.height as f32 * 0.90;
 
     let ocr_button = doc.lines.iter().filter_map(|line| {
         let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
@@ -1313,19 +1316,27 @@ pub(super) fn locate_reply_submit_button(
         let label = normalize_text(&line.text);
         let label_match = label == normalize_text("回复");
         let right_of_reply = center_x >= (reply_right + 12.0).max(crop.width as f32 * 0.52);
-        let same_compose_row = center_y >= reply_top - 18.0
-            && center_y <= reply_bottom + 70.0;
-        (label_match && right_of_reply && same_compose_row)
+        let in_bottom_submit_region =
+            center_y >= submit_region_top && center_y <= submit_region_bottom;
+        (label_match && right_of_reply && in_bottom_submit_region)
             .then_some((center_x, center_y, line.text.as_str()))
     }).min_by(|left, right| {
-        let left_distance = (left.1 - reply_bottom).abs();
-        let right_distance = (right.1 - reply_bottom).abs();
+        let left_distance = (left.1 - submit_region_top).abs();
+        let right_distance = (right.1 - submit_region_top).abs();
         left_distance.total_cmp(&right_distance)
     });
 
     let Some((x, y, recognized)) = ocr_button else {
+        let candidates = doc.lines.iter()
+            .filter(|line| normalize_text(&line.text).contains(&normalize_text("回复")))
+            .map(|line| format!("{}@({:.0},{:.0})", line.text,
+                (line.left + line.right) * 0.5 / doc.scale_x,
+                (line.top + line.bottom) * 0.5 / doc.scale_y))
+            .collect::<Vec<_>>()
+            .join(" | ");
         super::automation::log_event(&format!(
-            "阶段 2/3：已核对回复正文，但弹窗正文右侧同一行附近未识别到‘回复’提交按钮；不使用深色区域或 AI 坐标兜底，未点击发送。正文范围 x={reply_right:.0} y={reply_top:.0}..{reply_bottom:.0}"
+            "阶段 2/3：已核对回复正文，但弹窗右下方安全区域未识别到‘回复’提交按钮；未点击发送。正文范围 x={reply_right:.0} y={reply_top:.0}..{reply_bottom:.0}，按钮搜索区域 x>={:.0} y={submit_region_top:.0}..{submit_region_bottom:.0}，候选={candidates}",
+            (reply_right + 12.0).max(crop.width as f32 * 0.52)
         ));
         return Ok(None);
     };
@@ -1344,8 +1355,8 @@ pub(super) fn locate_reply_submit_button(
     anyhow::ensure!(
         x >= reply_right + 12.0
             && x <= crop.width as f32 * 0.98
-            && y >= reply_top - 18.0
-            && y <= reply_bottom + 70.0,
+            && y >= submit_region_top
+            && y <= submit_region_bottom,
         "OCR 提交按钮不在已核验回复正文的右侧安全区域"
     );
     super::automation::log_event(&format!(
