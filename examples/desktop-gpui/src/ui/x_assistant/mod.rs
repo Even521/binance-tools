@@ -889,16 +889,37 @@ impl XAssistantPage {
         let post_history_button = self.render_post_history_button(cx);
         let task_settings_button = self.render_task_settings_button(cx);
 
+        let theme = cx.theme();
+        let run_state = div()
+            .text_size(px(12.))
+            .text_color(if self.error.is_some() {
+                palette::error_text()
+            } else if self.replying {
+                theme.success
+            } else {
+                palette::muted(theme)
+            })
+            .child(if self.error.is_some() {
+                "● 运行异常"
+            } else if self.replying {
+                "● 运行中"
+            } else {
+                "● 已停止"
+            })
+            .into_any_element();
         let menu = h_flex()
+            .items_center()
             .gap_2()
             .child(status_button)
             .child(reply_flow_button)
             .child(auto_post_button)
-            .child(start_all_button)
-            .child(stop_all_button)
             .child(reply_list_button)
             .child(post_history_button)
             .child(task_settings_button)
+            .child(div().flex_1())
+            .child(run_state)
+            .child(start_all_button)
+            .child(stop_all_button)
             .into_any_element();
         menu
     }
@@ -911,8 +932,6 @@ impl Render for XAssistantPage {
         }
         if self.show_run_status {
             let menu = self.render_page_menu(cx);
-            let start_button = self.render_start_all_button(cx);
-            let stop_button = self.render_stop_all_button(cx);
             let theme = cx.theme();
             let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
             let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
@@ -946,13 +965,8 @@ impl Render for XAssistantPage {
             return v_flex().size_full().min_h_0().gap_3().p_4()
                 .child(h_flex().items_center().justify_between()
                     .child(div().text_size(px(18.)).font_semibold().child("X 助手"))
-                    .child(h_flex().items_center().gap_2()
-                        .child(div().text_size(px(12.)).text_color(if self.error.is_some() {
-                            palette::error_text()
-                        } else if self.replying { theme.success } else { palette::muted(theme) })
-                            .child(if self.error.is_some() { "● 运行异常" } else if self.replying { "● 运行中" } else { "● 已停止" }))
-                        .child(start_button)
-                        .child(stop_button)))
+                    .child(div().text_size(px(12.)).text_color(palette::muted(theme))
+                        .child("自动化工作台")))
                 .child(menu)
                 .child(v_flex().gap_2()
                     .child(div().text_size(px(13.)).font_semibold().child("自动回复统计"))
