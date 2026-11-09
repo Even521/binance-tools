@@ -1544,7 +1544,7 @@ fn save_reply_text_ocr_diagnostic(
     let mut best: Option<(&OcrLine, f32)> = None;
     for line in &doc.lines {
         let score = text_match_ratio(&normalize_text(&line.text), expected_text);
-        if best.is_none_or(|(_, best_score)| score > best_score) {
+        if best.map_or(true, |(_, best_score)| score > best_score) {
             best = Some((line, score));
         }
         draw_diagnostic_rect(
