@@ -265,53 +265,53 @@ mod windows_overlay {
         // calls in one explicit unsafe block for Rust 2024.
         unsafe {
             match message {
-            WM_ERASEBKGND => LRESULT(1),
-            WM_PAINT => {
-                let mut paint = PAINTSTRUCT::default();
-                let dc = BeginPaint(hwnd, &mut paint);
-                let rect = RECT {
-                    left: 0,
-                    top: 0,
-                    right: OVERLAY_WIDTH,
-                    bottom: OVERLAY_HEIGHT,
-                };
-                // Magenta remains the transparent color key; the visible pill uses a
-                // neutral dark surface so it remains readable over Chrome's toolbar.
-                let background = CreateSolidBrush(COLORREF(0x002B2925));
-                let _ = FillRect(dc, &rect, background);
-                let _ = DeleteObject(background.into());
+                WM_ERASEBKGND => LRESULT(1),
+                WM_PAINT => {
+                    let mut paint = PAINTSTRUCT::default();
+                    let dc = BeginPaint(hwnd, &mut paint);
+                    let rect = RECT {
+                        left: 0,
+                        top: 0,
+                        right: OVERLAY_WIDTH,
+                        bottom: OVERLAY_HEIGHT,
+                    };
+                    // Magenta remains the transparent color key; the visible pill uses a
+                    // neutral dark surface so it remains readable over Chrome's toolbar.
+                    let background = CreateSolidBrush(COLORREF(0x002B2925));
+                    let _ = FillRect(dc, &rect, background);
+                    let _ = DeleteObject(background.into());
 
-                let icon = HICON(ICON_HANDLE.load(Ordering::Acquire) as _);
-                if !icon.is_invalid() {
-                    let _ = DrawIconEx(dc, 8, 7, icon, 26, 26, 0, None, DI_NORMAL);
+                    let icon = HICON(ICON_HANDLE.load(Ordering::Acquire) as _);
+                    if !icon.is_invalid() {
+                        let _ = DrawIconEx(dc, 8, 7, icon, 26, 26, 0, None, DI_NORMAL);
+                    }
+
+                    let _ = SetBkMode(dc, TRANSPARENT);
+                    let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
+                    let task_label = match TASK_KIND.load(Ordering::Acquire) {
+                        1 => "当前任务：自动发帖",
+                        2 => "当前任务：测试发帖",
+                        _ => "当前任务：自动回复",
+                    };
+                    let task: Vec<u16> = task_label.encode_utf16().collect();
+                    let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
+                    let _ = TextOutW(dc, 44, 4, &title);
+                    let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
+                    let _ = TextOutW(dc, 44, 21, &task);
+
+                    // The accent follows the selected GPUI theme.
+                    let accent = COLORREF(ACCENT_COLOR.load(Ordering::Acquire));
+                    let dot = CreateSolidBrush(accent);
+                    let previous = SelectObject(dc, dot.into());
+                    let _ = Ellipse(dc, 163, 7, 173, 17);
+                    let _ = SelectObject(dc, previous);
+                    let _ = DeleteObject(dot.into());
+
+                    let _ = EndPaint(hwnd, &paint);
+                    LRESULT(0)
                 }
-
-                let _ = SetBkMode(dc, TRANSPARENT);
-                let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
-                let task_label = match TASK_KIND.load(Ordering::Acquire) {
-                    1 => "当前任务：自动发帖",
-                    2 => "当前任务：测试发帖",
-                    _ => "当前任务：自动回复",
-                };
-                let task: Vec<u16> = task_label.encode_utf16().collect();
-                let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
-                let _ = TextOutW(dc, 44, 4, &title);
-                let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
-                let _ = TextOutW(dc, 44, 21, &task);
-
-                // The accent follows the selected GPUI theme.
-                let accent = COLORREF(ACCENT_COLOR.load(Ordering::Acquire));
-                let dot = CreateSolidBrush(accent);
-                let previous = SelectObject(dc, dot.into());
-                let _ = Ellipse(dc, 163, 7, 173, 17);
-                let _ = SelectObject(dc, previous);
-                let _ = DeleteObject(dot.into());
-
-                let _ = EndPaint(hwnd, &paint);
-                LRESULT(0)
-            }
-            WM_DESTROY => LRESULT(0),
-            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+                WM_DESTROY => LRESULT(0),
+                _ => DefWindowProcW(hwnd, message, wparam, lparam),
             }
         }
     }
