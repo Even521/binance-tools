@@ -235,7 +235,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show());
+                this.floating_status = Some(floating_status::FloatingStatus::show("自动发帖"));
                 cx.minimize_window();
                 cx.notify();
             });
@@ -341,7 +341,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show());
+                this.floating_status = Some(floating_status::FloatingStatus::show("测试发帖"));
                 cx.minimize_window();
                 cx.notify();
             });
@@ -445,7 +445,7 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show());
+                this.floating_status = Some(floating_status::FloatingStatus::show("自动回复"));
                 cx.minimize_window();
                 cx.notify();
             });
