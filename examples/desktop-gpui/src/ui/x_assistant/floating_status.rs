@@ -63,7 +63,7 @@ mod windows_overlay {
     use windows::Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+            BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
             PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TextOutW, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -275,9 +275,9 @@ mod windows_overlay {
                         right: OVERLAY_WIDTH,
                         bottom: OVERLAY_HEIGHT,
                     };
-                    // Magenta remains the transparent color key; the visible pill uses a
-                    // neutral dark surface so it remains readable over Chrome's toolbar.
-                    let background = CreateSolidBrush(COLORREF(0x002B2925));
+                    // 悬浮窗背景直接使用 GPUI 当前主题的主色，和主界面保持一致。
+                    let accent = COLORREF(ACCENT_COLOR.load(Ordering::Acquire));
+                    let background = CreateSolidBrush(accent);
                     let _ = FillRect(dc, &rect, background);
                     let _ = DeleteObject(background.into());
 
@@ -287,6 +287,15 @@ mod windows_overlay {
                     }
 
                     let _ = SetBkMode(dc, TRANSPARENT);
+                    // 原生默认字体在 180px 宽的悬浮条里过大，显式缩小并使用 Segoe UI。
+                    let title_font = CreateFontW(
+                        -13, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
+                        w!("Segoe UI"),
+                    );
+                    let task_font = CreateFontW(
+                        -11, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+                        w!("Segoe UI"),
+                    );
                     let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
                     let task_label = match TASK_KIND.load(Ordering::Acquire) {
                         1 => "当前任务：自动发帖",
@@ -294,14 +303,31 @@ mod windows_overlay {
                         _ => "当前任务：自动回复",
                     };
                     let task: Vec<u16> = task_label.encode_utf16().collect();
-                    let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
-                    let _ = TextOutW(dc, 44, 4, &title);
-                    let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
+                    // 根据主题背景亮度自动选择文字颜色，确保深色/浅色主题都清晰。
+                    let red = (accent.0 & 0xFF) as f64;
+                    let green = ((accent.0 >> 8) & 0xFF) as f64;
+                    let blue = ((accent.0 >> 16) & 0xFF) as f64;
+                    let luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
+                    let foreground = if luminance > 150.0 {
+                        COLORREF(0x00181818)
+                    } else {
+                        COLORREF(0x00FFFFFF)
+                    };
+                    let _ = SelectObject(dc, title_font.into());
+                    let _ = SetTextColor(dc, foreground);
+                    let _ = TextOutW(dc, 44, 3, &title);
+                    let _ = SelectObject(dc, task_font.into());
+                    let _ = SetTextColor(dc, foreground);
                     let _ = TextOutW(dc, 44, 21, &task);
+                    let _ = DeleteObject(title_font.into());
+                    let _ = DeleteObject(task_font.into());
 
-                    // The accent follows the selected GPUI theme.
-                    let accent = COLORREF(ACCENT_COLOR.load(Ordering::Acquire));
-                    let dot = CreateSolidBrush(accent);
+                    // 状态圆点使用主题文字的反差色，避免与背景融在一起。
+                    let dot = CreateSolidBrush(if luminance > 150.0 {
+                        COLORREF(0x00202020)
+                    } else {
+                        COLORREF(0x00FFFFFF)
+                    });
                     let previous = SelectObject(dc, dot.into());
                     let _ = Ellipse(dc, 163, 7, 173, 17);
                     let _ = SelectObject(dc, previous);
