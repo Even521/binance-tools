@@ -1307,13 +1307,13 @@ fn run_visual_reply_inner(
     ) {
         Ok(Some((x, y))) => {
             automation::log_event(&format!(
-                "阶段 2/3：本地 OCR 已核对回复正文及其右侧提交按钮：({}, {})。",
+                "阶段 2/3：本地 OCR 已核对回复正文及弹窗右下方提交按钮：({}, {})。",
                 x, y
             ));
             Point { x, y }
         }
         Ok(None) => anyhow::bail!(
-            "本地 OCR 未能在已核验回复正文右侧定位提交按钮；禁止使用 AI 猜测坐标，未点击发送"
+            "本地 OCR 未能在已核验回复弹窗右下方定位提交按钮；禁止使用 AI 猜测坐标，未点击发送"
         ),
         Err(error) => anyhow::bail!(
             "提交按钮局部 OCR 校验失败：{error:#}；禁止使用 AI 坐标兜底，未点击发送"
@@ -1347,7 +1347,7 @@ fn run_visual_reply_inner(
         pre_submit.height,
     )?
     .ok_or_else(|| anyhow::anyhow!(
-        "点击前二次 OCR 未能在回复正文右侧重新确认提交按钮；已停止，未点击发送"
+        "点击前二次 OCR 未能在回复弹窗右下方重新确认提交按钮；已停止，未点击发送"
     ))?;
     anyhow::ensure!(
         send_button.x.abs_diff(refreshed_button.0) <= 12
