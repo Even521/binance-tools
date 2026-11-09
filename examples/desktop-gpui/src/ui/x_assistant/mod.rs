@@ -12,6 +12,7 @@ mod post_history;
 mod reply_list;
 mod reply_filter;
 mod own_post_reply;
+mod run_log;
 mod vision;
 use crate::ui::palette;
 
@@ -27,6 +28,7 @@ use gpui_component::{
 use std::{
     backtrace::Backtrace,
     path::PathBuf,
+    time::Duration,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -67,6 +69,9 @@ pub struct XAssistantPage {
     post_history: Option<Entity<post_history::PostHistoryPage>>,
     task_settings: binance_tools::db::x_posting::XAssistantTaskSettings,
     render_diagnostic_logged: bool,
+    show_run_status: bool,
+    log_tail: Option<run_log::LogTail>,
+    _log_task: Task<()>,
 }
 
 impl Drop for XAssistantPage {
@@ -139,6 +144,9 @@ impl XAssistantPage {
             post_history: None,
             task_settings,
             render_diagnostic_logged: false,
+            show_run_status: true,
+            log_tail: None,
+            _log_task: Task::ready(()),
         }
     }
 
@@ -227,6 +235,27 @@ impl XAssistantPage {
                 }
                 cx.notify();
             });
+        });
+    }
+
+    fn start_log_monitor(&mut self, cx: &mut Context<Self>) {
+        self.log_tail = Some(run_log::LogTail::new());
+        self._log_task = cx.spawn(async move |this, cx| {
+            loop {
+                Timer::after(Duration::from_millis(800)).await;
+                let keep_running = this.update(cx, |this, cx| {
+                    if !this.replying {
+                        return false;
+                    }
+                    if this.log_tail.as_mut().is_some_and(run_log::LogTail::poll) {
+                        cx.notify();
+                    }
+                    true
+                }).unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
         });
     }
 
