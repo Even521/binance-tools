@@ -136,8 +136,7 @@ pub(super) fn locate_post_submit_button(path: &Path) -> anyhow::Result<Option<(i
                 && center_y >= crop.height as f32 * 0.35
                 && center_y <= crop.height as f32 * 0.98;
             super::automation::log_event(&format!(
-                "[OCR][发帖按钮] 候选检查：模式={mode_name}，文字匹配={label_match}，区域匹配={in_button_zone}",
-                // 不输出候选文字原文。
+                "[OCR][发帖按钮] 候选检查：模式={mode_name}，文字匹配={label_match}，区域匹配={in_button_zone}"
             ));
             (label_match && in_button_zone).then_some((center_x, center_y, line.text.as_str()))
         }).max_by(|left, right| left.1.total_cmp(&right.1));
@@ -207,7 +206,7 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
     }
 
     super::automation::log_event(&format!(
-        "[OCR][发帖正文] 核验失败，最高匹配度 {:.0}%",
+        "[OCR][发帖正文] 识别失败，最高匹配度 {:.0}%",
         best_score * 100.0
     ));
     Ok(false)
