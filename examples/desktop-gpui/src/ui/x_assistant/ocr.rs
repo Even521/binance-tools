@@ -142,7 +142,7 @@ pub(super) fn locate_post_submit_button(path: &Path) -> anyhow::Result<Option<(i
             (label_match && in_button_zone).then_some((center_x, center_y, line.text.as_str()))
         }).max_by(|left, right| left.1.total_cmp(&right.1));
 
-        if let Some((center_x, center_y, recognized)) = candidate {
+        if let Some((center_x, center_y, _recognized)) = candidate {
             let point = (
                 (center_x + crop.left as f32).round() as i32,
                 (center_y + crop.top as f32).round() as i32,
