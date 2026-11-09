@@ -999,7 +999,6 @@ impl Render for XAssistantPage {
             if self.error.is_none() {
                 self.status = Some("自动化任务已结束。".to_string());
             }
-            cx.notify();
         }
         if !self.render_diagnostic_logged {
             self.render_diagnostic_logged = true;
