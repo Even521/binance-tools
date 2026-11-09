@@ -1307,70 +1307,17 @@ fn run_visual_reply_inner(
     ) {
         Ok(Some((x, y))) => {
             automation::log_event(&format!(
-                "阶段 2/3：本地 OCR 已核对回复文本，图像检测定位提交按钮：({}, {})。",
+                "阶段 2/3：本地 OCR 已核对回复正文及其右侧提交按钮：({}, {})。",
                 x, y
             ));
             Point { x, y }
         }
-        ocr_result if options.stage2_ocr => {
-            let reason = match ocr_result {
-                Ok(None) => "OCR 未能核对已输入的回复文本或定位提交按钮；未点击发送".to_string(),
-                Err(error) => {
-                    format!("提交前 OCR 识别失败：{error:#}；未点击发送")
-                }
-                Ok(Some(_)) => unreachable!(),
-            };
-            return recover_from_ocr_composer_failure(
-                &dir,
-                &id,
-                &typed,
-                &mut screenshots,
-                author_name,
-                account_handle,
-                posted_at,
-                post_text,
-                cancel,
-                &reason,
-            );
-        }
-        ocr_result => {
-            match ocr_result {
-                Ok(None) => automation::log_event(
-                    "阶段 2/3：ppocr-rs 未能同时核对回复文本和按钮，回退到 AI 识别。",
-                ),
-                Err(error) => automation::log_event(&format!(
-                    "阶段 2/3：ppocr-rs 失败（{error}），回退到 AI 识别。"
-                )),
-                Ok(Some(_)) => unreachable!(),
-            }
-            let (typed_decision, _) = ask(
-                &options,
-                &typed,
-                &format!(
-                    "检查输入内容：{reply_text}。只有当这段文字确实显示在原帖下方的回复文本编辑区时，才设置 text_matches=true、reply_field_matches=true、poll_mode=false。若文字出现在投票选项、发帖正文或其他控件中，设置 ok=false、reply_field_matches=false；若是投票编辑界面，poll_mode=true，绝不返回可点击坐标。确认文本正确后，直接根据这张完整截图定位当前弹窗底部黑色“回复”文字按钮的可见边界，返回按钮矩形的几何中心；不要猜测、沿用示例坐标或依据其他运行的按钮位置，不要把回复气泡图标、工具栏或其他按钮当作目标。返回合法 JSON，字段为 ok、text_matches、reply_field_matches、poll_mode、point、reason；point 必须是本张截图中按钮中心的像素整数坐标 [x,y]，范围 x=0..{}、y=0..{}。不要点击任何按钮。截图尺寸 {}x{}。",
-                    typed.width - 1,
-                    typed.height - 1,
-                    typed.width,
-                    typed.height
-                ),
-                cancel,
-            )?;
-            require_ok(&typed_decision, "输入内容未通过回复框核对")?;
-            anyhow::ensure!(
-                typed_decision.text_matches && typed_decision.reply_field_matches,
-                "AI 未确认文本位于回复编辑区，已停止，未点击提交"
-            );
-            anyhow::ensure!(
-                !typed_decision.poll_mode,
-                "检测到投票编辑模式，已停止，未点击提交"
-            );
-            require_point(
-                &typed_decision,
-                typed.width,
-                typed.height,
-                "弹窗中的“回复”提交按钮",
-            )?
-        }
+        Ok(None) => anyhow::bail!(
+            "本地 OCR 未能在已核验回复正文右侧定位提交按钮；禁止使用 AI 猜测坐标，未点击发送"
+        ),
+        Err(error) => anyhow::bail!(
+            "提交按钮局部 OCR 校验失败：{error:#}；禁止使用 AI 坐标兜底，未点击发送"
+        ),
     };
 
     if !options.auto_send {
@@ -1393,6 +1340,25 @@ fn run_visual_reply_inner(
         target_region_unchanged(&typed, &pre_submit, &send_button, "弹窗中的‘回复’按钮")?,
         "回复弹窗内容发生变化，提交按钮坐标已过期；已停止"
     );
+    let refreshed_button = ocr::locate_reply_submit_button(
+        &pre_submit.png,
+        &reply_text,
+        pre_submit.width,
+        pre_submit.height,
+    )?
+    .ok_or_else(|| anyhow::anyhow!(
+        "点击前二次 OCR 未能在回复正文右侧重新确认提交按钮；已停止，未点击发送"
+    ))?;
+    anyhow::ensure!(
+        send_button.x.abs_diff(refreshed_button.0) <= 12
+            && send_button.y.abs_diff(refreshed_button.1) <= 12,
+        "提交按钮位置发生变化：首次=({}, {})，二次=({}, {})；禁止点击过期坐标",
+        send_button.x, send_button.y, refreshed_button.0, refreshed_button.1
+    );
+    automation::log_event(&format!(
+        "阶段 3/3：点击前二次 OCR 坐标复核通过，按钮位置=({}, {})。",
+        refreshed_button.0, refreshed_button.1
+    ));
     native::move_cursor_to_reply(send_button.x, send_button.y)?;
     *current_stage = "阶段 3/3（点击发送并确认结果）".to_string();
     automation::log_event("========== 阶段 3/3：点击‘回复’并判断回复是否完成 ==========");
