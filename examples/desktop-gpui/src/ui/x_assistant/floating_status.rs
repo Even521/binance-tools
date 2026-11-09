@@ -201,26 +201,30 @@ mod windows_overlay {
         }
     }
 
-    unsafe fn browser_toolbar_position() -> Option<(i32, i32)> {
-        let browser = FindWindowW(w!("Chrome_WidgetWin_1"), None)
-            .or_else(|_| FindWindowW(w!("MozillaWindowClass"), None))
-            .ok()?;
+    fn browser_toolbar_position() -> Option<(i32, i32)> {
+        // Win32 window inspection APIs are unsafe; keep the boundary explicit here
+        // instead of relying on the Rust 2024 unsafe_op_in_unsafe_fn exception.
+        unsafe {
+            let browser = FindWindowW(w!("Chrome_WidgetWin_1"), None)
+                .or_else(|_| FindWindowW(w!("MozillaWindowClass"), None))
+                .ok()?;
 
-        if browser.is_invalid() || IsIconic(browser).as_bool() {
-            return None;
+            if browser.is_invalid() || IsIconic(browser).as_bool() {
+                return None;
+            }
+
+            let mut rect = RECT::default();
+            GetWindowRect(browser, &mut rect).ok()?;
+
+            // Chromium's address/toolbar row is near the top of the non-client area.
+            // Keep the small logo marker at the far-right end of that row.
+            let x = rect.right - OVERLAY_WIDTH - 12;
+            let y = rect.top + 48;
+            Some((x, y))
         }
-
-        let mut rect = RECT::default();
-        GetWindowRect(browser, &mut rect).ok()?;
-
-        // Chromium's address/toolbar row is near the top of the non-client area.
-        // Keep the small logo marker at the far-right end of that row.
-        let x = rect.right - OVERLAY_WIDTH - 12;
-        let y = rect.top + 48;
-        Some((x, y))
     }
 
-    unsafe fn load_embedded_icon() -> Option<HICON> {
+    fn load_embedded_icon() -> Option<HICON> {
         let bytes = include_bytes!("../../../assets/app.ico");
         if bytes.len() < 22 {
             return None;
@@ -247,8 +251,8 @@ mod windows_overlay {
         let image_end = image_offset.checked_add(image_size)?;
         let image = bytes.get(image_offset..image_end)?;
 
-        CreateIconFromResourceEx(image, true, 0x0003_0000, 24, 24, IMAGE_FLAGS(0))
-        .ok()
+        // Creating a native icon transfers raw resource bytes to Win32.
+        unsafe { CreateIconFromResourceEx(image, true, 0x0003_0000, 24, 24, IMAGE_FLAGS(0)).ok() }
     }
 
     unsafe extern "system" fn window_proc(
@@ -257,7 +261,10 @@ mod windows_overlay {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match message {
+        // Window-procedure callbacks are invoked by Win32; isolate all native drawing
+        // calls in one explicit unsafe block for Rust 2024.
+        unsafe {
+            match message {
             WM_ERASEBKGND => LRESULT(1),
             WM_PAINT => {
                 let mut paint = PAINTSTRUCT::default();
@@ -305,6 +312,7 @@ mod windows_overlay {
             }
             WM_DESTROY => LRESULT(0),
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
+            }
         }
     }
 }
