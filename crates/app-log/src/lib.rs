@@ -111,7 +111,24 @@ pub fn daily_file_name(file_name: &str) -> io::Result<String> {
         ));
     }
 
-    let date = beijing_now().format("%Y-%m-%d");
+    daily_file_name_at(file_name, &beijing_now())
+}
+
+fn daily_file_name_at(
+    file_name: &str,
+    now: &DateTime<FixedOffset>,
+) -> io::Result<String> {
+    let file_path = Path::new(file_name);
+    if file_name.is_empty()
+        || file_path.file_name().and_then(|name| name.to_str()) != Some(file_name)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log file name must be a plain file name",
+        ));
+    }
+
+    let date = now.format("%Y-%m-%d");
     match file_path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) => {
             let stem = file_path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(file_name);
@@ -146,10 +163,11 @@ pub fn write_to(
         .map_err(|_| io::Error::other("log writer lock poisoned"))?;
 
     // 日期和文件名在同一次写入中计算，跨越北京时间零点后自动切换新文件。
-    let daily_name = daily_file_name(file_name)?;
+    let now = beijing_now();
+    let daily_name = daily_file_name_at(file_name, &now)?;
     let path = directory.join(daily_name);
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let timestamp = beijing_now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let timestamp = now.format("%Y-%m-%d %H:%M:%S%.3f");
     writeln!(file, "[{timestamp} +08:00] [{}] {}", level.as_str(), message.as_ref())?;
     file.flush()
 }
