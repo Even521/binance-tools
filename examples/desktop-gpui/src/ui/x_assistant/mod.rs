@@ -967,9 +967,9 @@ impl XAssistantPage {
             .child(post_history_button)
             .child(task_settings_button)
             .child(div().flex_1())
-            .child(run_state)
             .child(start_all_button)
             .child(stop_all_button)
+            .child(run_state)
             .into_any_element()
     }
 }
@@ -994,11 +994,11 @@ impl Render for XAssistantPage {
             let post_total = today_posts.len() as u64;
             let post_success = today_posts.iter().filter(|post| post.status == "published").count() as u64;
             let post_failed = today_posts.iter().filter(|post| post.status == "failed").count() as u64;
-            let stat = |label: &'static str, value: u64, color: gpui::Hsla| {
+            let stat = |label: &'static str, value: u64, color: gpui::Hsla, label_color: gpui::Hsla, background: gpui::Hsla| {
                 div().flex_1().min_w_0().rounded(px(7.)).border_1()
-                    .border_color(palette::border(theme)).bg(palette::surface(theme))
+                    .border_color(background).bg(background)
                     .px_3().py_2()
-                    .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
+                    .child(div().text_size(px(10.)).text_color(label_color).child(label))
                     .child(div().text_size(px(18.)).font_semibold().text_color(color).child(value.to_string()))
             };
             let log_content = if self.log_tail.is_none() {
@@ -1017,27 +1017,23 @@ impl Render for XAssistantPage {
                     })).into_any_element()
             };
             return v_flex().size_full().min_h_0().gap_3().p_4()
-                .child(v_flex().gap_1()
-                    .child(div().text_size(px(18.)).font_semibold().child("X 助手"))
-                    .child(div().text_size(px(12.)).text_color(palette::muted(theme))
-                        .child("自动化工作台")))
                 .child(menu)
                 .child(h_flex().gap_3()
                     .child(v_flex().flex_1().min_w_0().gap_2()
                         .child(div().text_size(px(13.)).font_semibold().child("自动回复统计"))
                         .child(h_flex().gap_2()
-                            .child(stat("今日总数", reply_stats.as_ref().map_or(0, |v| v.today_total), palette::text(theme)))
-                            .child(stat("成功", reply_stats.as_ref().map_or(0, |v| v.today_success), theme.success))
-                            .child(stat("失败", reply_stats.as_ref().map_or(0, |v| v.today_failed), palette::error_text()))))
+                            .child(stat("今日总数", reply_stats.as_ref().map_or(0, |v| v.today_total), gpui::hsla(0.59, 0.75, 0.34, 1.0), gpui::hsla(0.59, 0.48, 0.43, 1.0), gpui::hsla(0.59, 0.72, 0.95, 1.0)))
+                            .child(stat("成功", reply_stats.as_ref().map_or(0, |v| v.today_success), gpui::hsla(0.39, 0.52, 0.34, 1.0), gpui::hsla(0.39, 0.38, 0.42, 1.0), gpui::hsla(0.39, 0.42, 0.94, 1.0)))
+                            .child(stat("失败", reply_stats.as_ref().map_or(0, |v| v.today_failed), gpui::hsla(0.00, 0.62, 0.42, 1.0), gpui::hsla(0.00, 0.45, 0.48, 1.0), gpui::hsla(0.00, 0.72, 0.95, 1.0))))
                     .child(v_flex().flex_1().min_w_0().gap_2()
                         .child(div().text_size(px(13.)).font_semibold().child("自动发帖统计"))
                         .child(h_flex().gap_2()
-                            .child(stat("今日总数", post_total, palette::text(theme)))
-                            .child(stat("成功", post_success, theme.success))
-                            .child(stat("失败", post_failed, palette::error_text())))))
+                            .child(stat("今日总数", post_total, gpui::hsla(0.59, 0.75, 0.34, 1.0), gpui::hsla(0.59, 0.48, 0.43, 1.0), gpui::hsla(0.59, 0.72, 0.95, 1.0)))
+                            .child(stat("成功", post_success, gpui::hsla(0.39, 0.52, 0.34, 1.0), gpui::hsla(0.39, 0.38, 0.42, 1.0), gpui::hsla(0.39, 0.42, 0.94, 1.0)))
+                            .child(stat("失败", post_failed, gpui::hsla(0.00, 0.62, 0.42, 1.0), gpui::hsla(0.00, 0.45, 0.48, 1.0), gpui::hsla(0.00, 0.72, 0.95, 1.0)))))
                 .child(v_flex().flex_1().min_h_0().gap_2()
                     .rounded(px(8.)).border_1().border_color(palette::border(theme))
-                    .bg(palette::surface(theme)).p_3()
+                    .bg(gpui::hsla(0.61, 0.08, 0.95, 1.0)).p_3()
                     .child(h_flex().items_center().justify_between()
                         .child(div().text_size(px(14.)).font_semibold().child("实时运行日志"))
                         .child(div().text_size(px(11.)).text_color(if self.replying { theme.success } else { palette::muted(theme) })
