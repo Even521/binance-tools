@@ -779,7 +779,6 @@ impl XAssistantPage {
     // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
     fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_run_status;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -807,7 +806,6 @@ impl XAssistantPage {
     }
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -828,7 +826,6 @@ impl XAssistantPage {
     }
     fn render_auto_post_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_auto_post;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -872,7 +869,6 @@ impl XAssistantPage {
 
     fn render_reply_list_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_reply_list;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -893,7 +889,6 @@ impl XAssistantPage {
     }
     fn render_post_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_post_history;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -914,7 +909,6 @@ impl XAssistantPage {
     }
     fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_task_settings;
-        let theme = cx.theme();
         v_flex()
             .w(px(112.))
             .gap_1()
