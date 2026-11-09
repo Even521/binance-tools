@@ -235,7 +235,13 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show("自动发帖"));
+                let accent = cx.theme().primary.to_rgb();
+                let accent = (
+                    (accent.r * 255.0).round() as u8,
+                    (accent.g * 255.0).round() as u8,
+                    (accent.b * 255.0).round() as u8,
+                );
+                this.floating_status = Some(floating_status::FloatingStatus::show("自动发帖", accent));
                 cx.minimize_window();
                 cx.notify();
             });
@@ -341,7 +347,13 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show("测试发帖"));
+                let accent = cx.theme().primary.to_rgb();
+                let accent = (
+                    (accent.r * 255.0).round() as u8,
+                    (accent.g * 255.0).round() as u8,
+                    (accent.b * 255.0).round() as u8,
+                );
+                this.floating_status = Some(floating_status::FloatingStatus::show("测试发帖", accent));
                 cx.minimize_window();
                 cx.notify();
             });
@@ -445,7 +457,13 @@ impl XAssistantPage {
             }
 
             _ = this.update(cx, |this, cx| {
-                this.floating_status = Some(floating_status::FloatingStatus::show("自动回复"));
+                let accent = cx.theme().primary.to_rgb();
+                let accent = (
+                    (accent.r * 255.0).round() as u8,
+                    (accent.g * 255.0).round() as u8,
+                    (accent.b * 255.0).round() as u8,
+                );
+                this.floating_status = Some(floating_status::FloatingStatus::show("自动回复", accent));
                 cx.minimize_window();
                 cx.notify();
             });
