@@ -158,10 +158,9 @@ impl XAssistantPage {
             // 自动回复与自动发帖同时启用时，必须先完成自动回复首轮。
             // 若自动发送被关闭，不允许静默退化为“启动后立即发帖”。
             if self.task_settings.auto_reply_enabled && !self.auto_send {
-                self.status = None;
-                self.error = Some(
-                    "自动回复调度已开启，但「自动发送」处于关闭状态。为避免启动后直接发帖，请先开启自动发送，再开始自动化。"
-                        .to_string(),
+                self.error = None;
+                self.status = Some(
+                    "启动条件未满足：自动回复与自动发帖同时启用时，请先在自动回复页面开启「自动发送」，再启动自动化。".to_string(),
                 );
                 cx.notify();
                 return;
@@ -170,8 +169,8 @@ impl XAssistantPage {
             return;
         }
         if !self.task_settings.auto_reply_enabled {
-            self.error = Some("没有可启动的自动化任务。请先在「任务设置」中开启自动回复或自动发帖。".to_string());
-            self.status = None;
+            self.error = None;
+            self.status = Some("尚未配置自动化任务：请先在「任务设置」中开启自动回复或自动发帖。".to_string());
             cx.notify();
             return;
         }
@@ -846,12 +845,13 @@ impl XAssistantPage {
             .into_any_element()
     }
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
         Button::new("x-assistant-start-all-automation")
             .label("开始")
             .small()
             .rounded_full()
-            .bg(gpui::hsla(0.39, 0.58, 0.40, 1.0))
-            .text_color(gpui::hsla(0.0, 0.0, 1.0, 1.0))
+            .bg(if self.replying { gpui::hsla(0.39, 0.58, 0.40, 1.0) } else { palette::surface(theme) })
+            .text_color(if self.replying { gpui::hsla(0.0, 0.0, 1.0, 1.0) } else { palette::text(theme) })
             .px_4()
             .disabled(self.replying)
             .tooltip("启动自动化回复、发帖")
@@ -860,12 +860,13 @@ impl XAssistantPage {
     }
 
     fn render_stop_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
         Button::new("x-assistant-stop-all-automation")
             .label("停止")
             .small()
             .rounded_full()
-            .bg(gpui::hsla(0.00, 0.68, 0.52, 1.0))
-            .text_color(gpui::hsla(0.0, 0.0, 1.0, 1.0))
+            .bg(if self.replying { gpui::hsla(0.00, 0.68, 0.52, 1.0) } else { palette::surface(theme) })
+            .text_color(if self.replying { gpui::hsla(0.0, 0.0, 1.0, 1.0) } else { palette::text(theme) })
             .px_4()
             .disabled(!self.replying)
             .tooltip("中断自动化")
