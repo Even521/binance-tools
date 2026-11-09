@@ -609,7 +609,7 @@ impl XAssistantPage {
 
     fn adjust_daily_reply_limit(&mut self, delta: i16, cx: &mut Context<Self>) {
         let next = i32::from(self.task_settings.daily_reply_limit) + i32::from(delta);
-        self.task_settings.daily_reply_limit = next.clamp(1, 500) as u16;
+        self.task_settings.daily_reply_limit = next.clamp(100, 10_000) as u16;
         self.persist_task_settings(cx);
     }
 
@@ -736,8 +736,8 @@ impl XAssistantPage {
             .outline()
             .label("−")
             .on_click(cx.listener(|this, _, _, cx| {
-                app_log::x_info!("X 任务设置：每日最大回复数减 10");
-                this.adjust_daily_reply_limit(-10, cx);
+                app_log::x_info!("X 任务设置：每日最大回复数减 100");
+                this.adjust_daily_reply_limit(-100, cx);
             }))
             .into_any_element();
 
@@ -746,8 +746,8 @@ impl XAssistantPage {
             .outline()
             .label("+")
             .on_click(cx.listener(|this, _, _, cx| {
-                app_log::x_info!("X 任务设置：每日最大回复数加 10");
-                this.adjust_daily_reply_limit(10, cx);
+                app_log::x_info!("X 任务设置：每日最大回复数加 100");
+                this.adjust_daily_reply_limit(100, cx);
             }))
             .into_any_element();
 
