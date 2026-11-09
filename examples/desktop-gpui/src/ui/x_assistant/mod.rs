@@ -151,13 +151,23 @@ impl XAssistantPage {
     }
 
     fn start_all_automation(&mut self, cx: &mut Context<Self>) {
+        app_log::x_info!(
+            "[全局开始] 进入 start_all_automation：replying={}，自动回复={}，自动发帖={}，自动发送={}",
+            self.replying,
+            self.task_settings.auto_reply_enabled,
+            self.task_settings.auto_post_enabled,
+            self.auto_send
+        );
         if self.replying {
+            app_log::x_warn!("[全局开始] 忽略启动请求：当前任务仍在运行");
             return;
         }
         if self.task_settings.auto_post_enabled {
+            app_log::x_info!("[全局开始] 分流到 start_auto_post");
             // 自动回复与自动发帖同时启用时，必须先完成自动回复首轮。
             // 若自动发送被关闭，不允许静默退化为“启动后立即发帖”。
             if self.task_settings.auto_reply_enabled && !self.auto_send {
+                app_log::x_warn!("[全局开始] 启动条件不满足：自动回复和自动发帖同时开启，但自动发送关闭");
                 self.error = None;
                 self.status = Some(
                     "启动条件未满足：自动回复与自动发帖同时启用时，请先在自动回复页面开启「自动发送」，再启动自动化。".to_string(),
@@ -169,16 +179,24 @@ impl XAssistantPage {
             return;
         }
         if !self.task_settings.auto_reply_enabled {
+            app_log::x_warn!("[全局开始] 未启动：自动回复和自动发帖均未开启");
             self.error = None;
             self.status = Some("尚未配置自动化任务：请先在「任务设置」中开启自动回复或自动发帖。".to_string());
             cx.notify();
             return;
         }
+        app_log::x_info!("[全局开始] 分流到 start_visual_reply（全自动回复）");
         self.start_visual_reply(false, true, true, cx);
     }
 
     fn start_auto_post(&mut self, cx: &mut Context<Self>) {
+        app_log::x_info!(
+            "[自动发帖启动] 进入 start_auto_post：replying={}，自动发帖={}",
+            self.replying,
+            self.task_settings.auto_post_enabled
+        );
         if self.replying || !self.task_settings.auto_post_enabled {
+            app_log::x_warn!("[自动发帖启动] 启动被拦截：任务正在运行或自动发帖开关关闭");
             return;
         }
         self.replying = true;
@@ -855,7 +873,10 @@ impl XAssistantPage {
             .px_4()
             .disabled(self.replying)
             .tooltip("启动自动化回复、发帖")
-            .on_click(cx.listener(|this, _, _, cx| this.start_all_automation(cx)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                app_log::x_info!("[全局开始按钮] 点击事件已触发");
+                this.start_all_automation(cx);
+            }))
             .into_any_element()
     }
 
