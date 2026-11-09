@@ -64,7 +64,8 @@ mod windows_overlay {
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-            PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TextOutW, TRANSPARENT,
+            FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, PAINTSTRUCT,
+            SelectObject, SetBkMode, SetTextColor, TextOutW, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -289,11 +290,13 @@ mod windows_overlay {
                     let _ = SetBkMode(dc, TRANSPARENT);
                     // 原生默认字体在 180px 宽的悬浮条里过大，显式缩小并使用 Segoe UI。
                     let title_font = CreateFontW(
-                        -13, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
+                        -13, 0, 0, 0, 600, 0, 0, 0, FONT_CHARSET(1), FONT_OUTPUT_PRECISION(0),
+                        FONT_CLIP_PRECISION(0), FONT_QUALITY(5), 0,
                         w!("Segoe UI"),
                     );
                     let task_font = CreateFontW(
-                        -11, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+                        -11, 0, 0, 0, 400, 0, 0, 0, FONT_CHARSET(1), FONT_OUTPUT_PRECISION(0),
+                        FONT_CLIP_PRECISION(0), FONT_QUALITY(5), 0,
                         w!("Segoe UI"),
                     );
                     let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
