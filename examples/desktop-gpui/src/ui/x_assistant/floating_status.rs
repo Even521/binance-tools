@@ -71,8 +71,8 @@ mod windows_overlay {
             ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
             DI_NORMAL, HICON, HWND_TOPMOST, IMAGE_FLAGS, LWA_COLORKEY, SW_HIDE,
             SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY,
-            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST, WS_POPUP,
+            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED | WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
     };
     use windows::core::w;
@@ -253,7 +253,7 @@ mod windows_overlay {
                 };
                 let background = CreateSolidBrush(COLOR_KEY);
                 let _ = FillRect(dc, &rect, background);
-                let _ = DeleteObject(background);
+                let _ = DeleteObject(background.into());
 
                 let icon = HICON(ICON_HANDLE.load(Ordering::Acquire) as _);
                 if !icon.is_invalid() {
@@ -262,10 +262,10 @@ mod windows_overlay {
 
                 // Green dot means the automation task is active.
                 let dot = CreateSolidBrush(COLORREF(0x0000C853));
-                let previous = SelectObject(dc, dot);
+                let previous = SelectObject(dc, dot.into());
                 let _ = Ellipse(dc, 30, 9, 40, 19);
                 let _ = SelectObject(dc, previous);
-                let _ = DeleteObject(dot);
+                let _ = DeleteObject(dot.into());
 
                 let _ = EndPaint(hwnd, &paint);
                 LRESULT(0)
