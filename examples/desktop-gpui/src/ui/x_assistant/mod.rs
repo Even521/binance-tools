@@ -236,6 +236,7 @@ impl XAssistantPage {
         self.replying = true;
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
+        self.cancel_reason = Arc::new(AtomicU8::new(0));
         self.status = Some(
             "测试发帖已启动：只选取一条所选类型新闻，完成真实发布与结果核验；不会启动连续发布。".to_string(),
         );
@@ -299,6 +300,7 @@ impl XAssistantPage {
         self.replying = true;
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
+        self.cancel_reason = Arc::new(AtomicU8::new(0));
         let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
         app_log::x_info!(
             "X 视觉回复启动：创建独立取消令牌 token=0x{:x}，hover_only={}，stage2_ocr={}，full_auto={}",
