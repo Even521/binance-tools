@@ -400,21 +400,23 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
     anyhow::ensure!(width >= 800 && height >= 600, "截图尺寸不足，无法检测 compose 弹窗");
     let background = estimate_overlay_luminance(&source);
     let threshold = background.saturating_add(18).min(250);
-    let x_start = width * 15 / 100;
-    let x_end = width * 85 / 100;
-    let y_start = height * 8 / 100;
-    let y_end = height * 92 / 100;
-    let row_counts = bright_row_projection(&source, x_start, x_end, y_start, y_end, threshold);
-    let (top_offset, bottom_offset) = projection_span(&row_counts, (x_end - x_start) / 8, 14)
-        .ok_or_else(|| anyhow::anyhow!("未检测到可信的明亮 compose 弹窗边界"))?;
-    let top = y_start + top_offset as u32;
-    let bottom = y_start + bottom_offset as u32;
-    let column_counts = bright_column_projection(&source, y_start + top_offset as u32,
-        y_start + bottom_offset as u32, x_start, x_end, threshold);
-    let (left_offset, right_offset) = projection_span(&column_counts, (bottom - top) / 8, 14)
-        .ok_or_else(|| anyhow::anyhow!("未检测到可信的 compose 弹窗左右边界"))?;
-    let left = x_start + left_offset as u32;
-    let right = x_start + right_offset as u32;
+    let bounds = detect_bright_bounds(
+        &source, width * 15 / 100, height * 8 / 100,
+        width * 85 / 100, height * 92 / 100, threshold,
+    ).ok_or_else(|| anyhow::anyhow!("未检测到可信的明亮 compose 弹窗边界"))?;
+    let (left, top, right, bottom) = bounds;
+    if let Some(inner) = detect_bright_bounds(&source, left, top, right, bottom, 245) {
+        let inner_width = inner.2.saturating_sub(inner.0);
+        let inner_height = inner.3.saturating_sub(inner.1);
+        if inner_width * 100 < (right - left) * 82
+            && inner_height * 100 < (bottom - top) * 82
+        {
+            anyhow::bail!(
+                "检测到嵌套二次确认框，外层弹窗={}x{}，内层区域={}x{}；禁止继续回复或点击",
+                right - left, bottom - top, inner_width, inner_height
+            );
+        }
+    }
     let padding = 8_u32;
     let left = left.saturating_sub(padding);
     let top = top.saturating_sub(padding);
@@ -442,6 +444,19 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
         width: crop_width,
         height: crop_height,
     })
+}
+
+fn detect_bright_bounds(
+    image: &image::RgbaImage, left: u32, top: u32,
+    right: u32, bottom: u32, threshold: u8,
+) -> Option<(u32, u32, u32, u32)> {
+    let rows = bright_row_projection(image, left, right, top, bottom, threshold);
+    let (top_offset, bottom_offset) = projection_span(&rows, (right - left) / 8, 14)?;
+    let top = top + top_offset as u32;
+    let bottom = top + (bottom_offset - top_offset) as u32;
+    let columns = bright_column_projection(image, top, bottom, left, right, threshold);
+    let (left_offset, right_offset) = projection_span(&columns, (bottom - top) / 8, 14)?;
+    Some((left + left_offset as u32, top, left + right_offset as u32, bottom))
 }
 
 fn estimate_overlay_luminance(image: &image::RgbaImage) -> u8 {
