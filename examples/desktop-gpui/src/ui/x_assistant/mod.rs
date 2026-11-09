@@ -293,6 +293,9 @@ impl XAssistantPage {
             &self.task_settings.auto_post_news_type,
         );
         app_log::x_info!("X 自动发帖测试：任务已提交后台，新闻类型={:?}", filter);
+        let task_finished = Arc::new(AtomicBool::new(false));
+        self.task_finished = Arc::clone(&task_finished);
+        let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -370,6 +373,9 @@ impl XAssistantPage {
         let cancel = Arc::clone(&self.cancel_reply);
         let cancel_for_ui = Arc::clone(&cancel);
         let cancel_reason_for_ui = Arc::clone(&self.cancel_reason);
+        let task_finished = Arc::new(AtomicBool::new(false));
+        self.task_finished = Arc::clone(&task_finished);
+        let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
