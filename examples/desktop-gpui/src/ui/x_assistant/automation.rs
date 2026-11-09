@@ -19,7 +19,7 @@ pub(super) mod native {
     };
 
     use windows::Win32::{
-        Foundation::{CloseHandle, POINT, RECT},
+        Foundation::{BOOL, CloseHandle, LPARAM, POINT, RECT},
         System::Threading::{
             OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
             PROCESS_QUERY_LIMITED_INFORMATION,
@@ -36,31 +36,37 @@ pub(super) mod native {
                 MOUSEINPUT, SendInput, VIRTUAL_KEY,
             },
             WindowsAndMessaging::{
-                FindWindowW, GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow,
-                GetSystemMetrics, GetWindowThreadProcessId, SM_CXSCREEN, SM_CYSCREEN,
+                EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
+                GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
+                IsWindowVisible, SM_CXSCREEN, SM_CYSCREEN,
                 SW_MAXIMIZE, SetCursorPos,
                 SetForegroundWindow, ShowWindow,
             },
         },
     };
 
-    /// 启动前严格确认 Google Chrome 可用，并将自动化目标窗口切到前台。
-    /// 不回退到 Firefox，避免悬浮条与实际自动化窗口不一致。
-    pub fn activate_chrome_browser() -> anyhow::Result<()> {
-        let chrome = unsafe { FindWindowW(windows::core::w!("Chrome_WidgetWin_1"), None) }
-            .unwrap_or_default();
-        anyhow::ensure!(
-            !chrome.is_invalid(),
-            "未找到 Google Chrome 窗口，请先打开 Chrome 并登录 X 后再启动自动化"
-        );
+    /// 枚举所有可见顶层窗口，避免 FindWindowW 先命中 Edge 等 Chromium 浏览器。
+    unsafe extern "system" fn collect_visible_top_level_windows(hwnd: windows::Win32::Foundation::HWND, data: LPARAM) -> BOOL {
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            let windows = unsafe { &mut *(data.0 as *mut Vec<windows::Win32::Foundation::HWND>) };
+            windows.push(hwnd);
+        }
+        BOOL(1)
+    }
 
+    /// 读取窗口所属进程的可执行文件名；无法访问的进程返回 None。
+    fn window_process_executable(
+        hwnd: windows::Win32::Foundation::HWND,
+    ) -> Option<String> {
         let mut process_id = 0u32;
-        unsafe { GetWindowThreadProcessId(chrome, Some(&mut process_id)) };
-        anyhow::ensure!(process_id != 0, "无法确认浏览器窗口所属进程");
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+        if process_id == 0 {
+            return None;
+        }
 
         let process = unsafe {
             OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
-        }?;
+        }.ok()?;
         let mut image_path = [0u16; 1024];
         let mut image_path_len = image_path.len() as u32;
         let image_result = unsafe {
@@ -72,13 +78,41 @@ pub(super) mod native {
             )
         };
         let _ = unsafe { CloseHandle(process) };
-        image_result?;
+        if image_result.is_err() {
+            return None;
+        }
+
         let image_path = String::from_utf16_lossy(&image_path[..image_path_len as usize]);
-        let executable = image_path.rsplit(['\\', '/']).next().unwrap_or_default();
-        anyhow::ensure!(
-            executable.eq_ignore_ascii_case("chrome.exe"),
-            "找到的是 Chromium 内核浏览器，但不是 Google Chrome：{executable}"
-        );
+        Some(
+            image_path
+                .rsplit(['\\\\', '/'])
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// 启动前严格确认 Google Chrome 可用，并将真正的 Chrome 窗口切到前台。
+    /// 不会因为 Edge 等 Chromium 浏览器排在窗口枚举前面而误判。
+    pub fn activate_chrome_browser() -> anyhow::Result<()> {
+        let mut candidates = Vec::new();
+        unsafe {
+            EnumWindows(
+                Some(collect_visible_top_level_windows),
+                LPARAM(&mut candidates as *mut Vec<windows::Win32::Foundation::HWND> as isize),
+            )
+        }?;
+
+        let chrome = candidates.into_iter().find(|hwnd| {
+            window_process_executable(*hwnd)
+                .is_some_and(|name| name.eq_ignore_ascii_case("chrome.exe"))
+        });
+
+        let chrome = chrome.ok_or_else(|| {
+            anyhow::anyhow!(
+                "未找到 Google Chrome 窗口。请先启动 Google Chrome（不是 Edge、Brave 等 Chromium 浏览器），并确认浏览器窗口未最小化。"
+            )
+        })?;
 
         let _ = unsafe { ShowWindow(chrome, SW_MAXIMIZE) };
         let _ = unsafe { SetForegroundWindow(chrome) };
@@ -87,6 +121,7 @@ pub(super) mod native {
             unsafe { GetForegroundWindow() } == chrome,
             "已找到 Google Chrome，但无法切换到前台；请检查浏览器是否被其他窗口或权限限制"
         );
+        app_log::x_info!("启动检查：已定位真正的 Google Chrome 窗口");
         Ok(())
     }
 
