@@ -1519,14 +1519,13 @@ fn save_reply_submit_ocr_diagnostic(
 
     let mut image = image::open(source_path)?.to_rgba8();
     let min_button_x = (reply_right + 12.0).max(crop.width as f32 * 0.52);
-    let max_button_x = crop.width as f32 * 0.98;
 
     // 红色：实际参与判断的提交按钮搜索区域（弹窗局部坐标映射到整张截图）。
     draw_diagnostic_rect(
         &mut image,
         crop.left as f32 + min_button_x,
         crop.top as f32 + submit_region_top,
-        crop.left as f32 + max_button_x,
+        crop.left as f32 + crop.width as f32,
         crop.top as f32 + submit_region_bottom,
         Rgba([235, 55, 55, 255]),
         3,
@@ -1557,7 +1556,6 @@ fn save_reply_submit_ocr_diagnostic(
         let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
         let exact_label = label == normalize_text("回复");
         let in_safe_zone = center_x >= min_button_x
-            && center_x <= max_button_x
             && center_y >= submit_region_top
             && center_y <= submit_region_bottom;
         let color = if exact_label && in_safe_zone {
