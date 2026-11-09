@@ -19,7 +19,7 @@ pub(super) mod native {
     };
 
     use windows::Win32::{
-        Foundation::{BOOL, CloseHandle, LPARAM, POINT, RECT},
+        Foundation::{CloseHandle, LPARAM, POINT, RECT},
         System::Threading::{
             OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
             PROCESS_QUERY_LIMITED_INFORMATION,
@@ -46,12 +46,12 @@ pub(super) mod native {
     };
 
     /// 枚举所有可见顶层窗口，避免 FindWindowW 先命中 Edge 等 Chromium 浏览器。
-    unsafe extern "system" fn collect_visible_top_level_windows(hwnd: windows::Win32::Foundation::HWND, data: LPARAM) -> BOOL {
+    unsafe extern "system" fn collect_visible_top_level_windows(hwnd: windows::Win32::Foundation::HWND, data: LPARAM) -> windows::core::BOOL {
         if unsafe { IsWindowVisible(hwnd) }.as_bool() {
             let windows = unsafe { &mut *(data.0 as *mut Vec<windows::Win32::Foundation::HWND>) };
             windows.push(hwnd);
         }
-        BOOL(1)
+        windows::core::BOOL(1)
     }
 
     /// 读取窗口所属进程的可执行文件名；无法访问的进程返回 None。
