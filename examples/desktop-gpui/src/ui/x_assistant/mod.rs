@@ -845,26 +845,25 @@ impl XAssistantPage {
             .into_any_element()
     }
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-start-all-automation")
-            .label(if self.replying { "自动化运行中…" } else { "开始自动化" })
-            .when(!self.replying, |button| button.primary())
-            .when(self.replying, |button| button.outline())
+        Button::new("x-assistant-start-all-automation")
+            .label("开始")
+            .primary()
             .small()
             .disabled(self.replying)
+            .tooltip("启动自动化回复、发帖")
             .on_click(cx.listener(|this, _, _, cx| this.start_all_automation(cx)))
-            .into_any_element();
-        button
+            .into_any_element()
     }
 
     fn render_stop_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let button = Button::new("x-assistant-stop-all-automation")
-            .label("停止自动化")
-            .outline()
+        Button::new("x-assistant-stop-all-automation")
+            .label("停止")
+            .danger()
             .small()
             .disabled(!self.replying)
+            .tooltip("中断自动化")
             .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx)))
-            .into_any_element();
-        button
+            .into_any_element()
     }
 
     fn render_reply_list_button(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -908,11 +907,23 @@ impl XAssistantPage {
             .into_any_element()
     }
     fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-assistant-task-settings")
-            .ghost()
-            .small()
-            .label("任务设置")
-            .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
+        let selected = self.show_task_settings;
+        v_flex()
+            .w(px(112.))
+            .gap_1()
+            .child(
+                Button::new("x-assistant-task-settings-tab")
+                    .ghost()
+                    .small()
+                    .label("任务设置")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(2.))
+                    .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
+            )
             .into_any_element()
     }
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -944,10 +955,47 @@ impl XAssistantPage {
             })
             .into_any_element();
 
-        // 五个主要页面使用下划线 Tabs；任务设置保留为独立入口。
+        // 六个页面统一使用下划线 Tabs；运行状态和全局控制按钮位于同一行。
+        let run_state = div()
+            .rounded_full()
+            .border_1()
+            .border_color(if self.error.is_some() {
+                gpui::hsla(0.00, 0.62, 0.78, 1.0)
+            } else if self.replying {
+                gpui::hsla(0.39, 0.42, 0.78, 1.0)
+            } else {
+                palette::border(theme)
+            })
+            .bg(if self.error.is_some() {
+                gpui::hsla(0.00, 0.72, 0.95, 1.0)
+            } else if self.replying {
+                gpui::hsla(0.39, 0.42, 0.94, 1.0)
+            } else {
+                palette::surface(theme)
+            })
+            .px_3()
+            .py_1()
+            .text_size(px(12.))
+            .font_semibold()
+            .text_color(if self.error.is_some() {
+                palette::error_text()
+            } else if self.replying {
+                gpui::hsla(0.39, 0.52, 0.30, 1.0)
+            } else {
+                palette::muted(theme)
+            })
+            .child(if self.error.is_some() {
+                "● 运行异常"
+            } else if self.replying {
+                "● 运行中"
+            } else {
+                "● 已停止"
+            })
+            .into_any_element();
+
         h_flex()
             .items_end()
-            .gap_3()
+            .gap_2()
             .child(status_button)
             .child(reply_flow_button)
             .child(auto_post_button)
@@ -955,9 +1003,9 @@ impl XAssistantPage {
             .child(post_history_button)
             .child(task_settings_button)
             .child(div().flex_1())
+            .child(run_state)
             .child(start_all_button)
             .child(stop_all_button)
-            .child(run_state)
             .into_any_element()
     }
 }
