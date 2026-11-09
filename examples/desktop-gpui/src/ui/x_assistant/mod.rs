@@ -77,31 +77,11 @@ pub struct XAssistantPage {
 impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
-        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
-        let reason_set = self.cancel_reason.compare_exchange(
-            0, 2, Ordering::AcqRel, Ordering::Acquire
-        ).is_ok();
-        let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
-        let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
-
-        if self.replying {
-            app_log::x_warn!(
-                "X 取消来源诊断：页面 Drop，token=0x{:x}，此前已取消={}，本次新发送={}，本次设置来源={}，最终来源={}，Drop 调用栈：{}",
-                token_id,
-                was_cancelled,
-                !was_cancelled,
-                reason_set,
-                cancel_reason,
-                Backtrace::force_capture()
-            );
-        } else {
-            app_log::x_info!(
-                "X 助手页面 Drop：token=0x{:x}，replying=false，此前已取消={}，本次新发送={}，最终来源={}",
-                token_id,
-                was_cancelled,
-                !was_cancelled,
-                cancel_reason
-            );
+        let was_running = self.replying;
+        self.cancel_reason.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire).ok();
+        self.cancel_reply.store(true, Ordering::Release);
+        if was_running {
+            app_log::x_info!("自动化页面关闭：已通知后台任务安全退出");
         }
     }
 }
@@ -410,14 +390,8 @@ impl XAssistantPage {
                 .await;
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
-            let cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
-            let token_id = Arc::as_ptr(&cancel_for_ui) as usize;
-            app_log::x_info!(
-                "X 视觉回复：后台任务已结束，token=0x{:x}，取消标记={}，取消来源={}（0=未知，1=用户停止，2=页面销毁），准备回收 UI 状态",
-                token_id,
-                was_cancelled,
-                cancel_reason
-            );
+            let _cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
+            app_log::x_info!(if was_cancelled { "自动回复后台任务已停止" } else { "自动回复后台任务已结束" });
 
             if let Err(update_error) = this.update(cx, |this, cx| {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
@@ -475,10 +449,7 @@ impl XAssistantPage {
                     }
                 }
                 cx.notify();
-                app_log::x_info!(
-                    "X 视觉回复：UI 状态已回收，replying={}",
-                    this.replying
-                );
+                app_log::x_info!("自动回复运行状态已更新");
             }) {
                 app_log::x_error!(
                     "X 视觉回复：后台已结束，但 GPUI UI 状态更新失败：{}",
@@ -750,21 +721,13 @@ impl XAssistantPage {
     }
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
-        let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
-        let reason_set = self.cancel_reason.compare_exchange(
-            0, 1, Ordering::AcqRel, Ordering::Acquire
-        ).is_ok();
-        let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
-        let was_running = self.cancel_reply.swap(true, Ordering::AcqRel);
-        app_log::x_warn!(
-            "X 取消来源诊断：停止按钮写入取消标记，token=0x{:x}，此前已取消={}，本次新发送={}，本次设置来源={}，最终来源={}，调用栈：{}",
-            token_id,
-            was_running,
-            !was_running,
-            reason_set,
-            cancel_reason,
-            Backtrace::force_capture()
-        );
+        self.cancel_reason.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
+        let was_running = !self.cancel_reply.swap(true, Ordering::AcqRel);
+        if was_running {
+            app_log::x_info!("自动化停止：已发送停止信号，等待当前步骤安全结束");
+        } else {
+            app_log::x_info!("自动化停止：停止信号此前已发送");
+        }
         self.status = Some("已收到停止请求，正在等待后台任务安全退出；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
     }
