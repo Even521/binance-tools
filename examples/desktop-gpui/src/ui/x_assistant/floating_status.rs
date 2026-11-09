@@ -70,9 +70,10 @@ mod windows_overlay {
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-            DispatchMessageW, DrawIconEx, FindWindowW, GetWindowRect, IsIconic, LoadCursorW,
-            MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos,
-            ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+            DispatchMessageW, DrawIconEx, EnumWindows, GetForegroundWindow, GetWindowRect,
+            GetWindowThreadProcessId, IsIconic, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE,
+            PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
+            TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
             DI_NORMAL, HICON, HWND_TOPMOST, IMAGE_FLAGS, LWA_COLORKEY, SW_HIDE,
             SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY,
             WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -83,6 +84,8 @@ mod windows_overlay {
 
     const OVERLAY_WIDTH: i32 = 180;
     const OVERLAY_HEIGHT: i32 = 40;
+    // 与浏览器右边缘留出更宽的间距，避免贴边遮挡扩展按钮。
+    const RIGHT_INSET: i32 = 32;
     const COLOR_KEY: COLORREF = COLORREF(0x00FF00FF);
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
@@ -203,12 +206,27 @@ mod windows_overlay {
     }
 
     fn browser_toolbar_position() -> Option<(i32, i32)> {
-        // Win32 window inspection APIs are unsafe; keep the boundary explicit here
-        // instead of relying on the Rust 2024 unsafe_op_in_unsafe_fn exception.
+        // 优先跟随当前前台浏览器；若短暂失去前台，则从可见 Chrome 窗口中
+        // 选择面积最大的主窗口，避免 FindWindowW 随枚举顺序命中其他窗口。
         unsafe {
-            let browser = FindWindowW(w!("Chrome_WidgetWin_1"), None)
-                .or_else(|_| FindWindowW(w!("MozillaWindowClass"), None))
-                .ok()?;
+            let foreground = GetForegroundWindow();
+            let foreground_is_browser = !foreground.is_invalid()
+                && {
+                    let mut process_id = 0u32;
+                    GetWindowThreadProcessId(foreground, Some(&mut process_id));
+                    process_id != 0 && is_chrome_process(process_id)
+                };
+
+            let browser = if foreground_is_browser {
+                foreground
+            } else {
+                let mut candidates: Vec<(HWND, i64)> = Vec::new();
+                let _ = EnumWindows(
+                    Some(collect_browser_windows),
+                    LPARAM(&mut candidates as *mut Vec<(HWND, i64)> as isize),
+                );
+                candidates.into_iter().max_by_key(|(_, area)| *area)?.0
+            };
 
             if browser.is_invalid() || IsIconic(browser).as_bool() {
                 return None;
@@ -217,12 +235,62 @@ mod windows_overlay {
             let mut rect = RECT::default();
             GetWindowRect(browser, &mut rect).ok()?;
 
-            // Chromium's address/toolbar row is near the top of the non-client area.
-            // Keep the small logo marker at the far-right end of that row.
-            let x = rect.right - OVERLAY_WIDTH - 12;
+            // 工具条固定在浏览器地址栏右侧，并向左留出更多空间。
+            let x = rect.right - OVERLAY_WIDTH - RIGHT_INSET;
             let y = rect.top + 48;
             Some((x, y))
         }
+    }
+
+    unsafe extern "system" fn collect_browser_windows(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() && !unsafe { IsIconic(hwnd) }.as_bool() {
+            let mut process_id = 0u32;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+            if process_id != 0 && unsafe { is_chrome_process(process_id) } {
+                let mut rect = RECT::default();
+                if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+                    let width = (rect.right - rect.left).max(0) as i64;
+                    let height = (rect.bottom - rect.top).max(0) as i64;
+                    if width > 0 && height > 0 {
+                        let windows = unsafe { &mut *(data.0 as *mut Vec<(HWND, i64)>) };
+                        windows.push((hwnd, width * height));
+                    }
+                }
+            }
+        }
+        windows::core::BOOL(1)
+    }
+
+    unsafe fn is_chrome_process(process_id: u32) -> bool {
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows::Win32::Foundation::CloseHandle;
+
+        let Ok(process) = (unsafe {
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
+        }) else {
+            return false;
+        };
+        let mut path = [0u16; 1024];
+        let mut length = path.len() as u32;
+        let result = unsafe {
+            QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_FORMAT(0),
+                windows::core::PWSTR(path.as_mut_ptr()),
+                &mut length,
+            )
+        };
+        let _ = unsafe { CloseHandle(process) };
+        if result.is_err() {
+            return false;
+        }
+        String::from_utf16_lossy(&path[..length as usize])
+            .rsplit(['\\', '/'])
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("chrome.exe"))
     }
 
     fn load_embedded_icon() -> Option<HICON> {
