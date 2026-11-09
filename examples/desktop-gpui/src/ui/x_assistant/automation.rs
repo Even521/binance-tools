@@ -39,6 +39,26 @@ pub(super) mod native {
         },
     };
 
+    /// 启动前严格确认 Google Chrome 可用，并将自动化目标窗口切到前台。
+    /// 不回退到 Firefox，避免悬浮条与实际自动化窗口不一致。
+    pub fn activate_chrome_browser() -> anyhow::Result<()> {
+        let chrome = unsafe { FindWindowW(windows::core::w!("Chrome_WidgetWin_1"), None) }
+            .unwrap_or_default();
+        anyhow::ensure!(
+            !chrome.is_invalid(),
+            "未找到 Google Chrome 窗口，请先打开 Chrome 并登录 X 后再启动自动化"
+        );
+
+        let _ = unsafe { ShowWindow(chrome, SW_MAXIMIZE) };
+        let _ = unsafe { SetForegroundWindow(chrome) };
+        thread::sleep(Duration::from_millis(350));
+        anyhow::ensure!(
+            unsafe { GetForegroundWindow() } == chrome,
+            "已找到 Google Chrome，但无法切换到前台；请检查浏览器是否被其他窗口或权限限制"
+        );
+        Ok(())
+    }
+
     pub fn activate_browser() -> anyhow::Result<()> {
         let foreground = unsafe { GetForegroundWindow() };
         let mut class_name = [0u16; 128];
@@ -604,6 +624,9 @@ pub(super) mod native {
     use anyhow::bail;
     use std::path::Path;
 
+    pub fn activate_chrome_browser() -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
     pub fn activate_browser() -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
