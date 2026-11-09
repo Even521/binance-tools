@@ -1387,7 +1387,7 @@ fn run_visual_reply_inner(
     let mut status = match recognize_send_status(&done.png) {
         Ok(status) => {
             automation::log_event(&format!(
-                "[自动回复][03/03]：ppocr-rs 耗时 {} ms，发送状态识别完成。",
+                "[OCR][发送状态] 识别成功，耗时 {} ms。",
                 ocr_started.elapsed().as_millis()
             ));
             status
@@ -1405,13 +1405,13 @@ fn run_visual_reply_inner(
     // 使用已存在的底部全宽、多阈值专用 OCR 再识别一次；它适用于帖子和回复。
     let mut sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
         Ok(true) => {
-            automation::log_event("[自动回复][03/03]：底部全宽专用 OCR 明确识别到 X 的“你的帖子已发送”提示。");
+            automation::log_event("[OCR][发送提示] 识别成功：X 已显示发送成功提示。");
             true
         }
         Ok(false) => false,
         Err(error) => {
             automation::log_event(&format!(
-                "[自动回复][03/03]：底部全宽成功提示 OCR 失败：${error:#}；继续只读视觉核验。"
+                "[OCR][发送提示] 识别失败：{error:#}；继续只读核验。"
             ));
             false
         }
@@ -1439,14 +1439,14 @@ fn run_visual_reply_inner(
             status = match recognize_send_status(&done.png) {
                 Ok(status) => status,
                 Err(error) => {
-                    automation::log_event(&format!("{stage} 发送状态 OCR 失败：{error:#}；继续只读核验。"));
+                    automation::log_event(&format!("[OCR][发送状态] 识别失败（{stage}）：{error:#}；继续只读核验。"));
                     Default::default()
                 }
             };
             sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
                 Ok(found) => found,
                 Err(error) => {
-                    automation::log_event(&format!("{stage} 成功提示 OCR 失败：{error:#}。"));
+                    automation::log_event(&format!("[OCR][发送提示] 识别失败（{stage}）：{error:#}。"));
                     false
                 }
             };
