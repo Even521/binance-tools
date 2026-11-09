@@ -4,7 +4,6 @@
 //! 未确认的提交状态会立即停止调度，等待人工核验。
 
 use std::{
-    backtrace::Backtrace,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
