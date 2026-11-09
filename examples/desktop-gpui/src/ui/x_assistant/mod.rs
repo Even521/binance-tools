@@ -798,11 +798,11 @@ impl XAssistantPage {
         let button = Button::new("x-assistant-reply-flow-tab")
             .label("自动回复")
             .when(
-                !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post,
+                !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post,
                 |button| button.primary(),
             )
             .when(
-                self.show_reply_list || self.show_post_history || self.show_task_settings || self.show_auto_post,
+                self.show_run_status || self.show_reply_list || self.show_post_history || self.show_task_settings || self.show_auto_post,
                 |button| button.outline(),
             )
             .small()
