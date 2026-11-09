@@ -962,7 +962,7 @@ impl Render for XAssistantPage {
                 v_flex().flex_1().min_h_0().gap_1().overflow_y_scrollbar()
                     .children(logs.iter().map(|line| {
                         let color = if line.contains("[ERROR]") { palette::error_text() }
-                            else if line.contains("[WARN]") { theme.warning }
+                            else if line.contains("[WARN]") { gpui::hsla(0.12, 0.82, 0.48, 1.0) }
                             else { palette::text(theme) };
                         div().text_size(px(11.)).text_color(color).child(line.clone())
                     })).into_any_element()
