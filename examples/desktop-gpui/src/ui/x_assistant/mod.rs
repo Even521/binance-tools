@@ -773,6 +773,23 @@ fn load_reply_rules() -> String {
 
 impl XAssistantPage {
     // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
+    fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("x-assistant-status-tab")
+            .small()
+            .label(if self.replying { "● 运行状态" } else { "○ 运行状态" })
+            .when(self.show_run_status, |button| button.primary())
+            .when(!self.show_run_status, |button| button.outline())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_run_status = true;
+                this.show_reply_list = false;
+                this.show_post_history = false;
+                this.show_task_settings = false;
+                this.show_auto_post = false;
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = Button::new("x-assistant-reply-flow-tab")
             .label("自动回复")
@@ -859,6 +876,7 @@ impl XAssistantPage {
 
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
 
+        let status_button = self.render_status_tab_button(cx);
         let reply_flow_button = self.render_reply_flow_button(cx);
         let auto_post_button = self.render_auto_post_button(cx);
         let start_all_button = self.render_start_all_button(cx);
@@ -869,6 +887,7 @@ impl XAssistantPage {
 
         let menu = h_flex()
             .gap_2()
+            .child(status_button)
             .child(reply_flow_button)
             .child(auto_post_button)
             .child(start_all_button)
@@ -886,6 +905,47 @@ impl Render for XAssistantPage {
         if !self.render_diagnostic_logged {
             self.render_diagnostic_logged = true;
         }
+        if self.show_run_status {
+            let menu = self.render_page_menu(cx);
+            let theme = cx.theme();
+            let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
+            let log_content = if self.log_tail.is_none() {
+                div().flex_1().min_h_0().text_size(px(12.)).text_color(palette::muted(theme))
+                    .child("X 助手未启动，日志读取已停止。启动任务后才会读取 logs 目录中的日志。").into_any_element()
+            } else if logs.is_empty() {
+                div().flex_1().min_h_0().text_size(px(12.)).text_color(palette::muted(theme))
+                    .child("等待日志输出…").into_any_element()
+            } else {
+                v_flex().flex_1().min_h_0().gap_1().overflow_y_scrollbar()
+                    .children(logs.iter().map(|line| {
+                        let color = if line.contains("[ERROR]") { palette::error_text() }
+                            else if line.contains("[WARN]") { theme.warning }
+                            else { palette::text(theme) };
+                        div().text_size(px(11.)).text_color(color).child(line.clone())
+                    })).into_any_element()
+            };
+            return v_flex().size_full().min_h_0().gap_3().p_4()
+                .child(h_flex().items_center().justify_between()
+                    .child(div().text_size(px(18.)).font_semibold().child("X 助手"))
+                    .child(h_flex().items_center().gap_2()
+                        .child(div().text_size(px(12.)).text_color(if self.error.is_some() {
+                            palette::error_text()
+                        } else if self.replying { theme.success } else { palette::muted(theme) })
+                            .child(if self.error.is_some() { "● 运行异常" } else if self.replying { "● 运行中" } else { "● 已停止" }))
+                        .child(self.render_start_all_button(cx))
+                        .child(self.render_stop_all_button(cx))))
+                .child(menu)
+                .child(v_flex().flex_1().min_h_0().gap_2()
+                    .rounded(px(8.)).border_1().border_color(palette::border(theme))
+                    .bg(palette::surface(theme)).p_3()
+                    .child(h_flex().items_center().justify_between()
+                        .child(div().text_size(px(14.)).font_semibold().child("实时运行日志"))
+                        .child(div().text_size(px(11.)).text_color(if self.replying { theme.success } else { palette::muted(theme) })
+                            .child(if self.replying { "● 实时读取中" } else { "● 已停止读取" })))
+                    .child(log_content))
+                .into_any_element();
+        }
+
         if self.show_task_settings {
             let menu = self.render_page_menu(cx);
             let task_settings = self.render_task_settings(cx);
