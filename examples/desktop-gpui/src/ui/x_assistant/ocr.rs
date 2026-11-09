@@ -183,7 +183,6 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
         (2, 1, Some(160), "2 倍阈值 160"),
     ];
     let mut best_score = 0.0_f32;
-    let mut best_text = String::new();
 
     for (scale_num, scale_den, threshold, mode_name) in modes {
         let doc = recognize_document_image(
@@ -201,7 +200,7 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
         ));
         if score > best_score {
             best_score = score;
-            best_text = recognized;
+            // 不记录正文原文，仅保留匹配度。
         }
         if score >= 0.80 {
             return Ok(true);
@@ -238,25 +237,17 @@ pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
         (2, 1, Some(160), "2x threshold-160"),
         (2, 1, Some(210), "2x threshold-210"),
     ];
-    let mut last_text = String::new();
     for (scale_num, scale_den, threshold, mode) in modes {
         let doc = recognize_document_image(&crop, scale_num, scale_den, threshold)?;
-        let recognized = doc.text.trim();
-        let matched = contains_sent_confirmation(recognized);
-        super::automation::log_event(&format!(
-            "[OCR][发送提示] 底部识别{}（模式：{mode}）",
-            if matched { "成功" } else { "未命中" }
-        ));
-        last_text = recognized.to_string();
-        if matched {
+        if contains_sent_confirmation(doc.text.trim()) {
+            super::automation::log_event(&format!(
+                "[OCR][发送提示] 识别成功：检测到 X 发送成功提示（模式：{mode}）。"
+            ));
             return Ok(true);
         }
     }
 
-    super::automation::log_event(&format!(
-        "[OCR][发送提示] 底部区域未识别到成功提示",
-        // 常规日志不输出整块页面 OCR 原文。
-    ));
+    super::automation::log_event("[OCR][发送提示] 识别失败：底部区域未检测到发送成功提示。");
     Ok(false)
 }
 
