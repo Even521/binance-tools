@@ -26,7 +26,6 @@ use gpui_component::{
     v_flex,
 };
 use std::{
-    backtrace::Backtrace,
     path::PathBuf,
     time::Duration,
     sync::{
