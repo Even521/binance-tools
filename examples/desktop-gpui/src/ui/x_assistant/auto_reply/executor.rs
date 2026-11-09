@@ -40,6 +40,8 @@ impl AutoReplyRunner {
                 return self.stop();
             }
 
+            ensure_daily_reply_capacity()?;
+
             let completed_before = self.completed;
             let result = self.run_once(&options, cancel);
 
@@ -49,6 +51,7 @@ impl AutoReplyRunner {
                 if let Some(sender) = first_cycle_sender.take() {
                     let _ = sender.send(());
                 }
+                ensure_daily_reply_capacity()?;
             }
 
             // 用户取消优先于当前轮次产生的错误。
@@ -197,6 +200,20 @@ impl AutoReplyRunner {
     fn stop(&mut self) -> Result<VisionReplyResult> {
         stopped_result(self.last_result.take(), self.completed)
     }
+}
+
+fn ensure_daily_reply_capacity() -> Result<()> {
+    let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
+    let completed = binance_tools::db::x_assistant::today_sent_reply_count_blocking()?;
+    let limit = u64::from(settings.daily_reply_limit);
+    if completed >= limit {
+        let message = format!(
+            "今日已成功回复 {completed}/{limit} 条，达到每日上限；自动化已停止。请到「任务设置」手动调高每日最大回复数后再启动。"
+        );
+        automation::log_event(&message);
+        anyhow::bail!(message);
+    }
+    Ok(())
 }
 
 /// 全自动回复公开入口。
