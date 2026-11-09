@@ -4,6 +4,7 @@
 //! 未确认的提交状态会立即停止调度，等待人工核验。
 
 use std::{
+    backtrace::Backtrace,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -19,6 +20,20 @@ use super::{
     submit::{SubmitOutcome, SubmitResult, submit_prepared_post},
 };
 use crate::ui::x_assistant::core::{scheduler::next_post_delay, task_queue::run_browser_task};
+
+/// 记录自动发帖/回复联动线程触发的共享取消，避免来源被误判为页面 Drop。
+fn mark_linked_cancel(cancel: &AtomicBool, source: &str) {
+    let token_id = cancel as *const AtomicBool as usize;
+    let was_cancelled = cancel.swap(true, Ordering::AcqRel);
+    app_log::x_warn!(
+        "X 取消来源诊断：自动发帖联动线程写入取消标记，来源={}，token=0x{:x}，此前已取消={}，本次新发送={}，调用栈：{}",
+        source,
+        token_id,
+        was_cancelled,
+        !was_cancelled,
+        std::backtrace::Backtrace::force_capture()
+    );
+}
 
 /// 发帖前同步所选类别的 RSS 新闻；所有订阅源都失败时阻止本次发帖。
 fn sync_latest_news(filter: NewsFilter) -> anyhow::Result<(usize, usize)> {
@@ -290,7 +305,7 @@ pub fn run_with_auto_reply(
             first_cycle_sender,
         );
         if result.is_err() {
-            reply_cancel.store(true, Ordering::Release);
+            mark_linked_cancel(&reply_cancel, "自动回复工作线程返回错误");
         }
         result
     });
@@ -321,7 +336,7 @@ pub fn run_with_auto_reply(
     let post_worker = thread::spawn(move || {
         let result = run_loop(&post_cancel, filter);
         if result.is_err() {
-            post_cancel.store(true, Ordering::Release);
+            mark_linked_cancel(&post_cancel, "自动发帖工作线程返回错误");
         }
         result
     });
@@ -330,7 +345,7 @@ pub fn run_with_auto_reply(
         .join()
         .map_err(|_| anyhow::anyhow!("自动回复工作线程异常退出"))?;
     if reply_result.is_err() {
-        cancel.store(true, Ordering::Release);
+        mark_linked_cancel(&cancel, "主线程收到自动回复错误");
     }
 
     let post_result = post_worker
