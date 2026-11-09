@@ -5,6 +5,7 @@ mod auto_reply;
 mod core;
 mod crop;
 mod full_auto;
+mod floating_status;
 mod ocr;
 mod ocr_status;
 mod option;
@@ -69,6 +70,7 @@ pub struct XAssistantPage {
     task_settings: binance_tools::db::x_posting::XAssistantTaskSettings,
     // 后台任务结束信号；用于兜底修正 UI 中可能滞留的运行状态。
     task_finished: Arc<AtomicBool>,
+    floating_status: Option<floating_status::FloatingStatus>,
     render_diagnostic_logged: bool,
     show_run_status: bool,
     log_tail: Option<run_log::LogTail>,
@@ -125,6 +127,7 @@ impl XAssistantPage {
             post_history: None,
             task_settings,
             task_finished: Arc::new(AtomicBool::new(true)),
+            floating_status: None,
             render_diagnostic_logged: false,
             show_run_status: true,
             log_tail: None,
@@ -182,6 +185,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -226,6 +230,7 @@ impl XAssistantPage {
                 .await;
             task_finished_for_ui.store(true, Ordering::Release);
             _ = this.update(cx, |this, cx| {
+                this.floating_status.take();
                 this.replying = false;
                 match result {
                     Ok(count) => {
@@ -279,6 +284,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -306,6 +312,7 @@ impl XAssistantPage {
             app_log::x_info!("X 自动发帖测试：后台执行结束，准备更新界面结果");
             task_finished_for_ui.store(true, Ordering::Release);
             _ = this.update(cx, |this, cx| {
+                this.floating_status.take();
                 this.replying = false;
                 match result {
                     Ok(result) if result.outcome == auto_post::submit::SubmitOutcome::Published => {
@@ -348,6 +355,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -406,6 +414,7 @@ impl XAssistantPage {
 
             if let Err(update_error) = this.update(cx, |this, cx| {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
+                this.floating_status.take();
                 this.replying = false;
                 match result {
                     Err(err)
