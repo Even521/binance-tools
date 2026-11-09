@@ -22,16 +22,10 @@ use crate::ui::x_assistant::core::{scheduler::next_post_delay, task_queue::run_b
 
 /// 记录自动发帖/回复联动线程触发的共享取消，避免来源被误判为页面 Drop。
 fn mark_linked_cancel(cancel: &AtomicBool, source: &str) {
-    let token_id = cancel as *const AtomicBool as usize;
     let was_cancelled = cancel.swap(true, Ordering::AcqRel);
-    app_log::x_warn!(
-        "X 取消来源诊断：自动发帖联动线程写入取消标记，来源={}，token=0x{:x}，此前已取消={}，本次新发送={}，调用栈：{}",
-        source,
-        token_id,
-        was_cancelled,
-        !was_cancelled,
-        std::backtrace::Backtrace::force_capture()
-    );
+    if !was_cancelled {
+        app_log::x_warn!("自动化任务联动停止：{}，已通知相关任务退出", source);
+    }
 }
 
 /// 发帖前同步所选类别的 RSS 新闻；所有订阅源都失败时阻止本次发帖。
