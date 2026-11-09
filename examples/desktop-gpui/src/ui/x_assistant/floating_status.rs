@@ -58,9 +58,9 @@ mod windows_overlay {
     };
 
     use windows::Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, COLORREF, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+            BeginPaint, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
             PAINTSTRUCT, SelectObject,
         },
         System::LibraryLoader::GetModuleHandleW,
