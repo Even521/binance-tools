@@ -170,6 +170,14 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
         )?;
     }
 
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
+        );
+        "#
+) ?;
     // The previous application default was 50. Upgrade untouched defaults to 1000.
     let reply_limit_default_migration_applied: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_daily_reply_limit_default_1000_v1')",
@@ -187,14 +195,6 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
         )?;
     }
 
-    connection.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS app_schema_migrations (
-            version TEXT PRIMARY KEY,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
-        );
-        "#
-    )?;
     let migration_applied: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM app_schema_migrations WHERE version = 'x_posting_timestamps_beijing_v1')",
         [],
