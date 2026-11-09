@@ -28,7 +28,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -48,6 +48,8 @@ pub struct XAssistantPage {
     reply_rules: Entity<InputState>,
     _reply_rules_subscription: Subscription,
     cancel_reply: Arc<AtomicBool>,
+    // 0=未标记，1=用户点击停止，2=页面销毁；用于区分任务取消来源。
+    cancel_reason: Arc<AtomicU8>,
     extracted_fields: String,
     screenshots: Vec<PathBuf>,
     selected_screenshot: usize,
@@ -70,13 +72,16 @@ impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
         let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
+        let _ = self.cancel_reason.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+        let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
         let was_cancelled = self.cancel_reply.swap(true, Ordering::AcqRel);
         app_log::x_info!(
-            "X 助手页面 Drop：token=0x{:x}，replying={}，销毁前取消标记={}，本次是否新发送取消信号={}",
+            "X 助手页面 Drop：token=0x{:x}，replying={}，销毁前取消标记={}，本次是否新发送取消信号={}，取消来源={}",
             token_id,
             self.replying,
             was_cancelled,
-            !was_cancelled
+            !was_cancelled,
+            cancel_reason
         );
         if !was_cancelled {
             app_log::x_warn!("X 助手页面销毁：向后台任务发送取消信号");
@@ -105,6 +110,7 @@ impl XAssistantPage {
             reply_rules,
             _reply_rules_subscription: reply_rules_subscription,
             cancel_reply: Arc::new(AtomicBool::new(false)),
+            cancel_reason: Arc::new(AtomicU8::new(0)),
             extracted_fields: String::new(),
             screenshots: Vec::new(),
             selected_screenshot: 0,
@@ -159,6 +165,7 @@ impl XAssistantPage {
         self.replying = true;
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
+        self.cancel_reason = Arc::new(AtomicU8::new(0));
         self.status = Some(if self.task_settings.auto_reply_enabled && self.auto_send {
             "自动发帖与自动回复已启动；两类任务通过同一浏览器锁串行操作。点击停止可结束。".to_string()
         } else if self.task_settings.auto_reply_enabled {
@@ -315,6 +322,7 @@ impl XAssistantPage {
         let model = self.vision_model.clone();
         let cancel = Arc::clone(&self.cancel_reply);
         let cancel_for_ui = Arc::clone(&cancel);
+        let cancel_reason_for_ui = Arc::clone(&self.cancel_reason);
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -339,11 +347,13 @@ impl XAssistantPage {
                 .await;
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
+            let cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
             let token_id = Arc::as_ptr(&cancel_for_ui) as usize;
             app_log::x_info!(
-                "X 视觉回复：后台任务已结束，token=0x{:x}，取消标记={}，准备回收 UI 状态",
+                "X 视觉回复：后台任务已结束，token=0x{:x}，取消标记={}，取消来源={}（0=未知，1=用户停止，2=页面销毁），准备回收 UI 状态",
                 token_id,
-                was_cancelled
+                was_cancelled,
+                cancel_reason
             );
 
             if let Err(update_error) = this.update(cx, |this, cx| {
@@ -673,12 +683,15 @@ impl XAssistantPage {
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
         let token_id = Arc::as_ptr(&self.cancel_reply) as usize;
+        let _ = self.cancel_reason.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+        let cancel_reason = self.cancel_reason.load(Ordering::Acquire);
         let was_running = self.cancel_reply.swap(true, Ordering::AcqRel);
         app_log::x_info!(
-            "X 助手：停止按钮点击事件触发，token=0x{:x}，点击前取消状态={}，本次是否新发送取消信号={}",
+            "X 助手：停止按钮点击事件触发，token=0x{:x}，点击前取消状态={}，本次是否新发送取消信号={}，取消来源={}",
             token_id,
             was_running,
-            !was_running
+            !was_running,
+            cancel_reason
         );
         self.status = Some("已收到停止请求，正在等待后台任务安全退出；若发布操作可能已发生，结果会保留为待核验状态，不会自动重发。".to_string());
         cx.notify();
