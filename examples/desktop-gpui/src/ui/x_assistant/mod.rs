@@ -185,7 +185,6 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
-        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -219,6 +218,28 @@ impl XAssistantPage {
         self.task_finished = Arc::clone(&task_finished);
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
+            let browser_ready = cx
+                .background_spawn(async {
+                    automation::native::activate_chrome_browser()
+                })
+                .await;
+            if let Err(error) = browser_ready {
+                task_finished_for_ui.store(true, Ordering::Release);
+                _ = this.update(cx, |this, cx| {
+                    this.replying = false;
+                    this.status = None;
+                    this.error = Some(format!("自动化启动失败：{error:#}"));
+                    cx.notify();
+                });
+                return;
+            }
+
+            _ = this.update(cx, |this, cx| {
+                this.floating_status = Some(floating_status::FloatingStatus::show());
+                cx.minimize_window();
+                cx.notify();
+            });
+
             let result = cx
                 .background_spawn(async move {
                     if let Some(options) = reply_options {
@@ -232,6 +253,7 @@ impl XAssistantPage {
             _ = this.update(cx, |this, cx| {
                 this.floating_status.take();
                 this.replying = false;
+                cx.activate_window();
                 match result {
                     Ok(count) => {
                         this.error = None;
@@ -284,7 +306,6 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
-        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -303,9 +324,31 @@ impl XAssistantPage {
         self.task_finished = Arc::clone(&task_finished);
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
+            let browser_ready = cx
+                .background_spawn(async {
+                    automation::native::activate_chrome_browser()
+                })
+                .await;
+            if let Err(error) = browser_ready {
+                task_finished_for_ui.store(true, Ordering::Release);
+                _ = this.update(cx, |this, cx| {
+                    this.replying = false;
+                    this.status = None;
+                    this.error = Some(format!("自动化启动失败：{error:#}"));
+                    cx.notify();
+                });
+                return;
+            }
+
+            _ = this.update(cx, |this, cx| {
+                this.floating_status = Some(floating_status::FloatingStatus::show());
+                cx.minimize_window();
+                cx.notify();
+            });
+
             let result = cx
                 .background_spawn(async move {
-                    app_log::x_info!("X 自动发帖测试：后台执行开始；先读取新闻并生成文案，准备完成后才会打开浏览器");
+                    app_log::x_info!("X 自动发帖测试：后台执行开始；Chrome 已确认可用，先读取新闻并生成文案");
                     auto_post::executor::run_test_once(&cancel, filter)
                 })
                 .await;
@@ -314,6 +357,7 @@ impl XAssistantPage {
             _ = this.update(cx, |this, cx| {
                 this.floating_status.take();
                 this.replying = false;
+                cx.activate_window();
                 match result {
                     Ok(result) if result.outcome == auto_post::submit::SubmitOutcome::Published => {
                         this.error = None;
@@ -355,7 +399,6 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
-        self.floating_status = Some(floating_status::FloatingStatus::show());
         self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
@@ -385,6 +428,28 @@ impl XAssistantPage {
         self.task_finished = Arc::clone(&task_finished);
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
+            let browser_ready = cx
+                .background_spawn(async {
+                    automation::native::activate_chrome_browser()
+                })
+                .await;
+            if let Err(error) = browser_ready {
+                task_finished_for_ui.store(true, Ordering::Release);
+                _ = this.update(cx, |this, cx| {
+                    this.replying = false;
+                    this.status = None;
+                    this.error = Some(format!("自动化启动失败：{error:#}"));
+                    cx.notify();
+                });
+                return;
+            }
+
+            _ = this.update(cx, |this, cx| {
+                this.floating_status = Some(floating_status::FloatingStatus::show());
+                cx.minimize_window();
+                cx.notify();
+            });
+
             let result = cx
                 .background_spawn(async move {
                     let options = vision::VisionReplyOptions {
@@ -416,6 +481,7 @@ impl XAssistantPage {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
                 this.floating_status.take();
                 this.replying = false;
+                cx.activate_window();
                 match result {
                     Err(err)
                         if was_cancelled
