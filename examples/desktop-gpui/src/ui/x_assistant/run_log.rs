@@ -12,6 +12,7 @@ pub(super) struct LogTail {
 }
 
 struct Source {
+    base_name: &'static str,
     path: PathBuf,
     offset: u64,
     pending: String,
@@ -24,7 +25,10 @@ impl LogTail {
             sources: ["x-assistant.log", "auto-post.log"]
                 .into_iter()
                 .map(|name| Source {
-                    path: directory.join(name),
+                    base_name: name,
+                    path: directory.join(
+                        app_log::daily_file_name(name).unwrap_or_else(|_| name.to_string()),
+                    ),
                     offset: 0,
                     pending: String::new(),
                 })
@@ -42,6 +46,16 @@ impl LogTail {
     pub(super) fn poll(&mut self) -> bool {
         let mut changed = false;
         for source in &mut self.sources {
+            let directory = app_log::log_dir().unwrap_or_else(|_| PathBuf::from("logs"));
+            let daily_name = app_log::daily_file_name(source.base_name)
+                .unwrap_or_else(|_| source.base_name.to_string());
+            let daily_path = directory.join(daily_name);
+            if daily_path != source.path {
+                // 北京时间跨日后切换到新文件，避免旧文件偏移量影响新日志。
+                source.path = daily_path;
+                source.offset = 0;
+                source.pending.clear();
+            }
             let Ok(mut file) = File::open(&source.path) else {
                 continue;
             };
