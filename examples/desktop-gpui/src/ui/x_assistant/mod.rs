@@ -183,6 +183,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
@@ -275,6 +276,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
@@ -339,6 +341,7 @@ impl XAssistantPage {
             return;
         }
         self.replying = true;
+        self.start_log_monitor(cx);
         self.error = None;
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
