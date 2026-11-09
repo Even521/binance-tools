@@ -98,7 +98,31 @@ pub fn log_dir() -> io::Result<PathBuf> {
     init()
 }
 
-/// 将日志追加到 logs/ 下指定文件。文件名只允许是单层文件名。
+/// 根据当前北京时间生成按日滚动的日志文件名。
+/// 例如 app.log -> app-2026-11-10.log。
+pub fn daily_file_name(file_name: &str) -> io::Result<String> {
+    let file_path = Path::new(file_name);
+    if file_name.is_empty()
+        || file_path.file_name().and_then(|name| name.to_str()) != Some(file_name)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "log file name must be a plain file name",
+        ));
+    }
+
+    let date = beijing_now().format("%Y-%m-%d");
+    match file_path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) => {
+            let stem = file_path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(file_name);
+            Ok(format!("{stem}-{date}.{extension}"))
+        }
+        None => Ok(format!("{file_name}-{date}")),
+    }
+}
+
+/// 将日志追加到 logs/ 下按北京时间日期分割的文件。
+/// 传入 app.log 后实际写入 app-YYYY-MM-DD.log。
 pub fn write_to(
     file_name: &str,
     level: Level,
@@ -121,7 +145,9 @@ pub fn write_to(
         .lock()
         .map_err(|_| io::Error::other("log writer lock poisoned"))?;
 
-    let path = directory.join(file_name);
+    // 日期和文件名在同一次写入中计算，跨越北京时间零点后自动切换新文件。
+    let daily_name = daily_file_name(file_name)?;
+    let path = directory.join(daily_name);
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     let timestamp = beijing_now().format("%Y-%m-%d %H:%M:%S%.3f");
     writeln!(file, "[{timestamp} +08:00] [{}] {}", level.as_str(), message.as_ref())?;
@@ -247,4 +273,22 @@ macro_rules! news_error {
     ($($arg:tt)*) => {
         let _ = $crate::write_to("news-sync.log", $crate::Level::Error, format!("[新闻同步] {}", format!($($arg)*)));
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daily_file_name_adds_beijing_date_before_extension() {
+        let name = daily_file_name("app.log").unwrap();
+        let today = beijing_now().format("%Y-%m-%d").to_string();
+        assert_eq!(name, format!("app-{today}.log"));
+    }
+
+    #[test]
+    fn daily_file_name_rejects_paths() {
+        assert!(daily_file_name("../app.log").is_err());
+        assert!(daily_file_name("").is_err());
+    }
 }
