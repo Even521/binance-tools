@@ -70,7 +70,7 @@ mod windows_overlay {
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-            DispatchMessageW, DrawIconEx, EnumWindows, GetForegroundWindow, GetWindowRect,
+            DispatchMessageW, DrawIconEx, EnumWindows, GetWindowRect,
             GetWindowThreadProcessId, IsIconic, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE,
             PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
             TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
@@ -209,24 +209,13 @@ mod windows_overlay {
         // 优先跟随当前前台浏览器；若短暂失去前台，则从可见 Chrome 窗口中
         // 选择面积最大的主窗口，避免 FindWindowW 随枚举顺序命中其他窗口。
         unsafe {
-            let foreground = GetForegroundWindow();
-            let foreground_is_browser = !foreground.is_invalid()
-                && {
-                    let mut process_id = 0u32;
-                    GetWindowThreadProcessId(foreground, Some(&mut process_id));
-                    process_id != 0 && is_chrome_process(process_id)
-                };
-
-            let browser = if foreground_is_browser {
-                foreground
-            } else {
-                let mut candidates: Vec<(HWND, i64)> = Vec::new();
-                let _ = EnumWindows(
-                    Some(collect_browser_windows),
-                    LPARAM(&mut candidates as *mut Vec<(HWND, i64)> as isize),
-                );
-                candidates.into_iter().max_by_key(|(_, area)| *area)?.0
-            };
+            // 始终选取面积最大的可见 Chrome 主窗口，不跟随临时弹窗或其他小窗口。
+            let mut candidates: Vec<(HWND, i64)> = Vec::new();
+            let _ = EnumWindows(
+                Some(collect_browser_windows),
+                LPARAM(&mut candidates as *mut Vec<(HWND, i64)> as isize),
+            );
+            let browser = candidates.into_iter().max_by_key(|(_, area)| *area)?.0;
 
             if browser.is_invalid() || IsIconic(browser).as_bool() {
                 return None;
