@@ -81,13 +81,13 @@ pub(super) fn locate_post_composer_input(path: &Path) -> anyhow::Result<Option<(
             (score >= 0.72).then_some((center_x, center_y, score, line.text.as_str()))
         }).max_by(|left, right| left.2.total_cmp(&right.2));
 
-        if let Some((center_x, center_y, score, recognized)) = best {
+        if let Some((center_x, center_y, score, _recognized)) = best {
             let point = (
                 (center_x + crop.left as f32).round() as i32,
                 (center_y + crop.top as f32).round() as i32,
             );
             super::automation::log_event(&format!(
-                "[自动发帖 OCR] 弹窗局部输入框识别成功：模式={mode_name}，文本={recognized:?}，匹配度={:.0}%，客户区坐标=({}, {})",
+                "[OCR][发帖输入框] 识别成功（模式：{mode_name}），匹配度 {:.0}%，坐标=({}, {})",
                 score * 100.0, point.0, point.1
             ));
             if attempt > 0 {
@@ -136,19 +136,18 @@ pub(super) fn locate_post_submit_button(path: &Path) -> anyhow::Result<Option<(i
                 && center_y >= crop.height as f32 * 0.35
                 && center_y <= crop.height as f32 * 0.98;
             super::automation::log_event(&format!(
-                "[自动发帖 OCR] 弹窗提交按钮候选：模式={mode_name}，文本={:?}，局部坐标=({center_x:.0},{center_y:.0})，文字匹配={label_match}，按钮区域匹配={in_button_zone}",
-                line.text
+                "[OCR][发帖按钮] 候选检查：模式={mode_name}，文字匹配={label_match}，区域匹配={in_button_zone}"
             ));
             (label_match && in_button_zone).then_some((center_x, center_y, line.text.as_str()))
         }).max_by(|left, right| left.1.total_cmp(&right.1));
 
-        if let Some((center_x, center_y, recognized)) = candidate {
+        if let Some((center_x, center_y, _recognized)) = candidate {
             let point = (
                 (center_x + crop.left as f32).round() as i32,
                 (center_y + crop.top as f32).round() as i32,
             );
             super::automation::log_event(&format!(
-                "[自动发帖 OCR] 弹窗局部 OCR 识别到提交按钮：模式={mode_name}，文本={recognized:?}，客户区坐标=({}, {})",
+                "[OCR][发帖按钮] 识别成功（模式：{mode_name}），坐标=({}, {})",
                 point.0, point.1
             ));
             if attempt > 0 {
@@ -183,7 +182,6 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
         (2, 1, Some(160), "2 倍阈值 160"),
     ];
     let mut best_score = 0.0_f32;
-    let mut best_text = String::new();
 
     for (scale_num, scale_den, threshold, mode_name) in modes {
         let doc = recognize_document_image(
@@ -195,13 +193,12 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
         let recognized = normalize_text(&doc.text).to_lowercase();
         let score = text_match_ratio(&recognized, &expected);
         super::automation::log_event(&format!(
-            "[自动发帖 OCR] 弹窗正文核验（{mode_name}）：匹配度={:.0}%，要求至少 80%；识别文本={:?}",
-            score * 100.0,
-            recognized
+            "[OCR][发帖正文] 核验{}（模式：{mode_name}），匹配度 {:.0}%，要求至少 80%",
+            if score >= 0.80 { "成功" } else { "未通过" },
+            score * 100.0
         ));
         if score > best_score {
             best_score = score;
-            best_text = recognized;
         }
         if score >= 0.80 {
             return Ok(true);
@@ -209,9 +206,8 @@ pub(super) fn verify_post_composer_content(path: &Path, content: &str) -> anyhow
     }
 
     super::automation::log_event(&format!(
-        "[自动发帖 OCR] 弹窗正文核验未通过：最高匹配度={:.0}%，最佳识别文本={:?}",
-        best_score * 100.0,
-        best_text
+        "[OCR][发帖正文] 识别失败，最高匹配度 {:.0}%",
+        best_score * 100.0
     ));
     Ok(false)
 }
@@ -239,25 +235,17 @@ pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
         (2, 1, Some(160), "2x threshold-160"),
         (2, 1, Some(210), "2x threshold-210"),
     ];
-    let mut last_text = String::new();
     for (scale_num, scale_den, threshold, mode) in modes {
         let doc = recognize_document_image(&crop, scale_num, scale_den, threshold)?;
-        let recognized = doc.text.trim();
-        let matched = contains_sent_confirmation(recognized);
-        super::automation::log_event(&format!(
-            "[自动发帖 OCR] 底部全宽成功提示识别（{mode}）：匹配={}，识别文本={:?}",
-            matched, recognized
-        ));
-        last_text = recognized.to_string();
-        if matched {
+        if contains_sent_confirmation(doc.text.trim()) {
+            super::automation::log_event(&format!(
+                "[OCR][发送提示] 识别成功：检测到 X 发送成功提示（模式：{mode}）。"
+            ));
             return Ok(true);
         }
     }
 
-    super::automation::log_event(&format!(
-        "[自动发帖 OCR] 底部全宽区域未识别到成功提示，最后识别文本={:?}",
-        last_text
-    ));
+    super::automation::log_event("[OCR][发送提示] 识别失败：底部区域未检测到发送成功提示。");
     Ok(false)
 }
 
