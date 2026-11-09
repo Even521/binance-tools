@@ -1395,7 +1395,8 @@ fn run_visual_reply_inner(
     automation::log_event("========== 阶段 3/3：点击‘回复’并判断回复是否完成 ==========");
     // 点击前先持久化提交意图；数据库失败时绝不触发真实发送。
     binance_tools::db::x_assistant::mark_reply_submitting_blocking(&run_id)?;
-    native::click_at_client_position(send_button.x, send_button.y)?;
+    native::click_at_client_position(send_button.x, send_button.y)
+        .map_err(|error| uncertain_send_error(&run_id, format!("首次提交点击返回错误，无法确认鼠标事件是否已生效：{error:#}")))?;
     automation::log_event("阶段 3/3：已点击‘回复’，等待 2 秒后采集结果截图。");
     thread::sleep(Duration::from_secs(2));
 
@@ -1705,7 +1706,8 @@ fn run_visual_reply_inner(
 
         // 第二次点击前再次持久化尝试次数与北京时间提交时间。
         binance_tools::db::x_assistant::mark_reply_submitting_blocking(&run_id)?;
-        native::click_at_client_position(retry_button.x, retry_button.y)?;
+        native::click_at_client_position(retry_button.x, retry_button.y)
+            .map_err(|error| uncertain_send_error(&run_id, format!("唯一一次重试点击返回错误，无法确认鼠标事件是否已生效：{error:#}")))?;
 
         thread::sleep(Duration::from_secs(2));
 
