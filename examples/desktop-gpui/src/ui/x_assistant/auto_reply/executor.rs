@@ -100,9 +100,12 @@ impl AutoReplyRunner {
 
             automation::log_event(&format!("全自动：已完成第 {} 条回复。", self.completed));
         } else if result.summary.starts_with("提交结果未知") {
-            // uncertain 不是明确失败，不累计连续失败次数；当前帖子仍然跳过，继续主循环。
+            // 仅当视觉流程已确认回复弹窗和草稿确认框都关闭、且 uncertain 已成功写入数据库时，
+            // vision 才会以正常结果返回到这里。此时当前帖子已被持久化去重保护，可以安全跳过。
+            // uncertain 不是发送成功，也不是普通失败：不计入成功数、不累计失败次数，并继续下一轮。
+            self.failures = 0;
             automation::log_event(&format!(
-                "全自动：本轮提交结果未知；已记录 uncertain，不重复提交当前回复，跳过当前帖子并继续主循环。{}",
+                "全自动：本轮提交结果未知，已持久化标记 uncertain；不重发当前回复，跳过当前帖子并继续下一轮。{}",
                 result.summary
             ));
         } else {
