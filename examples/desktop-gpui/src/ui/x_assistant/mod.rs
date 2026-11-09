@@ -937,24 +937,6 @@ impl XAssistantPage {
         let task_settings_button = self.render_task_settings_button(cx);
 
         let theme = cx.theme();
-        let run_state = div()
-            .text_size(px(12.))
-            .text_color(if self.error.is_some() {
-                palette::error_text()
-            } else if self.replying {
-                theme.success
-            } else {
-                palette::muted(theme)
-            })
-            .child(if self.error.is_some() {
-                "● 运行异常"
-            } else if self.replying {
-                "● 运行中"
-            } else {
-                "● 已停止"
-            })
-            .into_any_element();
-
         // 六个页面统一使用下划线 Tabs；运行状态和全局控制按钮位于同一行。
         let run_state = div()
             .rounded_full()
