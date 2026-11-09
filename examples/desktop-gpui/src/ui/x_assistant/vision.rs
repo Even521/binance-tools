@@ -1071,8 +1071,11 @@ fn run_visual_reply_inner(
         account_handle,
         truncate(&post_text, 240)
     ));
+    // 外部任务（例如自动发帖）不得中断本轮回复；但用户停止或页面销毁仍必须在点击前生效。
+    check_cancel(cancel)?;
     native::move_cursor_to_reply(reply_button.x, verified_reply_y)?;
-    thread::sleep(Duration::from_millis(500));
+    wait_cancel(cancel, Duration::from_millis(500))?;
+    check_cancel(cancel)?;
     native::click_at_client_position(reply_button.x, verified_reply_y)?;
     automation::log_event(&format!(
         "阶段 1/3：回复点点击事件已发送，使用悬停验证坐标=({}, {})（原始识别坐标 y={}）。",
