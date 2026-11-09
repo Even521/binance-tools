@@ -33,8 +33,18 @@ impl AutoReplyRunner {
         cancel: &AtomicBool,
         mut first_cycle_sender: Option<SyncSender<()>>,
     ) -> Result<VisionReplyResult> {
+        let token_id = cancel as *const AtomicBool as usize;
+        automation::log_event(&format!(
+            "全自动运行器启动：取消令牌 token=0x{:x}，启动时取消标记={}",
+            token_id,
+            Self::is_cancelled(cancel)
+        ));
         loop {
             if Self::is_cancelled(cancel) {
+                automation::log_event(&format!(
+                    "全自动：循环开始前检测到取消标记，token=0x{:x}，立即退出。",
+                    token_id
+                ));
                 return self.stop();
             }
 
@@ -131,8 +141,10 @@ impl AutoReplyRunner {
     /// 普通错误恢复后继续主循环，不设置连续失败上限。
     fn handle_error(&mut self, error: anyhow::Error, cancel: &AtomicBool) -> Result<()> {
         if Self::is_cancelled(cancel) {
+            let token_id = cancel as *const AtomicBool as usize;
             automation::log_event(&format!(
-                "全自动：检测到取消标记，退出当前循环；取消来源需结合页面 Drop/停止按钮日志确认：{error:#}"
+                "全自动：检测到取消标记，token=0x{:x}，退出当前循环；取消来源查看同 token 的页面 Drop/停止按钮诊断日志：{error:#}",
+                token_id
             ));
             return Ok(());
         }
