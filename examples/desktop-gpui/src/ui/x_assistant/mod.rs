@@ -1010,6 +1010,7 @@ impl Render for XAssistantPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 后台执行器已经返回但 UI 回调未能及时刷新时，以后台结束信号为准。
         if self.replying && self.task_finished.load(Ordering::Acquire) {
+            self.floating_status.take();
             self.replying = false;
             if self.error.is_none() {
                 self.status = Some("自动化任务已结束。".to_string());
