@@ -48,10 +48,10 @@ impl AutoReplyRunner {
             // 只有真正成功发送并计入 completed 的回复，才允许启动自动发帖。
             // 跳过重复账号、识别不完整或未发送成功，都不能触发发帖调度。
             if result.is_ok() && self.completed > completed_before {
+                ensure_daily_reply_capacity()?;
                 if let Some(sender) = first_cycle_sender.take() {
                     let _ = sender.send(());
                 }
-                ensure_daily_reply_capacity()?;
             }
 
             // 用户取消优先于当前轮次产生的错误。
