@@ -54,7 +54,7 @@ mod windows_overlay {
         mem::zeroed,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicIsize, Ordering},
+            atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicU32, Ordering},
         },
         thread,
         time::Duration,
@@ -85,8 +85,22 @@ mod windows_overlay {
     const COLOR_KEY: COLORREF = COLORREF(0x00FF00FF);
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static TASK_KIND: AtomicU8 = AtomicU8::new(0);
+    static ACCENT_COLOR: AtomicU32 = AtomicU32::new(0x00D77800);
 
     pub(super) fn run(stop: Arc<AtomicBool>, task_label: &'static str, accent_color: (u8, u8, u8)) {
+        let task_kind = match task_label {
+            "自动发帖" => 1,
+            "测试发帖" => 2,
+            _ => 3,
+        };
+        TASK_KIND.store(task_kind, Ordering::Release);
+        let (red, green, blue) = accent_color;
+        ACCENT_COLOR.store(
+            red as u32 | ((green as u32) << 8) | ((blue as u32) << 16),
+            Ordering::Release,
+        );
+
         unsafe {
             let instance = match GetModuleHandleW(None) {
                 Ok(module) => HINSTANCE(module.0),
@@ -267,17 +281,19 @@ mod windows_overlay {
 
                 let _ = SetBkMode(dc, TRANSPARENT);
                 let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
-                let task: Vec<u16> = format!("当前任务：{task_label}").encode_utf16().collect();
+                let task_label = match TASK_KIND.load(Ordering::Acquire) {
+                    1 => "当前任务：自动发帖",
+                    2 => "当前任务：测试发帖",
+                    _ => "当前任务：自动回复",
+                };
+                let task: Vec<u16> = task_label.encode_utf16().collect();
                 let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
                 let _ = TextOutW(dc, 44, 4, &title);
                 let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
                 let _ = TextOutW(dc, 44, 21, &task);
 
-                // Green dot means the automation task is active.
-                let (red, green, blue) = accent_color;
-                let accent = COLORREF(
-                    red as u32 | ((green as u32) << 8) | ((blue as u32) << 16),
-                );
+                // The accent follows the selected GPUI theme.
+                let accent = COLORREF(ACCENT_COLOR.load(Ordering::Acquire));
                 let dot = CreateSolidBrush(accent);
                 let previous = SelectObject(dc, dot.into());
                 let _ = Ellipse(dc, 163, 7, 173, 17);
