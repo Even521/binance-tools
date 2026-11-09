@@ -71,7 +71,7 @@ mod windows_overlay {
             ShowWindow, TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
             DI_NORMAL, HICON, HWND_TOPMOST, IMAGE_FLAGS, LWA_COLORKEY, SW_HIDE,
             SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY,
-            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED | WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
             WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
     };
@@ -120,7 +120,7 @@ mod windows_overlay {
             ICON_HANDLE.store(icon.0 as isize, Ordering::Release);
 
             let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
                 class_name,
                 w!("Binance Tools X automation"),
                 WS_POPUP,
