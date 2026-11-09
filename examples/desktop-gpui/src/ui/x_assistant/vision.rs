@@ -1400,7 +1400,8 @@ fn run_visual_reply_inner(
     thread::sleep(Duration::from_secs(2));
 
     let mut done = capture(&dir, &id, "04-result", &mut screenshots)?;
-    check_cancel(cancel)?;
+    // 提交点击已经发生：即使此时收到停止信号，也必须先做只读路由与 OCR 核验。
+    // 后续是否允许重试由取消状态决定；取消后绝不再点击、关闭弹窗或处理下一帖。
     // 结果截图可能仍显示回复弹窗，这是正常的；但必须确认仍处于 X 首页/回复路由。
     // 如果意外跳到 Grok 或其他页面，不再对该截图执行状态点击或恢复操作。
     ensure_reply_page_route(&done, "发送结果截图")?;
@@ -1476,13 +1477,27 @@ fn run_visual_reply_inner(
         return Err(anyhow::Error::new(RateLimitDetected));
     }
 
+    // 停止信号若在提交后到达，不能进入等待、视觉重试或任何后续点击。
+    // OCR 未明确确认成功时，保守标记 uncertain，避免重复发送。
+    if cancel.load(Ordering::Relaxed) {
+        return Err(uncertain_send_error(
+            &run_id,
+            "提交按钮已点击，停止信号在结果核验期间到达，OCR 未明确确认成功；禁止重试",
+        ));
+    }
+
     // 是否存在可重试发送错误
     let retryable_error = status.retryable_error;
 
     if retryable_error {
         automation::log_event("阶段 3/3：截图识别到发送错误；等待 5 秒后重新截图并确认发送状态。");
 
-        wait_cancel(cancel, Duration::from_secs(5))?;
+        if let Err(error) = wait_cancel(cancel, Duration::from_secs(5)) {
+            return Err(uncertain_send_error(
+                &run_id,
+                format!("首次提交后等待重试核验时收到停止信号：{error:#}"),
+            ));
+        }
 
         let retry_ready = capture(&dir, &id, "04-retry-check", &mut screenshots)?;
 
@@ -1673,6 +1688,12 @@ fn run_visual_reply_inner(
             ));
         }
 
+        if let Err(error) = check_cancel(cancel) {
+            return Err(uncertain_send_error(
+                &run_id,
+                format!("唯一一次重试点击前收到停止信号，未再次提交：{error:#}"),
+            ));
+        }
         native::move_cursor_to_reply(retry_button.x, retry_button.y)?;
 
         automation::log_event(&format!(
@@ -1688,7 +1709,7 @@ fn run_visual_reply_inner(
 
         done = capture(&dir, &id, "05-retry-result", &mut screenshots)?;
 
-        check_cancel(cancel)?;
+        // 第二次提交后同样进入只读结果核验，不允许取消信号跳过 OCR。
 
         // ========================================================
         // 重试结果检查：一次 OCR 判断全部状态
@@ -1754,6 +1775,13 @@ fn run_visual_reply_inner(
             automation::log_event("阶段 3/3：重试后检测到平台限流提示；立即停止全自动发送。");
 
             return Err(anyhow::Error::new(RateLimitDetected));
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err(uncertain_send_error(
+                &run_id,
+                "唯一一次重试已点击，停止信号在结果核验期间到达，OCR 未明确确认成功",
+            ));
         }
 
         // 重试后仍然发送错误
@@ -1873,8 +1901,12 @@ fn already_sent_result(
 ) -> anyhow::Result<VisionReplyResult> {
     binance_tools::db::x_assistant::mark_reply_duplicate_blocking(run_id)
         .map_err(|error| uncertain_send_error(run_id, format!("保存重复发送状态失败：{error:#}")))?;
-    close_reply_composer_safely(dir, id, &mut screenshots, cancel)
-        .map_err(|error| uncertain_send_error(&run_id, format!("X 已确认该回复发送过，但关闭编辑框失败：{error:#}")))?;
+    if cancel.load(Ordering::Relaxed) {
+        automation::log_event("发送结果已确认，但收到停止信号；跳过关闭编辑框，不再执行任何 UI 点击。");
+    } else {
+        close_reply_composer_safely(dir, id, &mut screenshots, cancel)
+            .map_err(|error| uncertain_send_error(&run_id, format!("X 已确认该回复发送过，但关闭编辑框失败：{error:#}")))?;
+    }
     Ok(VisionReplyResult {
         screenshots,
         author_name,
