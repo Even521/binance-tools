@@ -1418,7 +1418,7 @@ fn run_visual_reply_inner(
     };
 
     // 首次 2 秒检查没有明确结果时，才进行两次只读补查；正常发送不增加等待。
-    // 补查间隔为 2 秒、3 秒，累计最多约 7 秒。停止信号到达后不再采集截图。
+    // 计划检查点约为提交后 2/4/7 秒；OCR 处理耗时会使后续检查点顺延。停止信号到达后不再采集截图。
     if !status.already_sent && !status.sent && !status.rate_limited
         && !status.retryable_error && !sent_toast
     {
