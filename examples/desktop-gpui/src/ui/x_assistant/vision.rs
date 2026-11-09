@@ -1394,14 +1394,26 @@ fn run_visual_reply_inner(
         }
         Err(error) => {
             automation::log_event(&format!(
-                "阶段 3/3：ppocr-rs 耗时 {} ms，OCR 识别失败：{error:#}；将使用 AI 复核，不自动重试。",
+                "阶段 3/3：ppocr-rs 耗时 {} ms，OCR 识别失败：${error:#}；继续执行专用成功提示 OCR，不自动重试。",
                 ocr_started.elapsed().as_millis()
             ));
-
-            // OCR 失败时不自动重试，避免重复发送。
-            // 后续继续原有 AI 复核流程。
-            // 此处不提前返回。
             Default::default()
+        }
+    };
+
+    // X 的蓝色“你的帖子已发送”提示可能位于页面底部，整页 OCR 容易漏掉。
+    // 使用已存在的底部全宽、多阈值专用 OCR 再识别一次；它适用于帖子和回复。
+    let sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
+        Ok(true) => {
+            automation::log_event("阶段 3/3：底部全宽专用 OCR 明确识别到 X 的“你的帖子已发送”提示。");
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            automation::log_event(&format!(
+                "阶段 3/3：底部全宽成功提示 OCR 失败：${error:#}；继续只读视觉核验。"
+            ));
+            false
         }
     };
 
@@ -1423,9 +1435,10 @@ fn run_visual_reply_inner(
         );
     }
 
-    // 发送成功
-    if status.sent {
-        automation::log_event("阶段 3/3：PP-OCR 检测到发送成功提示。");
+    // 发送成功：整页 OCR 或底部专用 OCR 任一明确识别成功提示即可。
+    // 成功提示优先于稍后出现的网络错误 toast；提交动作已发生，不再进入重试流程。
+    if status.sent || sent_toast {
+        automation::log_event("阶段 3/3：OCR 明确检测到 X 发送成功提示；标记完成，不再调用视觉模型推翻成功结果，也不执行关闭弹窗操作。");
 
         mark_reply_completed_or_stop(&run_id)?;
 
@@ -1438,7 +1451,7 @@ fn run_visual_reply_inner(
             reply_text,
             completed: true,
             skipped_duplicate: false,
-            summary: "ppocr-rs 检测到发送成功提示。".to_string(),
+            summary: "OCR 检测到 X 的发送成功提示，回复已确认发送。".to_string(),
         });
     }
 
@@ -1803,10 +1816,13 @@ fn run_visual_reply_inner(
             "无法确认回复已发送（{}）；停止自动回复，不继续处理下一条。",
             fallback_reason(&done_decision, "完成状态不明确")
         ));
-        close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-            .map_err(|error| uncertain_send_error(&run_id, format!("发送状态不明确且关闭弹窗失败：{error:#}")))?;
+        // 提交动作已经发生，且页面可能因发送成功自动关闭弹窗。
+        // 不再按 Escape 或尝试“放弃草稿”，避免误操作已发送内容；保留页面供人工核验。
+        automation::log_event(
+            "阶段 3/3：视觉模型未确认发送结果；保留当前页面，不执行关闭/放弃草稿操作，也绝不重复提交。"
+        );
         return Err(uncertain_send_error(&run_id, format!(
-            "无法确认回复是否已发送（{}）；本轮停止，不继续处理下一条",
+            "无法确认回复是否已发送（{}）；保留页面供人工核验，本轮停止，不继续处理下一条",
             fallback_reason(&done_decision, "完成状态不明确")
         )));
     }
