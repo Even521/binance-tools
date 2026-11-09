@@ -1386,6 +1386,15 @@ pub(super) fn locate_reply_submit_button(
         super::automation::log_event(&format!(
             "阶段 2/3：提交前 PP-OCR 未能在单行中可靠匹配回复文本‘{reply_text}’，禁止使用视觉模型猜测提交坐标。识别行：{candidates}"
         ));
+        match save_reply_text_ocr_diagnostic(path, &crop, &doc, &reply_text) {
+            Ok(annotation_path) => super::automation::log_event(&format!(
+                "[OCR][回复正文诊断] 标注截图已保存：{}",
+                annotation_path.display()
+            )),
+            Err(error) => super::automation::log_event(&format!(
+                "[OCR][回复正文诊断] 标注截图生成失败（不影响原流程）：{error:#}"
+            )),
+        }
         return Ok(None);
     }
 
@@ -1507,6 +1516,83 @@ pub(super) fn locate_reply_submit_button(
         point.0, point.1
     ));
     Ok(Some(point))
+}
+
+fn save_reply_text_ocr_diagnostic(
+    source_path: &Path,
+    crop: &ComposeDialogCrop,
+    doc: &OcrDocument,
+    expected_text: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    use image::Rgba;
+
+    let mut image = image::open(source_path)?.to_rgba8();
+
+    // 蓝色：动态检测到的回复弹窗范围，帮助确认 OCR 是否裁到了正确窗口。
+    draw_diagnostic_rect(
+        &mut image,
+        crop.left as f32,
+        crop.top as f32,
+        (crop.left + crop.width) as f32,
+        (crop.top + crop.height) as f32,
+        Rgba([40, 125, 255, 255]),
+        4,
+    );
+
+    // 标出每一条 OCR 文本。黄色为普通识别行，橙色为与预期回复部分匹配的最佳候选，
+    // 绿色仅表示单行匹配已达到当前安全阈值；本函数只在失败分支调用。
+    let mut best: Option<(&OcrLine, f32)> = None;
+    for line in &doc.lines {
+        let score = text_match_ratio(&normalize_text(&line.text), expected_text);
+        if best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((line, score));
+        }
+        draw_diagnostic_rect(
+            &mut image,
+            crop.left as f32 + line.left / doc.scale_x,
+            crop.top as f32 + line.top / doc.scale_y,
+            crop.left as f32 + line.right / doc.scale_x,
+            crop.top as f32 + line.bottom / doc.scale_y,
+            Rgba([245, 205, 45, 255]),
+            2,
+        );
+    }
+
+    if let Some((line, score)) = best {
+        let color = if score >= 0.80 {
+            Rgba([40, 190, 90, 255])
+        } else {
+            Rgba([255, 145, 35, 255])
+        };
+        draw_diagnostic_rect(
+            &mut image,
+            crop.left as f32 + line.left / doc.scale_x,
+            crop.top as f32 + line.top / doc.scale_y,
+            crop.left as f32 + line.right / doc.scale_x,
+            crop.top as f32 + line.bottom / doc.scale_y,
+            color,
+            4,
+        );
+        super::automation::log_event(&format!(
+            "[OCR][回复正文诊断] 最接近预期文本的识别行：{:?}，匹配度 {:.0}%，预期文本：{:?}",
+            line.text,
+            score * 100.0,
+            expected_text
+        ));
+    } else {
+        super::automation::log_event(&format!(
+            "[OCR][回复正文诊断] 当前 OCR 未产生任何文本行；预期文本：{:?}",
+            expected_text
+        ));
+    }
+
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("reply-typed");
+    let output_path = source_path.with_file_name(format!("{stem}-reply-text-ocr-annotation.png"));
+    image.save(&output_path)?;
+    Ok(output_path)
 }
 
 fn save_reply_submit_ocr_diagnostic(
