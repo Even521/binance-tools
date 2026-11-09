@@ -2575,7 +2575,7 @@ fn ask(
     let elapsed = started.elapsed();
 
     match &response {
-        Ok((content, _response_body)) => {
+        Ok(_) => {
             automation::log_event(&format!(
                 "[{}] AI 视觉识别请求成功，耗时 {} ms。",
                 phase_label(&shot.stage),
