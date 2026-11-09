@@ -6,3 +6,4 @@ db/*.sqlite-*
 nul
 data/backtest/*
 data/
+ocr-debug.log
