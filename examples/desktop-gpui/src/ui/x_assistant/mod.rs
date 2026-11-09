@@ -780,6 +780,7 @@ impl XAssistantPage {
     fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
         Button::new("x-assistant-status-tab")
             .small()
+            .w(px(112.))
             .label(if self.replying { "● 运行状态" } else { "○ 运行状态" })
             .when(self.show_run_status, |button| button.primary())
             .when(!self.show_run_status, |button| button.outline())
@@ -796,6 +797,7 @@ impl XAssistantPage {
 
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = Button::new("x-assistant-reply-flow-tab")
+            .w(px(112.))
             .label("自动回复")
             .when(
                 !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post,
@@ -813,6 +815,7 @@ impl XAssistantPage {
 
     fn render_auto_post_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let button = Button::new("x-assistant-auto-post-tab")
+            .w(px(112.))
             .label("自动发帖")
             .when(self.show_auto_post, |button| button.primary())
             .when(!self.show_auto_post, |button| button.outline())
@@ -907,12 +910,23 @@ impl XAssistantPage {
                 "● 已停止"
             })
             .into_any_element();
-        let menu = h_flex()
+        // 三个核心工作区使用同一个分段 Tab 容器；所有页面复用此导航，确保尺寸和选中样式一致。
+        let workbench_tabs = h_flex()
             .items_center()
-            .gap_2()
+            .gap_1()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .p_1()
             .child(status_button)
             .child(reply_flow_button)
             .child(auto_post_button)
+            .into_any_element();
+        let menu = h_flex()
+            .items_center()
+            .gap_2()
+            .child(workbench_tabs)
             .child(reply_list_button)
             .child(post_history_button)
             .child(task_settings_button)
