@@ -62,9 +62,9 @@ impl LogTail {
             source.offset = source.offset.saturating_add(bytes.len() as u64);
             let text = String::from_utf8_lossy(&bytes);
             source.pending.push_str(&text);
-            while let Some(index) = source.pending.find('\\n') {
+            while let Some(index) = source.pending.find('\n') {
                 let mut line = source.pending.drain(..=index).collect::<String>();
-                while line.ends_with('\r') || line.ends_with('\\n') {
+                while line.ends_with('\r') || line.ends_with('\n') {
                     line.pop();
                 }
                 if !line.is_empty() {
