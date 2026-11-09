@@ -1421,16 +1421,62 @@ pub(super) fn locate_reply_submit_button(
     });
 
     let Some((x, y, recognized)) = ocr_button else {
+        let min_button_x = (reply_right + 12.0).max(crop.width as f32 * 0.52);
         let candidates = doc.lines.iter()
             .filter(|line| normalize_text(&line.text).contains(&normalize_text("回复")))
-            .map(|line| format!("{}@({:.0},{:.0})", line.text,
-                (line.left + line.right) * 0.5 / doc.scale_x,
-                (line.top + line.bottom) * 0.5 / doc.scale_y))
+            .map(|line| {
+                let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+                let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+                let label_match = normalize_text(&line.text) == normalize_text("回复");
+                let right_of_reply = center_x >= min_button_x;
+                let in_bottom_submit_region =
+                    center_y >= submit_region_top && center_y <= submit_region_bottom;
+                let reason = if !label_match {
+                    "不是精确的‘回复’按钮文字"
+                } else if !right_of_reply {
+                    "横向位置在回复正文右侧安全线左边"
+                } else if !in_bottom_submit_region {
+                    "纵向位置不在底部按钮搜索区域"
+                } else {
+                    "满足按钮筛选条件"
+                };
+                format!(
+                    "{}@({:.0},{:.0})[{}]",
+                    line.text, center_x, center_y, reason
+                )
+            })
             .collect::<Vec<_>>()
             .join(" | ");
+        let ocr_lines = doc.lines.iter().map(|line| {
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            format!("{}@({:.0},{:.0})", line.text, center_x, center_y)
+        }).take(40).collect::<Vec<_>>().join(" | ");
         super::automation::log_event(&format!(
-            "阶段 2/3：已核对回复正文，但弹窗右下方安全区域未识别到‘回复’提交按钮；未点击发送。正文范围 x={reply_right:.0} y={reply_top:.0}..{reply_bottom:.0}，按钮搜索区域 x>={:.0} y={submit_region_top:.0}..{submit_region_bottom:.0}，候选={candidates}",
-            (reply_right + 12.0).max(crop.width as f32 * 0.52)
+            "[OCR][回复提交按钮诊断] 正文右边界={reply_right:.0}，按钮搜索范围 x>={min_button_x:.0} y={submit_region_top:.0}..{submit_region_bottom:.0}；相关候选：{candidates}"
+        ));
+        super::automation::log_event(&format!(
+            "[OCR][回复提交按钮诊断] OCR 全部识别行（最多 40 条）：{ocr_lines}"
+        ));
+        match save_reply_submit_ocr_diagnostic(
+            path,
+            &crop,
+            &doc,
+            &matching_lines,
+            reply_right,
+            submit_region_top,
+            submit_region_bottom,
+        ) {
+            Ok(annotation_path) => super::automation::log_event(&format!(
+                "[OCR][回复提交按钮诊断] 标注截图已保存：{}",
+                annotation_path.display()
+            )),
+            Err(error) => super::automation::log_event(&format!(
+                "[OCR][回复提交按钮诊断] 标注截图生成失败（不影响原流程）：{error:#}"
+            )),
+        }
+        super::automation::log_event(&format!(
+            "阶段 2/3：已核对回复正文，但弹窗右下方安全区域未识别到‘回复’提交按钮；未点击发送。正文范围 x={reply_right:.0} y={reply_top:.0}..{reply_bottom:.0}，按钮搜索区域 x>={min_button_x:.0} y={submit_region_top:.0}..{submit_region_bottom:.0}，候选={candidates}"
         ));
         return Ok(None);
     };
@@ -1458,6 +1504,130 @@ pub(super) fn locate_reply_submit_button(
         point.0, point.1
     ));
     Ok(Some(point))
+}
+
+fn save_reply_submit_ocr_diagnostic(
+    source_path: &Path,
+    crop: &ComposeDialogCrop,
+    doc: &OcrDocument,
+    matching_lines: &[&OcrLine],
+    reply_right: f32,
+    submit_region_top: f32,
+    submit_region_bottom: f32,
+) -> anyhow::Result<std::path::PathBuf> {
+    use image::Rgba;
+
+    let mut image = image::open(source_path)?.to_rgba8();
+    let min_button_x = (reply_right + 12.0).max(crop.width as f32 * 0.52);
+    let max_button_x = crop.width as f32 * 0.98;
+
+    // 红色：实际参与判断的提交按钮搜索区域（弹窗局部坐标映射到整张截图）。
+    draw_diagnostic_rect(
+        &mut image,
+        crop.left as f32 + min_button_x,
+        crop.top as f32 + submit_region_top,
+        crop.left as f32 + max_button_x,
+        crop.top as f32 + submit_region_bottom,
+        Rgba([235, 55, 55, 255]),
+        3,
+    );
+
+    // 蓝色：已通过正文匹配的回复文本区域。
+    for line in matching_lines {
+        draw_diagnostic_rect(
+            &mut image,
+            crop.left as f32 + line.left / doc.scale_x,
+            crop.top as f32 + line.top / doc.scale_y,
+            crop.left as f32 + line.right / doc.scale_x,
+            crop.top as f32 + line.bottom / doc.scale_y,
+            Rgba([40, 125, 255, 255]),
+            3,
+        );
+    }
+
+    // 黄色：包含“回复”但不是精确按钮文字的普通文本；
+    // 橙色：文字恰好为“回复”，但未通过位置安全条件；
+    // 绿色：文字和位置条件均通过的按钮候选。
+    for line in &doc.lines {
+        let label = normalize_text(&line.text);
+        if !label.contains(&normalize_text("回复")) {
+            continue;
+        }
+        let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+        let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+        let exact_label = label == normalize_text("回复");
+        let in_safe_zone = center_x >= min_button_x
+            && center_x <= max_button_x
+            && center_y >= submit_region_top
+            && center_y <= submit_region_bottom;
+        let color = if exact_label && in_safe_zone {
+            Rgba([40, 190, 90, 255])
+        } else if exact_label {
+            Rgba([255, 145, 35, 255])
+        } else {
+            Rgba([245, 205, 45, 255])
+        };
+        draw_diagnostic_rect(
+            &mut image,
+            crop.left as f32 + line.left / doc.scale_x,
+            crop.top as f32 + line.top / doc.scale_y,
+            crop.left as f32 + line.right / doc.scale_x,
+            crop.top as f32 + line.bottom / doc.scale_y,
+            color,
+            3,
+        );
+    }
+
+    let stem = source_path.file_stem().and_then(|value| value.to_str()).unwrap_or("reply-typed");
+    let output_path = source_path.with_file_name(format!("{stem}-ocr-annotation.png"));
+    image.save(&output_path)?;
+    Ok(output_path)
+}
+
+fn draw_diagnostic_rect(
+    image: &mut image::RgbaImage,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    color: image::Rgba<u8>,
+    thickness: u32,
+) {
+    let width = image.width() as i32;
+    let height = image.height() as i32;
+    let left = (left.floor() as i32).clamp(0, width.saturating_sub(1));
+    let top = (top.floor() as i32).clamp(0, height.saturating_sub(1));
+    let right = (right.ceil() as i32).clamp(0, width.saturating_sub(1));
+    let bottom = (bottom.ceil() as i32).clamp(0, height.saturating_sub(1));
+    if right <= left || bottom <= top {
+        return;
+    }
+
+    for offset in 0..thickness.min(width.max(height) as u32) as i32 {
+        let x1 = left + offset;
+        let x2 = right - offset;
+        let y1 = top + offset;
+        let y2 = bottom - offset;
+        if x1 > x2 || y1 > y2 {
+            break;
+        }
+        for x in x1..=x2 {
+            if (0..height).contains(&y1) {
+                image.put_pixel(x as u32, y1 as u32, color);
+            }
+            if (0..height).contains(&y2) {
+                image.put_pixel(x as u32, y2 as u32, color);
+            }
+        }
+        for y in y1..=y2 {
+            if (0..width).contains(&x1) {
+                image.put_pixel(x1 as u32, y as u32, color);
+            }
+            if (0..width).contains(&x2) {
+                image.put_pixel(x2 as u32, y as u32, color);
+            }
+        }
+    }
 }
 
 pub(super) fn recognize_document(path: &Path) -> anyhow::Result<OcrDocument> {
