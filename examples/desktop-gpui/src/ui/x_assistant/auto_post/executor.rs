@@ -142,25 +142,25 @@ fn run_once_with_mode(
     filter: NewsFilter,
     require_enabled: bool,
 ) -> anyhow::Result<Option<SubmitResult>> {
-    app_log::post_info!("X 自动发帖执行器：开始单次任务，filter={:?}，require_enabled={}", filter, require_enabled);
+    app_log::post_info!("[自动发帖][01/12] 单次任务启动，filter={:?}，require_enabled={}", filter, require_enabled);
     ensure!(!cancel.load(Ordering::Acquire), "自动发帖已停止");
-    app_log::post_info!("X 自动发帖执行器：读取任务设置");
+    app_log::post_info!("[自动发帖][02/12] 读取任务设置");
     let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
-    app_log::post_info!("X 自动发帖执行器：设置读取完成，auto_post_enabled={}，posts_per_hour={}", settings.auto_post_enabled, settings.posts_per_hour);
+    app_log::post_info!("[自动发帖][02/12] 配置读取完成，auto_post_enabled={}，posts_per_hour={}", settings.auto_post_enabled, settings.posts_per_hour);
     if require_enabled && !settings.auto_post_enabled {
         return Ok(None);
     }
-    app_log::post_info!("X 自动发帖执行器：检查最近一小时发布数量");
+    app_log::post_info!("[自动发帖][03/12] 检查每小时发布上限");
     let hourly_count = binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
-    app_log::post_info!("X 自动发帖执行器：最近一小时已发布 {} 条", hourly_count);
+    app_log::post_info!("[自动发帖][03/12] 最近一小时发布数量 {} 条", hourly_count);
     ensure!(
         hourly_count < u64::from(settings.posts_per_hour.clamp(1, 10)),
         "已达到每小时发布上限，暂不能执行发帖（测试发帖同样计入限额）"
     );
-    app_log::post_info!("X 自动发帖执行器：发帖前先同步最新 RSS 新闻");
+    app_log::post_info!("[自动发帖][04/12] 发帖前同步最新 RSS 新闻");
     let (inserted_news, failed_feeds) = sync_latest_news(filter)?;
     app_log::post_info!(
-        "X 自动发帖执行器：RSS 同步完成，新增 {} 条，失败订阅源 {} 个；开始筛选最近 24 小时新闻",
+        "[自动发帖][05/12] RSS 同步完成，筛选最近 24 小时新闻并排除重复内容，新增 {} 条，失败订阅源 {} 个；开始筛选最近 24 小时新闻",
         inserted_news, failed_feeds
     );
     ensure!(!cancel.load(Ordering::Acquire), "RSS 同步后收到停止指令");
@@ -168,7 +168,7 @@ fn run_once_with_mode(
         app_log::post_warn!("X 自动发帖执行器：没有可用于测试的未发布新闻候选，浏览器不会启动");
         return Ok(None);
     };
-    app_log::post_info!("X 自动发帖执行器：文案准备完成，post_id={}，接下来获取浏览器任务锁", post.post_id);
+    app_log::post_info!("[自动发帖][06/12] 新闻筛选与 AI 文案准备完成，post_id={}，接下来获取浏览器任务锁", post.post_id);
 
     if cancel.load(Ordering::Acquire) {
         binance_tools::db::x_posting::mark_post_failed_blocking(
@@ -187,10 +187,10 @@ fn run_once_with_mode(
             return Ok(None);
         }
     }
-    app_log::post_info!("X 自动发帖执行器：开始获取浏览器锁并提交 X 发帖任务");
+    app_log::post_info!("[自动发帖][07/12] 等待浏览器锁并准备提交");
     let result = run_browser_task(|| submit_prepared_post(&post, cancel))
         .with_context(|| format!("执行 X 发帖任务 {} 失败", post.post_id))?;
-    app_log::post_info!("X 自动发帖执行器：浏览器提交流程结束，post_id={}，outcome={:?}", result.post_id, result.outcome);
+    app_log::post_info!("[自动发帖][12/12] 浏览器提交流程结束，post_id={}，outcome={:?}", result.post_id, result.outcome);
     Ok(Some(result))
 }
 
