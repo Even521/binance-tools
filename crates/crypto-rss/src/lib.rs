@@ -7,7 +7,11 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::{Arc, OnceLock},
+};
+use tokio::sync::Semaphore;
 use std::time::Duration;
 use url::Url;
 
@@ -41,6 +45,12 @@ pub struct Collector {
     client: Client,
 }
 
+static RSS_REQUEST_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn rss_request_semaphore() -> &'static Arc<Semaphore> {
+    RSS_REQUEST_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(2)))
+}
+
 impl Collector {
     pub fn new() -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -67,6 +77,12 @@ impl Collector {
     }
 
     pub async fn collect_feed(&self, feed: &FeedConfig) -> Result<Vec<NewsItem>> {
+        // 全局限制所有 Collector 实例的 RSS 请求总并发数，避免不同新闻页面叠加占用资源。
+        let _permit = rss_request_semaphore()
+            .clone()
+            .acquire_owned()
+            .await
+            .context("acquire RSS request slot")?;
         let candidate_urls = feed_candidate_urls(&feed.url);
         let mut errors = Vec::new();
 
@@ -170,9 +186,9 @@ impl Collector {
                 Ok((index, result)) => {
                     results[index] = Some(result.map_err(|err| format!("{err:#}")));
                 }
-                Err(err) => {
-                    // 单个 feed 任务异常退出不影响其他订阅源继续同步。
-                    eprintln!("RSS feed task join failed: {err}");
+                Err(_err) => {
+                    // 单个 feed 任务异常退出不影响其他订阅源继续同步；
+                    // 对应结果会在汇总阶段标记为异常退出。
                 }
             }
 
