@@ -670,6 +670,7 @@ impl XAssistantPage {
     }
 
     fn show_reply_flow(&mut self, cx: &mut Context<Self>) {
+        self.show_run_status = false;
         self.show_reply_list = false;
         self.show_post_history = false;
         self.show_task_settings = false;
@@ -847,8 +848,11 @@ impl XAssistantPage {
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         Button::new("x-assistant-start-all-automation")
             .label("开始")
-            .primary()
             .small()
+            .rounded_full()
+            .bg(gpui::hsla(0.39, 0.58, 0.40, 1.0))
+            .text_color(gpui::hsla(0.0, 0.0, 1.0, 1.0))
+            .px_4()
             .disabled(self.replying)
             .tooltip("启动自动化回复、发帖")
             .on_click(cx.listener(|this, _, _, cx| this.start_all_automation(cx)))
@@ -858,8 +862,11 @@ impl XAssistantPage {
     fn render_stop_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         Button::new("x-assistant-stop-all-automation")
             .label("停止")
-            .danger()
             .small()
+            .rounded_full()
+            .bg(gpui::hsla(0.00, 0.68, 0.52, 1.0))
+            .text_color(gpui::hsla(0.0, 0.0, 1.0, 1.0))
+            .px_4()
             .disabled(!self.replying)
             .tooltip("中断自动化")
             .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx)))
@@ -1049,7 +1056,7 @@ impl Render for XAssistantPage {
             let stats_row = h_flex().gap_3()
                 .child(reply_stats_panel)
                 .child(post_stats_panel);
-            return v_flex().size_full().min_h_0().gap_3().p_4()
+            return v_flex().size_full().min_w_0().min_h_0().gap_3().p_4()
                 .child(menu)
                 .child(stats_row)
                 .child(v_flex().flex_1().min_h_0().gap_2()
@@ -1069,6 +1076,8 @@ impl Render for XAssistantPage {
             let theme = cx.theme();
             return v_flex()
                 .size_full()
+                .min_w_0()
+                .min_h_0()
                 .gap_3()
                 .p_4()
                 .child(menu)
@@ -1097,6 +1106,8 @@ impl Render for XAssistantPage {
             let theme = cx.theme();
             return v_flex()
                 .size_full()
+                .min_w_0()
+                .min_h_0()
                 .gap_3()
                 .p_4()
                 .child(menu)
@@ -1192,8 +1203,10 @@ impl Render for XAssistantPage {
         if self.show_reply_list || self.show_post_history {
             return v_flex()
                 .size_full()
+                .min_w_0()
+                .min_h_0()
                 .gap_3()
-                .p_3()
+                .p_4()
                 .child(self.render_page_menu(cx))
                 .when_some(self.reply_list.clone(), |page, reply_list| {
                     if self.show_reply_list { page.child(reply_list) } else { page }
@@ -1210,6 +1223,8 @@ impl Render for XAssistantPage {
 
         let element = v_flex()
             .size_full()
+            .min_w_0()
+            .min_h_0()
             .relative()
             .gap_3()
             .p_4()
