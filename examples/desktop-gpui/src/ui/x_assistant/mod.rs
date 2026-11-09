@@ -67,6 +67,8 @@ pub struct XAssistantPage {
     reply_list: Option<Entity<reply_list::ReplyListPage>>,
     post_history: Option<Entity<post_history::PostHistoryPage>>,
     task_settings: binance_tools::db::x_posting::XAssistantTaskSettings,
+    // 后台任务结束信号；用于兜底修正 UI 中可能滞留的运行状态。
+    task_finished: Arc<AtomicBool>,
     render_diagnostic_logged: bool,
     show_run_status: bool,
     log_tail: Option<run_log::LogTail>,
@@ -122,6 +124,7 @@ impl XAssistantPage {
             reply_list: None,
             post_history: None,
             task_settings,
+            task_finished: Arc::new(AtomicBool::new(true)),
             render_diagnostic_logged: false,
             show_run_status: true,
             log_tail: None,
@@ -208,6 +211,9 @@ impl XAssistantPage {
         } else {
             None
         };
+        let task_finished = Arc::new(AtomicBool::new(false));
+        self.task_finished = Arc::clone(&task_finished);
+        let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -218,6 +224,7 @@ impl XAssistantPage {
                     }
                 })
                 .await;
+            task_finished_for_ui.store(true, Ordering::Release);
             _ = this.update(cx, |this, cx| {
                 this.replying = false;
                 match result {
@@ -294,6 +301,7 @@ impl XAssistantPage {
                 })
                 .await;
             app_log::x_info!("X 自动发帖测试：后台执行结束，准备更新界面结果");
+            task_finished_for_ui.store(true, Ordering::Release);
             _ = this.update(cx, |this, cx| {
                 this.replying = false;
                 match result {
@@ -384,6 +392,7 @@ impl XAssistantPage {
                     }
                 })
                 .await;
+            task_finished_for_ui.store(true, Ordering::Release);
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
             let _cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
@@ -827,8 +836,8 @@ impl XAssistantPage {
             .label("开始")
             .small()
             .rounded_full()
-            .bg(if self.replying { gpui::hsla(0.39, 0.58, 0.40, 1.0) } else { palette::surface(theme) })
-            .text_color(if self.replying { gpui::hsla(0.0, 0.0, 1.0, 1.0) } else { palette::text(theme) })
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
             .px_4()
             .disabled(self.replying)
             .tooltip("启动自动化回复、发帖")
@@ -845,7 +854,7 @@ impl XAssistantPage {
             .label("停止")
             .small()
             .rounded_full()
-            .bg(if self.replying { gpui::hsla(0.00, 0.68, 0.52, 1.0) } else { palette::surface(theme) })
+            .bg(palette::surface(theme))
             .text_color(if self.replying { gpui::hsla(0.0, 0.0, 1.0, 1.0) } else { palette::text(theme) })
             .px_4()
             .disabled(!self.replying)
@@ -943,9 +952,11 @@ impl XAssistantPage {
             } else {
                 palette::surface(theme)
             })
-            .px_3()
-            .py_1()
-            .text_size(px(12.))
+            .px_2()
+            .h(px(26.))
+            .flex()
+            .items_center()
+            .text_size(px(11.))
             .font_semibold()
             .text_color(if self.error.is_some() {
                 palette::error_text()
@@ -982,6 +993,14 @@ impl XAssistantPage {
 
 impl Render for XAssistantPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 后台执行器已经返回但 UI 回调未能及时刷新时，以后台结束信号为准。
+        if self.replying && self.task_finished.load(Ordering::Acquire) {
+            self.replying = false;
+            if self.error.is_none() {
+                self.status = Some("自动化任务已结束。".to_string());
+            }
+            cx.notify();
+        }
         if !self.render_diagnostic_logged {
             self.render_diagnostic_logged = true;
         }
