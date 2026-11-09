@@ -1078,8 +1078,53 @@ impl Render for XAssistantPage {
             let stats_row = h_flex().gap_3()
                 .child(reply_stats_panel)
                 .child(post_stats_panel);
+            // 将启动拦截、运行进度和任务结果直接显示在「运行状态」页面，
+            // 避免用户只能通过日志文件发现任务未启动的原因。
+            let runtime_notice = self.error.clone().or_else(|| self.status.clone());
+            let runtime_notice_is_error = self.error.is_some();
             return v_flex().size_full().min_w_0().min_h_0().gap_3().p_4()
                 .child(menu)
+                .when_some(runtime_notice, |panel, message| {
+                    panel.child(
+                        v_flex()
+                            .gap_1()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(if runtime_notice_is_error {
+                                palette::error_border()
+                            } else {
+                                gpui::hsla(0.12, 0.62, 0.72, 1.0)
+                            })
+                            .bg(if runtime_notice_is_error {
+                                palette::error_background()
+                            } else {
+                                gpui::hsla(0.12, 0.72, 0.96, 1.0)
+                            })
+                            .px_3()
+                            .py_2()
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .font_semibold()
+                                    .text_color(if runtime_notice_is_error {
+                                        palette::error_text()
+                                    } else {
+                                        gpui::hsla(0.12, 0.62, 0.34, 1.0)
+                                    })
+                                    .child(if runtime_notice_is_error { "运行异常" } else { "运行提示" }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(if runtime_notice_is_error {
+                                        palette::error_text()
+                                    } else {
+                                        palette::text(theme)
+                                    })
+                                    .child(message),
+                            ),
+                    )
+                })
                 .child(stats_row)
                 .child(v_flex().flex_1().min_h_0().gap_2()
                     .rounded(px(8.)).border_1().border_color(palette::border(theme))
