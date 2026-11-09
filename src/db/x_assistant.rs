@@ -58,6 +58,22 @@ pub fn reply_stats_blocking() -> anyhow::Result<XAssistantReplyStats> {
         .map_err(Into::into)
 }
 
+/// Counts confirmed replies sent during the current Beijing calendar day.
+pub fn today_sent_reply_count_blocking() -> anyhow::Result<u64> {
+    let connection = super::open_default_connection()?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM x_assistant_reply_records
+         WHERE send_status = 'sent'
+           AND completed_last_step = 1
+           AND completed_at IS NOT NULL
+           AND date(completed_at) = date('now', '+8 hours')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
 pub fn delete_reply_records_older_than_three_days_blocking() -> anyhow::Result<usize> {
     let connection = super::open_default_connection()?;
     connection
