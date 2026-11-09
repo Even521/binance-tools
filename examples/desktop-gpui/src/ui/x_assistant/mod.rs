@@ -913,6 +913,19 @@ impl Render for XAssistantPage {
             let menu = self.render_page_menu(cx);
             let theme = cx.theme();
             let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
+            let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
+            let published_posts = binance_tools::db::x_posting::list_published_posts_blocking(500)
+                .unwrap_or_default();
+            let post_total = published_posts.len() as u64;
+            let post_success = published_posts.iter().filter(|post| post.status == "published").count() as u64;
+            let post_failed = published_posts.iter().filter(|post| post.status == "failed").count() as u64;
+            let stat = |label: &'static str, value: u64, color: gpui::Hsla| {
+                div().flex_1().min_w_0().rounded(px(7.)).border_1()
+                    .border_color(palette::border(theme)).bg(palette::surface(theme))
+                    .px_3().py_2()
+                    .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
+                    .child(div().text_size(px(18.)).font_semibold().text_color(color).child(value.to_string()))
+            };
             let log_content = if self.log_tail.is_none() {
                 div().flex_1().min_h_0().text_size(px(12.)).text_color(palette::muted(theme))
                     .child("X 助手未启动，日志读取已停止。启动任务后才会读取 logs 目录中的日志。").into_any_element()
@@ -939,6 +952,18 @@ impl Render for XAssistantPage {
                         .child(self.render_start_all_button(cx))
                         .child(self.render_stop_all_button(cx))))
                 .child(menu)
+                .child(v_flex().gap_2()
+                    .child(div().text_size(px(13.)).font_semibold().child("自动回复统计"))
+                    .child(h_flex().gap_2()
+                        .child(stat("今日总数", reply_stats.as_ref().map_or(0, |v| v.today_total), palette::text(theme)))
+                        .child(stat("成功", reply_stats.as_ref().map_or(0, |v| v.today_success), theme.success))
+                        .child(stat("失败", reply_stats.as_ref().map_or(0, |v| v.today_failed), palette::error_text()))))
+                .child(v_flex().gap_2()
+                    .child(div().text_size(px(13.)).font_semibold().child("自动发帖统计"))
+                    .child(h_flex().gap_2()
+                        .child(stat("总数", post_total, palette::text(theme)))
+                        .child(stat("成功", post_success, theme.success))
+                        .child(stat("失败", post_failed, palette::error_text()))))
                 .child(v_flex().flex_1().min_h_0().gap_2()
                     .rounded(px(8.)).border_1().border_color(palette::border(theme))
                     .bg(palette::surface(theme)).p_3()
