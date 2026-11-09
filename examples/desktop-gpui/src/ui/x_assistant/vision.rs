@@ -1549,7 +1549,7 @@ fn run_visual_reply_inner(
                 reply_text,
                 completed: false,
                 skipped_duplicate: false,
-                summary: "提交结果未知：2/4/7 秒均未识别到成功提示，但已确认回复弹窗关闭。已标记 uncertain，不重复提交，继续下一轮。".to_string(),
+                summary: "提交结果未知：2/4/7 秒均未识别到成功提示，但已确认回复弹窗关闭。已标记 uncertain，不重复提交当前回复。".to_string(),
             });
         }
 
