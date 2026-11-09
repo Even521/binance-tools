@@ -382,12 +382,8 @@ mod windows_overlay {
                     let _ = DeleteObject(title_font.into());
                     let _ = DeleteObject(task_font.into());
 
-                    // 状态圆点使用主题文字的反差色，避免与背景融在一起。
-                    let dot = CreateSolidBrush(if luminance > 150.0 {
-                        COLORREF(0x00202020)
-                    } else {
-                        COLORREF(0x00FFFFFF)
-                    });
+                    // 绿色状态圆点表示自动化任务正在运行。
+                    let dot = CreateSolidBrush(COLORREF(0x0000C000));
                     let previous = SelectObject(dc, dot.into());
                     let _ = Ellipse(dc, 163, 7, 173, 17);
                     let _ = SelectObject(dc, previous);
