@@ -1384,7 +1384,7 @@ fn run_visual_reply_inner(
 
     let ocr_started = std::time::Instant::now();
 
-    let status = match recognize_send_status(&done.png) {
+    let mut status = match recognize_send_status(&done.png) {
         Ok(status) => {
             automation::log_event(&format!(
                 "[自动回复][03/03]：ppocr-rs 耗时 {} ms，发送状态识别完成。",
@@ -1403,7 +1403,7 @@ fn run_visual_reply_inner(
 
     // X 的蓝色“你的帖子已发送”提示可能位于页面底部，整页 OCR 容易漏掉。
     // 使用已存在的底部全宽、多阈值专用 OCR 再识别一次；它适用于帖子和回复。
-    let sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
+    let mut sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
         Ok(true) => {
             automation::log_event("[自动回复][03/03]：底部全宽专用 OCR 明确识别到 X 的“你的帖子已发送”提示。");
             true
@@ -1416,6 +1416,52 @@ fn run_visual_reply_inner(
             false
         }
     };
+
+    // 首次 2 秒检查没有明确结果时，才进行两次只读补查；正常发送不增加等待。
+    // 计划检查点约为提交后 2/4/7 秒；OCR 处理耗时会使后续检查点顺延。停止信号到达后不再采集截图。
+    if !status.already_sent && !status.sent && !status.rate_limited
+        && !status.retryable_error && !sent_toast
+    {
+        for (attempt, delay) in [(1, 2), (2, 3)] {
+            if let Err(error) = wait_cancel(cancel, Duration::from_secs(delay)) {
+                return Err(uncertain_send_error(
+                    &run_id,
+                    format!("提交后第 {attempt} 次只读补查等待期间收到停止信号：{error:#}"),
+                ));
+            }
+
+            let stage = if attempt == 1 { "04-result-4s" } else { "04-result-7s" };
+            done = capture(&dir, &id, stage, &mut screenshots)
+                .map_err(|error| uncertain_send_error(&run_id, format!("{stage} 截图采集失败：{error:#}")))?;
+            ensure_reply_page_route(&done, stage)
+                .map_err(|error| uncertain_send_error(&run_id, format!("{stage} 页面路由核验失败：{error:#}")))?;
+
+            status = match recognize_send_status(&done.png) {
+                Ok(status) => status,
+                Err(error) => {
+                    automation::log_event(&format!("{stage} 发送状态 OCR 失败：{error:#}；继续只读核验。"));
+                    Default::default()
+                }
+            };
+            sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
+                Ok(found) => found,
+                Err(error) => {
+                    automation::log_event(&format!("{stage} 成功提示 OCR 失败：{error:#}。"));
+                    false
+                }
+            };
+
+            automation::log_event(&format!(
+                "{stage} 只读补查结果：already_sent={}，sent={}，toast={}，rate_limited={}，retryable_error={}",
+                status.already_sent, status.sent, sent_toast, status.rate_limited, status.retryable_error
+            ));
+            if status.already_sent || status.sent || sent_toast
+                || status.rate_limited || status.retryable_error
+            {
+                break;
+            }
+        }
+    }
 
     // 已经发送过
     if status.already_sent {
