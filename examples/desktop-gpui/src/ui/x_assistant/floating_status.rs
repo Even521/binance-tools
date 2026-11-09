@@ -14,14 +14,17 @@ pub struct FloatingStatus {
 
 impl FloatingStatus {
     /// Show the application logo and a running indicator over the browser toolbar.
-    pub fn show() -> Self {
+    pub fn show(task_label: &'static str) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
 
         #[cfg(windows)]
         {
             let thread_stop = Arc::clone(&stop);
-            std::thread::spawn(move || windows_overlay::run(thread_stop));
+            std::thread::spawn(move || windows_overlay::run(thread_stop, task_label));
         }
+
+        #[cfg(not(windows))]
+        let _ = task_label;
 
         Self { stop }
     }
@@ -42,7 +45,7 @@ impl Drop for FloatingStatus {
 mod windows_overlay {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    pub(super) fn run(_: Arc<AtomicBool>) {}
+    pub(super) fn run(_: Arc<AtomicBool>, _: &'static str) {}
 }
 
 #[cfg(windows)]
@@ -61,7 +64,7 @@ mod windows_overlay {
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-            PAINTSTRUCT, SelectObject,
+            PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TextOutW, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -77,13 +80,13 @@ mod windows_overlay {
     };
     use windows::core::w;
 
-    const OVERLAY_WIDTH: i32 = 42;
-    const OVERLAY_HEIGHT: i32 = 28;
+    const OVERLAY_WIDTH: i32 = 180;
+    const OVERLAY_HEIGHT: i32 = 46;
     const COLOR_KEY: COLORREF = COLORREF(0x00FF00FF);
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
 
-    pub(super) fn run(stop: Arc<AtomicBool>) {
+    pub(super) fn run(stop: Arc<AtomicBool>, task_label: &'static str) {
         unsafe {
             let instance = match GetModuleHandleW(None) {
                 Ok(module) => HINSTANCE(module.0),
@@ -251,19 +254,29 @@ mod windows_overlay {
                     right: OVERLAY_WIDTH,
                     bottom: OVERLAY_HEIGHT,
                 };
-                let background = CreateSolidBrush(COLOR_KEY);
+                // Magenta remains the transparent color key; the visible pill uses a
+                // neutral dark surface so it remains readable over Chrome's toolbar.
+                let background = CreateSolidBrush(COLORREF(0x002B2925));
                 let _ = FillRect(dc, &rect, background);
                 let _ = DeleteObject(background.into());
 
                 let icon = HICON(ICON_HANDLE.load(Ordering::Acquire) as _);
                 if !icon.is_invalid() {
-                    let _ = DrawIconEx(dc, 1, 2, icon, 24, 24, 0, None, DI_NORMAL);
+                    let _ = DrawIconEx(dc, 8, 9, icon, 28, 28, 0, None, DI_NORMAL);
                 }
+
+                let _ = SetBkMode(dc, TRANSPARENT);
+                let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
+                let task: Vec<u16> = format!("当前任务：{task_label}").encode_utf16().collect();
+                let _ = SetTextColor(dc, COLORREF(0x00FFFFFF));
+                let _ = TextOutW(dc, 44, 6, &title);
+                let _ = SetTextColor(dc, COLORREF(0x00D0D0D0));
+                let _ = TextOutW(dc, 44, 25, &task);
 
                 // Green dot means the automation task is active.
                 let dot = CreateSolidBrush(COLORREF(0x0000C853));
                 let previous = SelectObject(dc, dot.into());
-                let _ = Ellipse(dc, 30, 9, 40, 19);
+                let _ = Ellipse(dc, 163, 8, 173, 18);
                 let _ = SelectObject(dc, previous);
                 let _ = DeleteObject(dot.into());
 
