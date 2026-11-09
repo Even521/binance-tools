@@ -937,9 +937,14 @@ impl Render for XAssistantPage {
             let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
             let published_posts = binance_tools::db::x_posting::list_published_posts_blocking(500)
                 .unwrap_or_default();
-            let post_total = published_posts.len() as u64;
-            let post_success = published_posts.iter().filter(|post| post.status == "published").count() as u64;
-            let post_failed = published_posts.iter().filter(|post| post.status == "failed").count() as u64;
+            let today = app_log::beijing_now().format("%Y-%m-%d").to_string();
+            let today_posts = published_posts.iter().filter(|post| {
+                let timestamp = post.published_at.as_deref().unwrap_or(&post.created_at);
+                app_log::format_beijing_timestamp(timestamp).starts_with(&today)
+            }).collect::<Vec<_>>();
+            let post_total = today_posts.len() as u64;
+            let post_success = today_posts.iter().filter(|post| post.status == "published").count() as u64;
+            let post_failed = today_posts.iter().filter(|post| post.status == "failed").count() as u64;
             let stat = |label: &'static str, value: u64, color: gpui::Hsla| {
                 div().flex_1().min_w_0().rounded(px(7.)).border_1()
                     .border_color(palette::border(theme)).bg(palette::surface(theme))
@@ -977,7 +982,7 @@ impl Render for XAssistantPage {
                 .child(v_flex().gap_2()
                     .child(div().text_size(px(13.)).font_semibold().child("自动发帖统计"))
                     .child(h_flex().gap_2()
-                        .child(stat("总数", post_total, palette::text(theme)))
+                        .child(stat("今日总数", post_total, palette::text(theme)))
                         .child(stat("成功", post_success, theme.success))
                         .child(stat("失败", post_failed, palette::error_text()))))
                 .child(v_flex().flex_1().min_h_0().gap_2()
