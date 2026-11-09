@@ -855,7 +855,7 @@ impl XAssistantPage {
             .small()
             .rounded_full()
             .bg(palette::surface(theme))
-            .text_color(if self.replying { gpui::hsla(0.0, 0.0, 1.0, 1.0) } else { palette::text(theme) })
+            .text_color(palette::text(theme))
             .px_4()
             .disabled(!self.replying)
             .tooltip("中断自动化")
