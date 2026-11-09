@@ -661,6 +661,7 @@ impl XAssistantPage {
         } else {
             self.reply_list = Some(cx.new(|cx| reply_list::ReplyListPage::new(window, cx)));
         }
+        self.show_run_status = false;
         self.show_reply_list = true;
         self.show_post_history = false;
         self.show_task_settings = false;
@@ -683,6 +684,7 @@ impl XAssistantPage {
         } else {
             self.post_history = Some(cx.new(|cx| post_history::PostHistoryPage::new(window, cx)));
         }
+        self.show_run_status = false;
         self.show_reply_list = false;
         self.show_post_history = true;
         self.show_task_settings = false;
@@ -692,6 +694,7 @@ impl XAssistantPage {
 
     fn open_task_settings(&mut self, cx: &mut Context<Self>) {
         app_log::x_info!("X 任务设置：收到打开页面事件");
+        self.show_run_status = false;
         self.show_reply_list = false;
         self.show_post_history = false;
         self.show_task_settings = true;
@@ -701,6 +704,7 @@ impl XAssistantPage {
     }
 
     fn open_auto_post(&mut self, cx: &mut Context<Self>) {
+        self.show_run_status = false;
         self.show_reply_list = false;
         self.show_post_history = false;
         self.show_task_settings = false;
