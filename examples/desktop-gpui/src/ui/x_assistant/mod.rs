@@ -609,7 +609,7 @@ impl XAssistantPage {
 
     fn adjust_daily_reply_limit(&mut self, delta: i16, cx: &mut Context<Self>) {
         let next = i32::from(self.task_settings.daily_reply_limit) + i32::from(delta);
-        self.task_settings.daily_reply_limit = next.clamp(100, 10_000) as u16;
+        self.task_settings.daily_reply_limit = next.clamp(100, 2_000) as u16;
         self.persist_task_settings(cx);
     }
 
