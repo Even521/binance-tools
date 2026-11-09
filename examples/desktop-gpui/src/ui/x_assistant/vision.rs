@@ -1514,6 +1514,51 @@ fn run_visual_reply_inner(
         ));
     }
 
+    // 7 秒补查后仍无成功提示时，检查回复弹窗是否已经关闭。
+    // 若 X 已回到 Home 且回复编辑框、草稿确认框均不存在，则本次提交结果记为 uncertain：
+    // 不重复提交当前回复，但也不阻断全自动主循环，交由运行器滚动到下一条帖子。
+    // 只有明确确认弹窗已关闭时才允许继续；OCR 识别失败仍按安全错误处理。
+    if !status.retryable_error {
+        let composer_open = ocr::reply_composer_is_open(&done.png)
+            .map_err(|error| uncertain_send_error(
+                &run_id,
+                format!("7 秒补查后无法判断回复弹窗状态：{error:#}"),
+            ))?;
+        let draft_confirmation_open = ocr::recognize_save_draft_confirmation(&done.png)
+            .map_err(|error| uncertain_send_error(
+                &run_id,
+                format!("7 秒补查后无法判断草稿确认框状态：{error:#}"),
+            ))?;
+
+        if !composer_open && !draft_confirmation_open {
+            let reason = "提交后 2/4/7 秒均未识别到成功提示，且 7 秒截图确认回复弹窗已关闭；结果未知，不重试当前回复，继续下一轮";
+            binance_tools::db::x_assistant::mark_reply_uncertain_blocking(&run_id, reason)
+                .map_err(|error| anyhow::anyhow!(
+                    "回复结果虽已判定为 uncertain，但 SQLite 状态写入失败，停止自动化以避免重复处理：{error:#}"
+                ))?;
+            automation::log_event(
+                "[自动回复][03/03]：7 秒补查未发现成功提示，但已确认 Home 页面回复弹窗关闭；数据库标记 uncertain，不重发当前评论，跳过当前帖子并继续下一轮。",
+            );
+
+            return Ok(VisionReplyResult {
+                screenshots,
+                author_name,
+                account_handle,
+                posted_at,
+                post_text,
+                reply_text,
+                completed: false,
+                skipped_duplicate: false,
+                summary: "提交结果未知：2/4/7 秒均未识别到成功提示，但已确认回复弹窗关闭。已标记 uncertain，不重复提交，继续下一轮。".to_string(),
+            });
+        }
+
+        automation::log_event(&format!(
+            "[自动回复][03/03]：7 秒补查后回复弹窗状态仍未满足安全继续条件：composer_open={}，draft_confirmation_open={}；保留原有安全处理，不滚动页面。",
+            composer_open, draft_confirmation_open
+        ));
+    }
+
     // 是否存在可重试发送错误
     let retryable_error = status.retryable_error;
 
