@@ -1399,12 +1399,14 @@ fn run_visual_reply_inner(
     automation::log_event("阶段 3/3：已点击‘回复’，等待 2 秒后采集结果截图。");
     thread::sleep(Duration::from_secs(2));
 
-    let mut done = capture(&dir, &id, "04-result", &mut screenshots)?;
+    let mut done = capture(&dir, &id, "04-result", &mut screenshots)
+        .map_err(|error| uncertain_send_error(&run_id, format!("提交后结果截图采集失败：{error:#}")))?;
     // 提交点击已经发生：即使此时收到停止信号，也必须先做只读路由与 OCR 核验。
     // 后续是否允许重试由取消状态决定；取消后绝不再点击、关闭弹窗或处理下一帖。
     // 结果截图可能仍显示回复弹窗，这是正常的；但必须确认仍处于 X 首页/回复路由。
     // 如果意外跳到 Grok 或其他页面，不再对该截图执行状态点击或恢复操作。
-    ensure_reply_page_route(&done, "发送结果截图")?;
+    ensure_reply_page_route(&done, "发送结果截图")
+        .map_err(|error| uncertain_send_error(&run_id, format!("提交后页面路由核验失败：{error:#}")))?;
 
     // ============================================================
     // 第一次发送结果检查：同一张截图只执行一次 OCR
@@ -1707,7 +1709,8 @@ fn run_visual_reply_inner(
 
         thread::sleep(Duration::from_secs(2));
 
-        done = capture(&dir, &id, "05-retry-result", &mut screenshots)?;
+        done = capture(&dir, &id, "05-retry-result", &mut screenshots)
+            .map_err(|error| uncertain_send_error(&run_id, format!("唯一一次重试提交后截图采集失败：{error:#}")))?;
 
         // 第二次提交后同样进入只读结果核验，不允许取消信号跳过 OCR。
 
@@ -1901,7 +1904,8 @@ fn already_sent_result(
 ) -> anyhow::Result<VisionReplyResult> {
     binance_tools::db::x_assistant::mark_reply_duplicate_blocking(run_id)
         .map_err(|error| uncertain_send_error(run_id, format!("保存重复发送状态失败：{error:#}")))?;
-    if cancel.load(Ordering::Relaxed) {
+    let cancelled = cancel.load(Ordering::Relaxed);
+    if cancelled {
         automation::log_event("发送结果已确认，但收到停止信号；跳过关闭编辑框，不再执行任何 UI 点击。");
     } else {
         close_reply_composer_safely(dir, id, &mut screenshots, cancel)
@@ -1916,7 +1920,11 @@ fn already_sent_result(
         reply_text,
         completed: false,
         skipped_duplicate: true,
-        summary: "X 已提示该回复发送过；已关闭编辑框并跳过，未再次发送。".to_string(),
+        summary: if cancelled {
+            "X 已提示该回复发送过；收到停止信号，未执行关闭弹窗操作，也未再次发送。".to_string()
+        } else {
+            "X 已提示该回复发送过；已关闭编辑框并跳过，未再次发送。".to_string()
+        },
     })
 }
 
