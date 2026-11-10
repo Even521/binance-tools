@@ -40,6 +40,8 @@ fn cleanup() {
     // 每张图片分别记录最短保留时间和最长保存时间。
     let mut images = Vec::new();
     let mut removed_intermediates = 0usize;
+    let mut directories = Vec::new();
+    let mut failed_deletions = 0usize;
 
     fn collect_files(
         dir: &Path,
@@ -48,6 +50,7 @@ fn cleanup() {
         max_age: Duration,
         images: &mut Vec<(PathBuf, u64, SystemTime, Duration, Duration)>,
         removed_intermediates: &mut usize,
+        directories: &mut Vec<PathBuf>,
     ) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
@@ -56,13 +59,9 @@ fn cleanup() {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                directories.push(path.clone());
                 collect_files(
-                    &path,
-                    now,
-                    min_retention,
-                    max_age,
-                    images,
-                    removed_intermediates,
+                    &path, now, min_retention, max_age, images, removed_intermediates, directories,
                 );
                 continue;
             }
@@ -97,6 +96,7 @@ fn cleanup() {
         SCREENSHOT_MAX_AGE,
         &mut images,
         &mut removed_intermediates,
+        &mut directories,
     );
     collect_files(
         &auto_post_dir,
@@ -105,6 +105,7 @@ fn cleanup() {
         AUTO_POST_RETENTION,
         &mut images,
         &mut removed_intermediates,
+        &mut directories,
     );
 
     images.sort_by_key(|(_, _, modified, _, _)| *modified);
@@ -124,22 +125,40 @@ fn cleanup() {
             break;
         }
 
-        if fs::remove_file(&path).is_ok() {
-            remaining = remaining.saturating_sub(1);
-            total_bytes = total_bytes.saturating_sub(size);
-            removed_images += 1;
-            // 让出少量 CPU/磁盘时间，清理线程尽量不与 OCR 抢资源。
-            if (removed_images + removed_intermediates) % 10 == 0 {
-                thread::sleep(Duration::from_millis(10));
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                remaining = remaining.saturating_sub(1);
+                total_bytes = total_bytes.saturating_sub(size);
+                removed_images += 1;
+                if (removed_images + removed_intermediates) % 10 == 0 {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Err(error) => {
+                failed_deletions += 1;
+                app_log::warn!("[截图清理] 删除图片失败：{}，原因：{}", path.display(), error);
             }
         }
     }
 
-    if removed_intermediates > 0 || removed_images > 0 {
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    let mut removed_directories = 0usize;
+    for dir in directories {
+        match fs::remove_dir(&dir) {
+            Ok(()) => removed_directories += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                || error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) => app_log::warn!("[截图清理] 删除空目录失败：{}，原因：{}", dir.display(), error),
+        }
+    }
+
+    if removed_intermediates > 0 || removed_images > 0 || removed_directories > 0 || failed_deletions > 0 {
         app_log::info!(
-            "[截图清理] 删除遗留 BMP {} 个、过期/超限图片 {} 个；当前图片数约 {}，占用约 {:.1} MB（上限 {} 张 / {} MB；普通 OCR 截图保留 7 天，自动发帖截图至少保留 1 小时）",
+            "[截图清理] 删除遗留 BMP {} 个、过期/超限图片 {} 个、空目录 {} 个；删除失败 {} 个；当前图片数约 {}，占用约 {:.1} MB（上限 {} 张 / {} MB；普通 OCR 截图保留 7 天，自动发帖截图至少保留 1 小时）",
             removed_intermediates,
             removed_images,
+            removed_directories,
+            failed_deletions,
             remaining,
             total_bytes as f64 / (1024.0 * 1024.0),
             MAX_IMAGES,
