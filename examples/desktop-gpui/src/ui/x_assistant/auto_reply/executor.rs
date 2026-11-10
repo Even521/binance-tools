@@ -35,7 +35,7 @@ impl AutoReplyRunner {
         &mut self,
         options: VisionReplyOptions,
         cancel: &AtomicBool,
-        post_scheduler: Option<(SyncSender<()>, Receiver<bool>)>,
+        mut post_scheduler: Option<(SyncSender<()>, Receiver<bool>)>,
     ) -> Result<VisionReplyResult> {
         automation::log_event("自动回复循环启动");
         let mut first_reply_completed = false;
