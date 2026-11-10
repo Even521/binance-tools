@@ -823,6 +823,7 @@ impl Render for CryptoNewsPage {
                                         .gap_1()
                                         .child(
                                             h_flex()
+                                                .items_center()
                                                 .justify_between()
                                                 .child(
                                                     div()
@@ -831,10 +832,47 @@ impl Render for CryptoNewsPage {
                                                         .child("X 改写结果"),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .text_size(px(10.))
-                                                        .text_color(muted)
-                                                        .child("最多 100 字"),
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.))
+                                                                .text_color(muted)
+                                                                .child("最多 100 字"),
+                                                        )
+                                                        .child(
+                                                            Button::new("copy_news_rewrite_result")
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .w(px(24.))
+                                                                .h(px(22.))
+                                                                .tooltip("复制 AI 改写结果")
+                                                                .disabled(
+                                                                    self.is_rewriting
+                                                                        || self.rewrite_result
+                                                                            .as_ref()
+                                                                            .map(|value| value.trim().is_empty())
+                                                                            .unwrap_or(true),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(muted)
+                                                                        .child("⧉"),
+                                                                )
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    if let Some(result) = this
+                                                                        .rewrite_result
+                                                                        .as_ref()
+                                                                        .filter(|value| !value.trim().is_empty())
+                                                                    {
+                                                                        cx.write_to_clipboard(
+                                                                            ClipboardItem::new_string(result.clone()),
+                                                                        );
+                                                                    }
+                                                                })),
+                                                        ),
                                                 ),
                                         )
                                         .child(
