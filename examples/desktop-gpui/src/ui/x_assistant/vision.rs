@@ -2085,6 +2085,45 @@ fn identify_post_for_mode(
     cancel: &AtomicBool,
 ) -> anyhow::Result<VisionDecision> {
     check_cancel(cancel)?;
+    if options.stage2_ocr {
+        // X 首页偶尔会在时间线位置显示网络错误提示。此时不能继续按“无完整帖子”
+        // 处理，否则会不断跳过帖子；持续刷新直到页面恢复，停止信号随时可中断。
+        if ocr::timeline_has_reload_error(&feed.png)? {
+            automation::log_event(
+                "时间线加载异常：识别到“出错了，请重新加载”，进入页面恢复循环。",
+            );
+            loop {
+                check_cancel(cancel)?;
+                native::activate_browser()?;
+                native::press_f5()?;
+                wait_cancel(cancel, Duration::from_secs(3))?;
+
+                let bmp = feed.png.with_extension("reload-check.bmp");
+                native::capture_window(&bmp)?;
+                let image = image::open(&bmp)?;
+                let _ = fs::remove_file(&bmp);
+                anyhow::ensure!(
+                    image.width() >= 800 && image.height() >= 600,
+                    "时间线刷新后截图尺寸异常（{}x{}）",
+                    image.width(),
+                    image.height()
+                );
+                image.save(&feed.png)?;
+
+                if !ocr::timeline_has_reload_error(&feed.png)? {
+                    automation::log_event(
+                        "时间线加载异常已恢复：重新 OCR 未发现加载错误，继续识别帖子。",
+                    );
+                    break;
+                }
+
+                automation::log_event(
+                    "时间线刷新后仍显示加载错误，休眠 30 秒后再次刷新；可随时点击停止。",
+                );
+                wait_cancel(cancel, Duration::from_secs(30))?;
+            }
+        }
+    }
     if !options.stage2_ocr {
         return identify_post_once(options, feed, cancel);
     }
