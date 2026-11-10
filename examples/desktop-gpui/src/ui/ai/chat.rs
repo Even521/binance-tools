@@ -2209,7 +2209,11 @@ fn markdown_with_safe_lists(markdown: &str) -> String {
             let rest = &after_marker[whitespace_len..];
             // Escape the punctuation so Markdown treats the number as text,
             // not as a list token. Two trailing spaces create a hard break.
-            output.push(format!("{indent}{number}\\{marker}{rest}  "));
+            output.push(format!("{indent}{number}\\{marker}{rest}"));
+            // Render each numbered item as its own Markdown paragraph.
+            // gpui-component 0.5.1 collapses hard-break trailing spaces in
+            // this path, so an explicit blank line is required for separation.
+            output.push(String::new());
         } else {
             output.push(line.to_string());
         }
