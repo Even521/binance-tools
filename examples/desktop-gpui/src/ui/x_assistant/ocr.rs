@@ -520,7 +520,11 @@ pub(super) fn timeline_has_reload_error(path: &Path) -> anyhow::Result<bool> {
             };
             let normalized = text
                 .chars()
-                .filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation())
+                .filter(|ch| {
+                    !ch.is_whitespace()
+                        && !ch.is_ascii_punctuation()
+                        && !matches!(ch, '。' | '，' | '！' | '？' | '：' | '；' | '、')
+                })
                 .collect::<String>();
             if normalized.contains("出错了")
                 && normalized.contains("重新加载")
