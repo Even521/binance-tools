@@ -3129,7 +3129,10 @@ fn validate_composer_input_point(
     height: u32,
     located_by_ocr: bool,
 ) -> anyhow::Result<()> {
-    let max_y_ratio = if located_by_ocr { 0.60 } else { 0.52 };
+    // OCR 匹配到“发布你的回复”占位文字时，长帖会把回复输入区推到更靠下的位置。
+    // 放宽 OCR 定位的纵向范围，但仍在底部工具栏（约 0.78h）之前截止；
+    // 视觉模型坐标继续使用更严格的范围。
+    let max_y_ratio = if located_by_ocr { 0.75 } else { 0.52 };
     anyhow::ensure!(
         point.x >= (width as f32 * 0.20) as i32
             && point.x <= (width as f32 * 0.80) as i32
@@ -3313,7 +3316,8 @@ mod tests {
     fn rejects_composer_points_on_the_bottom_toolbar() {
         let placeholder = Point { x: 768, y: 433 };
         let expanded_composer_placeholder = Point { x: 786, y: 561 };
-        let toolbar = Point { x: 768, y: 685 };
+        let long_post_composer_placeholder = Point { x: 756, y: 700 };
+        let toolbar = Point { x: 768, y: 820 };
         assert!(validate_composer_input_point(&placeholder, 1920, 1032, false).is_ok());
         assert!(
             validate_composer_input_point(&expanded_composer_placeholder, 1920, 1032, true).is_ok()
@@ -3321,6 +3325,13 @@ mod tests {
         assert!(
             validate_composer_input_point(&expanded_composer_placeholder, 1920, 1032, false)
                 .is_err()
+        );
+        assert!(
+            validate_composer_input_point(&long_post_composer_placeholder, 1920, 1032, true)
+                .is_ok()
+        );
+        assert!(
+            validate_composer_input_point(&Point { x: 756, y: 790 }, 1920, 1032, true).is_err()
         );
         assert!(validate_composer_input_point(&toolbar, 1920, 1032, true).is_err());
     }
