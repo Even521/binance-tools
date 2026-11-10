@@ -3,7 +3,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, RecvTimeoutError},
     },
-    thread,
     time::{Duration, Instant},
 };
 
