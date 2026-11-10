@@ -1,9 +1,10 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::SyncSender,
+        mpsc::{Receiver, SyncSender, RecvTimeoutError},
     },
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -33,9 +34,13 @@ impl AutoReplyRunner {
         &mut self,
         options: VisionReplyOptions,
         cancel: &AtomicBool,
-        mut first_cycle_sender: Option<SyncSender<()>>,
+        post_scheduler: Option<(SyncSender<()>, Receiver<bool>)>,
     ) -> Result<VisionReplyResult> {
         automation::log_event("自动回复循环启动");
+        let mut first_reply_completed = false;
+        let mut rounds_since_post = 0usize;
+        let mut post_scheduler_active = post_scheduler.is_some();
+
         loop {
             if Self::is_cancelled(cancel) {
                 automation::log_event("自动回复收到停止信号，退出循环");
@@ -47,12 +52,13 @@ impl AutoReplyRunner {
             let completed_before = self.completed;
             let result = self.run_once(&options, cancel);
 
-            // 只有真正成功发送并计入 completed 的回复，才允许启动自动发帖。
-            // 跳过重复账号、识别不完整或未发送成功，都不能触发发帖调度。
+            // 至少有一条回复真正发送成功后，才允许联动自动发帖。
+            // 重复账号、识别不完整或未发送成功都不会提前开启发帖调度。
             if result.is_ok() && self.completed > completed_before {
                 ensure_daily_reply_capacity()?;
-                if let Some(sender) = first_cycle_sender.take() {
-                    let _ = sender.send(());
+                if !first_reply_completed {
+                    first_reply_completed = true;
+                    automation::log_event("自动回复首条成功，已启用 10:1 自动发帖调度");
                 }
             }
 
@@ -62,6 +68,46 @@ impl AutoReplyRunner {
             }
 
             result?;
+
+            // 每完成 10 个自动回复轮次，才向自动发帖线程交出一次浏览器使用权。
+            // 轮次包括成功、跳过重复内容以及已恢复的普通失败；每轮浏览器操作已完整结束。
+            if post_scheduler_active {
+                rounds_since_post += 1;
+                if first_reply_completed && rounds_since_post >= 10 {
+                    automation::log_event(
+                        "自动回复已完成 10 轮，交出浏览器操作权，等待自动发帖完成 1 次调度。",
+                    );
+
+                    let mut scheduler_available = false;
+                    if let Some((request_sender, completion_receiver)) = post_scheduler.as_mut() {
+                        if request_sender.send(()).is_ok() {
+                            loop {
+                                if Self::is_cancelled(cancel) {
+                                    return self.stop();
+                                }
+                                match completion_receiver.recv_timeout(Duration::from_millis(200)) {
+                                    Ok(active) => {
+                                        scheduler_available = active;
+                                        break;
+                                    }
+                                    Err(RecvTimeoutError::Timeout) => continue,
+                                    Err(RecvTimeoutError::Disconnected) => break,
+                                }
+                            }
+                        }
+                    }
+
+                    rounds_since_post = 0;
+                    post_scheduler_active = scheduler_available;
+                    if post_scheduler_active {
+                        automation::log_event("自动发帖调度结束，浏览器操作权已交还自动回复。");
+                    } else {
+                        automation::log_event(
+                            "自动发帖调度已退出或不可用，自动回复将继续独立运行。",
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -284,16 +330,21 @@ pub fn run(options: VisionReplyOptions, cancel: &AtomicBool) -> Result<VisionRep
     AutoReplyRunner::default().run(options, cancel, None)
 }
 
-/// 自动化联动入口：首轮回复完成后通知外部调度器，再继续持续回复。
-pub fn run_with_first_cycle(
+/// 自动化联动入口：每完成 10 轮回复，交出一次浏览器操作权给自动发帖。
+pub fn run_with_post_scheduler(
     options: VisionReplyOptions,
     cancel: &AtomicBool,
-    first_cycle_sender: SyncSender<()>,
+    post_turn_sender: SyncSender<()>,
+    post_turn_receiver: Receiver<bool>,
 ) -> Result<VisionReplyResult> {
     anyhow::ensure!(options.auto_send, "全自动回复需要开启自动发送");
     anyhow::ensure!(!options.hover_only, "全自动回复不能使用仅移动模式");
 
-    AutoReplyRunner::default().run(options, cancel, Some(first_cycle_sender))
+    AutoReplyRunner::default().run(
+        options,
+        cancel,
+        Some((post_turn_sender, post_turn_receiver)),
+    )
 }
 
 /// 生成手动停止结果。
