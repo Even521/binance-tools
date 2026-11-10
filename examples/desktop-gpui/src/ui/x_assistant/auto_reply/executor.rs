@@ -73,6 +73,13 @@ impl AutoReplyRunner {
             self.rounds += 1;
             let round = self.rounds;
             let started = Instant::now();
+            let _screenshot_round = match vision::begin_screenshot_round(round) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    log_round_error(round, &error, cancel, started.elapsed());
+                    return self.handle_error(error, cancel);
+                }
+            };
 
             match vision::run_visual_reply(options.clone(), cancel) {
                 Ok(result) => {
