@@ -1477,17 +1477,26 @@ impl AiChatPanel {
             return div().into_any_element();
         }
 
+        // Keep the Markdown view inside a shrinkable, full-width container.
+        // Without min_w_0, long URLs / English tokens can force the GPUI flex
+        // child wider than the chat column and make adjacent text appear clipped.
         div()
             .w_full()
+            .min_w_0()
             .text_color(palette::muted(app_theme))
             .child(
-                TextView::markdown(
-                    ("ai-assistant-content", index),
-                    content.to_string(),
-                    window,
-                    cx,
-                )
-                .selectable(true),
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .child(
+                        TextView::markdown(
+                            ("ai-assistant-content", index),
+                            content.to_string(),
+                            window,
+                            cx,
+                        )
+                        .selectable(true),
+                    ),
             )
             .into_any_element()
     }
