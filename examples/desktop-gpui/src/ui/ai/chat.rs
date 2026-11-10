@@ -2189,7 +2189,7 @@ fn markdown_with_safe_lists(markdown: &str) -> String {
         let body = &line[leading_spaces..];
         let digits = body.chars().take_while(char::is_ascii_digit).count();
         let marker = body[digits..].chars().next();
-        let after_marker = if digits > 0 {
+        let after_marker = if digits > 0 && marker.is_some() {
             &body[digits + 1..]
         } else {
             ""
