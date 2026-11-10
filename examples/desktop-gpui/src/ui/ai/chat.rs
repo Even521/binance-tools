@@ -1477,6 +1477,14 @@ impl AiChatPanel {
             return div().into_any_element();
         }
 
+        // gpui-component v0.5.1 has a deferred inline-flow measurement bug:
+        // inline code inside a Markdown heading can be measured with body
+        // typography and then painted with heading typography, causing the
+        // heading to overlap the paragraph below it. Keep the heading text but
+        // remove only its inline-code delimiters until the upstream fix is
+        // available in a GPUI-compatible release.
+        let markdown_content = markdown_without_heading_inline_code(content);
+
         // Keep the Markdown view inside a shrinkable, full-width container.
         // Without min_w_0, long URLs / English tokens can force the GPUI flex
         // child wider than the chat column and make adjacent text appear clipped.
@@ -1491,7 +1499,7 @@ impl AiChatPanel {
                     .child(
                         TextView::markdown(
                             ("ai-assistant-content", index),
-                            content.to_string(),
+                            markdown_content,
                             window,
                             cx,
                         )
@@ -2135,6 +2143,74 @@ fn format_token_count(count: u64) -> String {
     } else {
         count.to_string()
     }
+}
+
+/// Work around gpui-component 0.5.1's inline-code heading measurement bug.
+/// Only ATX heading lines outside fenced code blocks are normalized; all
+/// heading words and all inline code elsewhere remain untouched.
+fn markdown_without_heading_inline_code(markdown: &str) -> String {
+    let mut in_fenced_code = false;
+    let mut fence_char = '\0';
+    let mut fence_len = 0usize;
+    let mut output = Vec::new();
+
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        let leading_spaces = line.len() - trimmed.len();
+        let fence_run = trimmed.chars().take_while(|ch| *ch == '`' || *ch == '~').count();
+        if leading_spaces <= 3 && fence_run >= 3 {
+            let marker = trimmed.chars().next().unwrap_or('\0');
+            if !in_fenced_code {
+                in_fenced_code = true;
+                fence_char = marker;
+                fence_len = fence_run;
+            } else if marker == fence_char && fence_run >= fence_len {
+                in_fenced_code = false;
+            }
+            output.push(line.to_string());
+            continue;
+        }
+
+        let heading = !in_fenced_code
+            && leading_spaces <= 3
+            && trimmed.starts_with('#')
+            && {
+                let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+                (1..=6).contains(&hashes)
+                    && trimmed.chars().nth(hashes).is_some_and(char::is_whitespace)
+            };
+
+        if !heading {
+            output.push(line.to_string());
+            continue;
+        }
+
+        let mut normalized = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        let mut code_delimiter = 0usize;
+        while let Some(ch) = chars.next() {
+            if ch != '`' {
+                normalized.push(ch);
+                continue;
+            }
+
+            let mut run = 1usize;
+            while chars.peek() == Some(&'`') {
+                chars.next();
+                run += 1;
+            }
+
+            if code_delimiter == 0 {
+                code_delimiter = run;
+            } else if code_delimiter == run {
+                code_delimiter = 0;
+            }
+            // Drop the delimiter, retaining the heading's code text.
+        }
+        output.push(normalized);
+    }
+
+    output.join("\n")
 }
 
 fn new_thread_id() -> String {
