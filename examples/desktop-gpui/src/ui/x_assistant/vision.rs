@@ -425,9 +425,7 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
         automation::log_event(&format!("全自动恢复：{reason}；随机选择 F5 刷新页面。"));
         automation::native::press_f5()?;
         wait_cancel(cancel, Duration::from_secs(3))?;
-        let dir = PathBuf::from("data")
-            .join("x_assistant")
-            .join("screenshots");
+        let dir = current_screenshot_dir();
         fs::create_dir_all(&dir)?;
         let id = app_log::beijing_now().format("%Y%m%d-%H%M%S-%3f");
         let mut screenshots = Vec::new();
