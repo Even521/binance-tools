@@ -1892,6 +1892,10 @@ pub(super) fn contains_rate_limit(text: &str) -> bool {
         "操作过于频繁",
         "请稍后再试",
         "暂时限制",
+        "每日帖子上限",
+        "达到每日帖子上限",
+        "你已达到每日帖子上限",
+        "订阅 Plus 以获得更高上限",
         "rate limit",
         "rate limited",
         "too many requests",
@@ -2138,6 +2142,8 @@ mod tests {
     fn recognizes_explicit_rate_limit_messages_only() {
         assert!(contains_rate_limit("请求过于频繁，请稍后再试"));
         assert!(contains_rate_limit("Too many requests"));
+        assert!(contains_rate_limit("你已达到每日帖子上限。订阅 Plus 以获得更高上限。"));
+        assert!(contains_rate_limit("达到每日帖子上限"));
         assert!(!contains_rate_limit("出错了，别担心，让我们再试一次"));
     }
 
