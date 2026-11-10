@@ -2189,17 +2189,24 @@ fn markdown_with_safe_lists(markdown: &str) -> String {
         let body = &line[leading_spaces..];
         let digits = body.chars().take_while(char::is_ascii_digit).count();
         let marker = body[digits..].chars().next();
+        let after_marker = if digits > 0 {
+            &body[digits + 1..]
+        } else {
+            ""
+        };
+        let whitespace_len = after_marker
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>();
         let is_ordered_item = digits > 0
             && matches!(marker, Some('.' | ')'))
-            && body[digits + 1..]
-                .chars()
-                .next()
-                .is_some_and(char::is_whitespace);
+            && whitespace_len > 0;
 
         if is_ordered_item {
             let number = &body[..digits];
             let marker = marker.unwrap();
-            let rest = &body[digits + 2..];
+            let rest = &after_marker[whitespace_len..];
             // Escape the punctuation so Markdown treats the number as text,
             // not as a list token. Two trailing spaces create a hard break.
             output.push(format!("{indent}{number}\\{marker}{rest}  "));
