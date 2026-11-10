@@ -284,7 +284,7 @@ impl EntertainmentNewsPage {
     fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
         let conn = open_default_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, source, title, summary, chinese_summary, published_at, collected_at ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
+            "SELECT id, source, title, summary, chinese_summary, published_at, collected_at FROM entertainment_news ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DbNewsItem {
