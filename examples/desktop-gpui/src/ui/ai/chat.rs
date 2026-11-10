@@ -1483,7 +1483,7 @@ impl AiChatPanel {
         // heading to overlap the paragraph below it. Keep the heading text but
         // remove only its inline-code delimiters until the upstream fix is
         // available in a GPUI-compatible release.
-        let markdown_content = markdown_without_heading_inline_code(content);
+        let markdown_content = markdown_with_safe_lists(content);
 
         // Keep the Markdown view inside a shrinkable, full-width container.
         // Without min_w_0, long URLs / English tokens can force the GPUI flex
@@ -2148,6 +2148,69 @@ fn format_token_count(count: u64) -> String {
 /// Work around gpui-component 0.5.1's inline-code heading measurement bug.
 /// Only ATX heading lines outside fenced code blocks are normalized; all
 /// heading words and all inline code elsewhere remain untouched.
+/// Preserve ordered-list numbering without using gpui-component 0.5.1's
+/// broken ordered-list layout. Escaped markers render as literal text, while
+/// hard line breaks keep each item on its own row. Fenced code blocks are
+/// passed through unchanged.
+fn markdown_with_safe_lists(markdown: &str) -> String {
+    let normalized = markdown_without_heading_inline_code(markdown);
+    let mut in_fenced_code = false;
+    let mut fence_char = '\0';
+    let mut fence_len = 0usize;
+    let mut output = Vec::new();
+
+    for line in normalized.lines() {
+        let trimmed = line.trim_start();
+        let leading_spaces = line.len() - trimmed.len();
+        let fence_run = trimmed
+            .chars()
+            .take_while(|ch| *ch == '`' || *ch == '~')
+            .count();
+
+        if leading_spaces <= 3 && fence_run >= 3 {
+            let marker = trimmed.chars().next().unwrap_or('\0');
+            if !in_fenced_code {
+                in_fenced_code = true;
+                fence_char = marker;
+                fence_len = fence_run;
+            } else if marker == fence_char && fence_run >= fence_len {
+                in_fenced_code = false;
+            }
+            output.push(line.to_string());
+            continue;
+        }
+
+        if in_fenced_code {
+            output.push(line.to_string());
+            continue;
+        }
+
+        let indent = &line[..leading_spaces];
+        let body = &line[leading_spaces..];
+        let digits = body.chars().take_while(char::is_ascii_digit).count();
+        let marker = body[digits..].chars().next();
+        let is_ordered_item = digits > 0
+            && matches!(marker, Some('.' | ')'))
+            && body[digits + 1..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace);
+
+        if is_ordered_item {
+            let number = &body[..digits];
+            let marker = marker.unwrap();
+            let rest = &body[digits + 2..];
+            // Escape the punctuation so Markdown treats the number as text,
+            // not as a list token. Two trailing spaces create a hard break.
+            output.push(format!("{indent}{number}\\{marker}{rest}  "));
+        } else {
+            output.push(line.to_string());
+        }
+    }
+
+    output.join("\n")
+}
+
 fn markdown_without_heading_inline_code(markdown: &str) -> String {
     let mut in_fenced_code = false;
     let mut fence_char = '\0';
