@@ -7,6 +7,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{Receiver, SyncSender},
     },
     thread,
     time::Duration,
@@ -182,8 +183,24 @@ fn run_once_with_mode(
         }
     }
     app_log::post_info!("[07/12] 等待浏览器锁并准备提交");
-    let result = run_browser_task(|| submit_prepared_post(&post, cancel))
-        .with_context(|| format!("执行 X 发帖任务 {} 失败", post.post_id))?;
+    let result = match run_browser_task(|| submit_prepared_post(&post, cancel)) {
+        Ok(result) => result,
+        Err(error) => {
+            let error_chain = format!("{error:#}");
+            // 浏览器租约获取失败时，提交函数尚未运行，预留记录仍可能停留在 pending。
+            // 仅对明确的锁获取错误回滚；提交函数内部的错误状态由 submit 模块负责，
+            // 尤其不能覆盖其可能已经写入的 unknown 状态。
+            if error_chain.contains("等待 X 浏览器操作锁")
+                || error_chain.contains("X 浏览器操作锁已中毒")
+            {
+                let _ = binance_tools::db::x_posting::mark_post_failed_blocking(
+                    post.post_id,
+                    &format!("尚未取得浏览器操作权，未提交到 X：{error_chain}"),
+                );
+            }
+            return Err(error).with_context(|| format!("执行 X 发帖任务 {} 失败", post.post_id));
+        }
+    };
     app_log::post_info!("[自动发帖][12/12] 浏览器提交流程结束，post_id={}，outcome={:?}", result.post_id, result.outcome);
     Ok(Some(result))
 }
@@ -281,59 +298,129 @@ pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> 
     }
 }
 
-/// 启动时先完成一轮自动回复，再启动自动发帖循环。
-/// 两个循环通过同一把 browser lease 串行访问 X；自动发帖自身失败只终止发帖线程，不取消正在进行的回复。
+/// 自动回复每完成 10 轮时调用一次：最多发布一条帖子，然后立即交还浏览器。
+/// 未到发布间隔或暂时没有候选时跳过本次发帖机会，不阻塞自动回复的后续 10 轮。
+fn run_scheduled_post_turn(
+    cancel: &AtomicBool,
+    filter: NewsFilter,
+    published_count: &mut u64,
+) -> anyhow::Result<bool> {
+    if cancel.load(Ordering::Acquire) {
+        return Ok(false);
+    }
+
+    let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
+    if !settings.auto_post_enabled {
+        crate::ui::x_assistant::automation::log_post_event(
+            "自动发帖开关已关闭，退出 10:1 联动发帖调度。",
+        );
+        return Ok(false);
+    }
+
+    let hourly_limit = u64::from(settings.posts_per_hour.clamp(1, 10));
+    let published_last_hour =
+        binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
+    if published_last_hour >= hourly_limit {
+        crate::ui::x_assistant::automation::log_post_event(&format!(
+            "自动发帖达到每小时上限 {hourly_limit}，本次让出浏览器，不影响自动回复。"
+        ));
+        return Ok(true);
+    }
+
+    let age = binance_tools::db::x_posting::seconds_since_last_post_blocking()?;
+    let delay = next_post_delay(settings.posts_per_hour, age);
+    if !delay.is_zero() {
+        crate::ui::x_assistant::automation::log_post_event(&format!(
+            "自动发帖频率控制：还需等待 {} 秒，本次跳过发帖并交还自动回复。",
+            delay.as_secs()
+        ));
+        return Ok(true);
+    }
+
+    let result = match run_once(cancel, filter) {
+        Ok(result) => result,
+        Err(error) if cancel.load(Ordering::Acquire) => {
+            crate::ui::x_assistant::automation::log_post_event(&format!(
+                "自动发帖调度期间收到停止指令：{error:#}"
+            ));
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+
+    match result {
+        Some(result) if result.outcome == SubmitOutcome::Published => {
+            *published_count += 1;
+            crate::ui::x_assistant::automation::log_post_event(&format!(
+                "自动发帖成功：post_id={}，本轮累计发布 {} 条；浏览器操作权交还自动回复。",
+                result.post_id, published_count
+            ));
+            Ok(true)
+        }
+        Some(result) if result.outcome == SubmitOutcome::Unknown => {
+            anyhow::bail!(
+                "发帖结果不确定（post_id={}）。已记为 unknown，必须先人工核验 X 页面，自动发帖调度已停止。",
+                result.post_id
+            );
+        }
+        Some(result) => anyhow::bail!("未预期的发帖结果：{}", result.message),
+        None => {
+            crate::ui::x_assistant::automation::log_post_event(
+                "当前没有可发布候选，本次交还浏览器，10 轮自动回复后再检查。",
+            );
+            Ok(true)
+        }
+    }
+}
+
+/// 启动后由自动回复线程按 10:1 比例发出发帖请求。
+/// 两个任务通过双向通道明确交接浏览器使用权，不再竞争同一把 Mutex。
 pub fn run_with_auto_reply(
     cancel: Arc<AtomicBool>,
     reply_options: crate::ui::x_assistant::vision::VisionReplyOptions,
     filter: NewsFilter,
 ) -> anyhow::Result<u64> {
-    // 先启动回复线程，但在首轮回复结束前不启动发帖线程。
-    let (first_cycle_sender, first_cycle_receiver) = std::sync::mpsc::sync_channel(1);
-    let reply_cancel = Arc::clone(&cancel);
-    let reply_worker = thread::spawn(move || {
-        let result = crate::ui::x_assistant::auto_reply::run_with_first_cycle(
-            reply_options,
-            &reply_cancel,
-            first_cycle_sender,
-        );
-        if result.is_err() {
-            mark_linked_cancel(&reply_cancel, "自动回复工作线程返回错误");
-        }
-        result
-    });
-
-    let first_reply_completed = loop {
-        if cancel.load(Ordering::Acquire) {
-            break false;
-        }
-        match first_cycle_receiver.recv_timeout(Duration::from_millis(200)) {
-            Ok(()) => break true,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break false,
-        }
-    };
-
-    if !first_reply_completed {
-        return reply_worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("自动回复工作线程异常退出"))?
-            .map(|_| 0);
-    }
-
-    crate::ui::x_assistant::automation::log_post_event(
-        "启动顺序：首轮自动回复已完成，现在开始安排自动发帖；后续任务串行交替执行。",
-    );
+    // 双向同步通道保证：回复线程发出一次请求后等待发帖完成；
+    // 发帖线程每次只执行一次发帖调度，不再启动独立无限循环争抢浏览器锁。
+    let (post_turn_sender, post_turn_receiver) = std::sync::mpsc::sync_channel::<()>(0);
+    let (post_done_sender, post_done_receiver) = std::sync::mpsc::sync_channel::<bool>(0);
 
     let post_cancel = Arc::clone(&cancel);
     let post_worker = thread::spawn(move || {
-        let result = run_loop(&post_cancel, filter);
-        if let Err(error) = &result {
-            crate::ui::x_assistant::automation::log_post_event(&format!(
-                "自动发帖工作线程失败，已停止自动发帖；不会取消正在执行的自动回复：{error:#}"
-            ));
+        let mut published_count = 0u64;
+
+        while post_turn_receiver.recv().is_ok() {
+            if post_cancel.load(Ordering::Acquire) {
+                break;
+            }
+
+            match run_scheduled_post_turn(&post_cancel, filter, &mut published_count) {
+                Ok(active) => {
+                    if post_done_sender.send(active).is_err() || !active {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    crate::ui::x_assistant::automation::log_post_event(&format!(
+                        "自动发帖调度失败，已停止后续发帖；自动回复继续运行：{error:#}"
+                    ));
+                    let _ = post_done_sender.send(false);
+                    return Err(error);
+                }
+            }
         }
-        result
+
+        Ok(published_count)
+    });
+
+    let reply_cancel = Arc::clone(&cancel);
+    let reply_worker = thread::spawn(move || {
+        crate::ui::x_assistant::auto_reply::run_with_post_scheduler(
+            reply_options,
+            &reply_cancel,
+            post_turn_sender,
+            post_done_receiver,
+        )
     });
 
     let reply_result = reply_worker
@@ -343,6 +430,7 @@ pub fn run_with_auto_reply(
         mark_linked_cancel(&cancel, "主线程收到自动回复错误");
     }
 
+    // reply_worker 退出后请求通道关闭，发帖线程会从 recv() 正常退出。
     let post_result = post_worker
         .join()
         .map_err(|_| anyhow::anyhow!("自动发帖工作线程异常退出"))?;
