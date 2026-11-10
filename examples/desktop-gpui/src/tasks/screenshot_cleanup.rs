@@ -146,9 +146,20 @@ fn cleanup() {
     for dir in directories {
         match fs::remove_dir(&dir) {
             Ok(()) => removed_directories += 1,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                || error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
-            Err(error) => app_log::warn!("[截图清理] 删除空目录失败：{}，原因：{}", dir.display(), error),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                // 目录仍有受保护文件时属于正常情况，不视为清理失败。
+                let still_non_empty = fs::read_dir(&dir)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false);
+                if !still_non_empty {
+                    app_log::error!(
+                        "[截图清理] 删除空目录失败：{}，原因：{}",
+                        dir.display(),
+                        error
+                    );
+                }
+            }
         }
     }
 
