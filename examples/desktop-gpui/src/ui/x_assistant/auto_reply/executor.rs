@@ -3,6 +3,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::SyncSender,
     },
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
@@ -18,6 +19,7 @@ use crate::ui::x_assistant::core::task_queue::run_browser_task;
 /// 集中管理回复状态、失败次数和最后一轮结果。
 #[derive(Default)]
 struct AutoReplyRunner {
+    rounds: usize,
     completed: usize,
     failures: usize,
     last_result: Option<VisionReplyResult>,
@@ -68,9 +70,19 @@ impl AutoReplyRunner {
     /// 调用视觉识别模块，并根据执行结果分发处理。
     fn run_once(&mut self, options: &VisionReplyOptions, cancel: &AtomicBool) -> Result<()> {
         run_browser_task(|| {
+            self.rounds += 1;
+            let round = self.rounds;
+            let started = Instant::now();
+
             match vision::run_visual_reply(options.clone(), cancel) {
-                Ok(result) => self.handle_result(result, cancel),
-                Err(error) => self.handle_error(error, cancel),
+                Ok(result) => {
+                    log_round_result(round, &result, started.elapsed());
+                    self.handle_result(result, cancel)
+                }
+                Err(error) => {
+                    log_round_error(round, &error, cancel, started.elapsed());
+                    self.handle_error(error, cancel)
+                }
             }
         })
     }
@@ -84,10 +96,6 @@ impl AutoReplyRunner {
             self.failures = 0;
             self.last_result = Some(result);
 
-            automation::log_event(
-                "全自动：该账号 24 小时内已回复，按正常跳过处理；不计失败、不刷新，改为滚动寻找下一帖。",
-            );
-
             return self.scroll_or_recover(
                 cancel,
                 "跳过已回复账号，向下查找下一条帖子",
@@ -98,23 +106,13 @@ impl AutoReplyRunner {
             self.completed += 1;
             self.failures = 0;
 
-            automation::log_event(&format!("全自动：已完成第 {} 条回复。", self.completed));
         } else if result.summary.starts_with("提交结果未知") {
             // 仅当视觉流程已确认回复弹窗和草稿确认框都关闭、且 uncertain 已成功写入数据库时，
             // vision 才会以正常结果返回到这里。此时当前帖子已被持久化去重保护，可以安全跳过。
             // uncertain 不是发送成功，也不是普通失败：不计入成功数、不累计失败次数，并继续下一轮。
             self.failures = 0;
-            automation::log_event(&format!(
-                "全自动：本轮提交结果未知，已持久化标记 uncertain；不重发当前回复，跳过当前帖子并继续下一轮。{}",
-                result.summary
-            ));
         } else {
             self.failures += 1;
-            automation::log_event(&format!(
-                "全自动：本轮未完成发送（连续未完成 {} 次）；跳过当前帖子，主循环继续。{}",
-                self.failures,
-                result.summary
-            ));
         }
 
         self.last_result = Some(result);
@@ -169,11 +167,6 @@ impl AutoReplyRunner {
 
         self.failures += 1;
 
-        automation::log_event(&format!(
-            "全自动：本轮报错（连续失败 {} 次）：{error:#}",
-            self.failures
-        ));
-
         self.recover(&error, cancel)?;
         automation::log_event("全自动：当前轮次恢复完成，继续主循环处理下一条帖子。");
         Ok(())
@@ -203,6 +196,61 @@ impl AutoReplyRunner {
     fn stop(&mut self) -> Result<VisionReplyResult> {
         stopped_result(self.last_result.take(), self.completed)
     }
+}
+
+
+/// 输出每轮唯一的最终结果日志；详细 OCR、截图和点击诊断仍由原流程保留。
+fn log_round_result(round: usize, result: &VisionReplyResult, elapsed: std::time::Duration) {
+    let duration = format!("{:.1}s", elapsed.as_secs_f64());
+    let reason = compact_log_value(&result.summary);
+
+    if result.completed {
+        app_log::x_info!(
+            "[X助手][第{round}轮] 回复成功 | 耗时={duration}"
+        );
+    } else if result.summary.starts_with("提交结果未知") {
+        app_log::x_warn!(
+            "[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}"
+        );
+    } else if result.skipped_duplicate || result.summary.starts_with("继续扫描下一帖") {
+        app_log::x_info!(
+            "[X助手][第{round}轮] 跳过 | 原因={reason} | 耗时={duration}"
+        );
+    } else {
+        app_log::x_error!(
+            "[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}"
+        );
+    }
+}
+
+/// 异常路径也只输出一条轮次结果；用户主动停止不记作失败。
+fn log_round_error(
+    round: usize,
+    error: &anyhow::Error,
+    cancel: &AtomicBool,
+    elapsed: std::time::Duration,
+) {
+    let reason = compact_log_value(&format!("{error:#}"));
+    let duration = format!("{:.1}s", elapsed.as_secs_f64());
+
+    if cancel.load(Ordering::Acquire) {
+        app_log::x_info!(
+            "[X助手][第{round}轮] 已停止 | 原因={reason} | 耗时={duration}"
+        );
+    } else if error.downcast_ref::<vision::SendOutcomeUncertain>().is_some() {
+        app_log::x_warn!(
+            "[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}"
+        );
+    } else {
+        app_log::x_error!(
+            "[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}"
+        );
+    }
+}
+
+/// 将错误或摘要压成单行，避免换行破坏日志检索。
+fn compact_log_value(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn ensure_daily_reply_capacity() -> Result<()> {
