@@ -144,6 +144,15 @@ fn cleanup() {
     directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
     let mut removed_directories = 0usize;
     for dir in directories {
+        // 新建轮次目录可能暂时为空；保护最近 10 分钟的目录，避免与截图写入竞争。
+        let directory_age = fs::metadata(&dir)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .unwrap_or_default();
+        if directory_age <= ACTIVE_FILE_GRACE {
+            continue;
+        }
         match fs::remove_dir(&dir) {
             Ok(()) => removed_directories += 1,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
