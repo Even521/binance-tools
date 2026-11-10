@@ -75,9 +75,9 @@ impl AutoReplyRunner {
             if post_scheduler_active {
                 rounds_since_post += 1;
                 if first_reply_completed && rounds_since_post >= REPLY_ROUNDS_PER_POST {
-                    automation::log_event(
-                        format!("自动回复已完成 {REPLY_ROUNDS_PER_POST} 轮，交出浏览器操作权，等待自动发帖完成 1 次调度。"),
-                    );
+                    automation::log_event(&format!(
+                        "自动回复已完成 {REPLY_ROUNDS_PER_POST} 轮，交出浏览器操作权，等待自动发帖完成 1 次调度。"
+                    ));
 
                     let mut scheduler_available = false;
                     if let Some((request_sender, completion_receiver)) = post_scheduler.as_mut() {
