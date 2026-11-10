@@ -1,20 +1,20 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender, RecvTimeoutError},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 
-const REPLY_ROUNDS_PER_POST: usize = 10;
-
 use super::super::{
     automation,
     vision::{self, VisionReplyOptions, VisionReplyResult},
 };
 use crate::ui::x_assistant::core::task_queue::run_browser_task;
+
+const REPLY_ROUNDS_PER_POST: usize = 10;
 
 /// 全自动回复运行器。
 ///
