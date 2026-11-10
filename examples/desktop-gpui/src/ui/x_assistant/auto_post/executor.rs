@@ -7,7 +7,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender},
     },
     thread,
     time::Duration,
