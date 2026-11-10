@@ -505,6 +505,34 @@ fn projection_span(values: &[u32], minimum: u32, max_gap: usize) -> Option<(usiz
     best.map(|(start, end, _)| (start, end))
 }
 
+/// 检查 X 时间线是否显示网络/加载错误提示。
+pub(super) fn timeline_has_reload_error(path: &Path) -> anyhow::Result<bool> {
+    let source = image::open(path)?.to_rgb8();
+    with_cached_ocr_engine(|engine| {
+        let (_, _, page_json) =
+            engine.recognize_image_with_action_coordinates_and_timeline(&source, path)?;
+        let Some(items) = page_json["timeline"]["unclassified"].as_array() else {
+            return Ok(false);
+        };
+        for item in items {
+            let Some(text) = item["text"].as_str() else {
+                continue;
+            };
+            let normalized = text
+                .chars()
+                .filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation())
+                .collect::<String>();
+            if normalized.contains("出错了")
+                && normalized.contains("重新加载")
+                && (normalized.contains("请尝试") || normalized.contains("请重新加载"))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
 pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalPostIdentification> {
     identify_post_and_action_bar_at(path, 0)
 }
