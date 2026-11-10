@@ -1119,6 +1119,17 @@ fn run_visual_reply_inner(
     wait_cancel(cancel, Duration::from_millis(wait_ms))?;
 
     let composer = capture(&dir, &id, "02-composer", &mut screenshots)?;
+
+    // X 每日帖子上限提示会覆盖在回复弹窗顶部；必须在解析输入框、
+    // 生成回复或点击发送之前识别，避免把限流页面当作普通弹窗错误继续恢复。
+    let composer_status = ocr::recognize_document(&composer.png)?;
+    if ocr::contains_rate_limit(&composer_status.text) {
+        automation::log_event(
+            "[自动回复][02/03]：检测到 X 每日帖子上限提示；立即终止自动回复，不再生成或提交回复。",
+        );
+        return Err(anyhow::Error::new(RateLimitDetected));
+    }
+
     let (input_point, reply_text) = if options.stage2_ocr {
         let ocr_started = std::time::Instant::now();
         let compose_page = ocr::recognize_compose_reply_page(&composer.png)?;
