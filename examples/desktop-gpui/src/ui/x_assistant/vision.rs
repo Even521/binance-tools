@@ -1141,8 +1141,11 @@ fn run_visual_reply_inner(
 
         // compose/post 可以继续；
         // home 必须同时确认回复输入框和回复对象账号。
+        let identity_matched = reply_target_identity_matches(display_name_matched, account_matched);
+
+        // compose/post 可以继续；home 必须确认回复输入框，且昵称或账号至少一项匹配。
         let composer_confirmed =
-            is_compose_url || (is_home_url && reply_input_detected && account_matched);
+            is_compose_url || (is_home_url && reply_input_detected && identity_matched);
 
         anyhow::ensure!(
             composer_confirmed,
@@ -1160,20 +1163,18 @@ fn run_visual_reply_inner(
             .trim_start_matches('@');
 
         anyhow::ensure!(
-            reply_target_account_matches(
-                expected_account,
-                actual_account,
-                display_name_matched,
-            ),
-            "回复对象不匹配：预期 @{}，实际 @{}，昵称匹配={}，禁止发送",
+            identity_matched,
+            "回复对象不匹配：预期昵称={}，昵称匹配={}，预期账号=@{}，实际账号=@{}，账号匹配={}，禁止发送",
+            author_name,
+            display_name_matched,
             expected_account,
             actual_account,
-            display_name_matched
+            account_matched
         );
 
         automation::log_event(&format!(
-            "[自动回复][02/03]：回复对象验证通过，预期 @{}，实际 @{}，昵称匹配={}",
-            expected_account, actual_account, display_name_matched
+            "[自动回复][02/03]：回复对象验证通过，昵称匹配={}，账号匹配={}（任意一项匹配即可）",
+            display_name_matched, account_matched
         ));
         let api_input_point = compose_page["reply_input"].as_object().and_then(|point| {
             Some((
@@ -3145,6 +3146,10 @@ fn identity_text_matches(expected_name: &str, dialog_text: &str) -> bool {
     !expected.is_empty() && actual.contains(&expected)
 }
 
+fn reply_target_identity_matches(display_name_matched: bool, account_matched: bool) -> bool {
+    display_name_matched || account_matched
+}
+
 fn reply_target_account_matches(
     expected: &str,
     actual: &str,
@@ -3194,6 +3199,14 @@ mod tests {
         assert!(identity_text_matches("特立独行", "回复给 @Ai_SoloWalker\n特立独行"));
         assert!(reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", true));
         assert!(!reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", false));
+    }
+
+    #[test]
+    fn accepts_reply_target_when_either_name_or_account_matches() {
+        assert!(reply_target_identity_matches(true, false));
+        assert!(reply_target_identity_matches(false, true));
+        assert!(reply_target_identity_matches(true, true));
+        assert!(!reply_target_identity_matches(false, false));
     }
 
     #[test]
