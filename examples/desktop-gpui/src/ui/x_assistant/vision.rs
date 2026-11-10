@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    cell::RefCell,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
@@ -22,6 +23,43 @@ pub const DEFAULT_VISION_MODEL: &str = "qwen3.5:4b";
 // 连续滚动达到阈值后刷新时间线，避免反复处理旧帖子。
 const SCROLLS_BEFORE_REFRESH: u64 = 8;
 static FEED_SCROLL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+std::thread_local! {
+    static ACTIVE_SCREENSHOT_DIR: RefCell<Option<PathBuf>> = RefCell::new(None);
+}
+
+pub(super) struct ScreenshotRoundGuard {
+    previous: Option<PathBuf>,
+}
+
+impl Drop for ScreenshotRoundGuard {
+    fn drop(&mut self) {
+        ACTIVE_SCREENSHOT_DIR.with(|slot| { slot.replace(self.previous.take()); });
+    }
+}
+
+/// 每轮独立目录；轮数目录已存在时追加北京时间时间戳，避免覆盖旧截图。
+pub(super) fn begin_screenshot_round(round: usize) -> anyhow::Result<ScreenshotRoundGuard> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..").join("data").join("x_assistant").join("screenshots");
+    fs::create_dir_all(&root)?;
+    let base_name = format!("round-{round:03}");
+    let base = root.join(&base_name);
+    let dir = if base.exists() {
+        root.join(format!("{}-{}", base_name, app_log::beijing_now().format("%Y%m%d-%H%M%S%.3f")))
+    } else { base };
+    fs::create_dir_all(&dir)?;
+    let previous = ACTIVE_SCREENSHOT_DIR.with(|slot| slot.replace(Some(dir.clone())));
+    automation::log_event(&format!("本轮截图目录：{}", dir.display()));
+    Ok(ScreenshotRoundGuard { previous })
+}
+
+fn current_screenshot_dir() -> PathBuf {
+    ACTIVE_SCREENSHOT_DIR.with(|slot| slot.borrow().clone()).unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..").join("data").join("x_assistant").join("screenshots")
+    })
+}
 
 const SYSTEM_PROMPT: &str = "你是屏幕视觉操作助手。禁止长篇思考，最快速度返回 JSON 对象。所有坐标和边界值必须使用 0 到 1000 的归一化整数：x=0 表示图片最左，x=1000 表示最右；y=0 表示最上，y=1000 表示最下；有多个回复气泡时候不能在正文的上方必须在正文下方相差高度32像素；x、y 分别按整张图片宽度和高度独立归一化，不要输出像素坐标。无法确认时把 ok 设为 false。";
 
@@ -189,9 +227,7 @@ fn refresh_timeline(cancel: &AtomicBool) -> anyhow::Result<()> {
     automation::native::press_f5()?;
     wait_cancel(cancel, Duration::from_secs(3))?;
 
-    let dir = PathBuf::from("data")
-        .join("x_assistant")
-        .join("screenshots");
+    let dir = current_screenshot_dir();
     fs::create_dir_all(&dir)?;
     let id = app_log::beijing_now().format("%Y%m%d-%H%M%S-%3f");
     let mut screenshots = Vec::new();
@@ -274,9 +310,7 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
     check_cancel(cancel)?;
     if reason.contains("报错") {
         automation::native::activate_browser()?;
-        let dir = PathBuf::from("data")
-            .join("x_assistant")
-            .join("screenshots");
+        let dir = current_screenshot_dir();
         fs::create_dir_all(&dir)?;
         let id = app_log::beijing_now().format("%Y%m%d-%H%M%S-%3f");
         let mut screenshots = Vec::new();
@@ -520,6 +554,9 @@ pub fn run_visual_reply(
     options: VisionReplyOptions,
     cancel: &AtomicBool,
 ) -> anyhow::Result<VisionReplyResult> {
+    let _fallback_round = if ACTIVE_SCREENSHOT_DIR.with(|slot| slot.borrow().is_none()) {
+        Some(begin_screenshot_round(0)?)
+    } else { None };
     let mut current_stage = "初始化".to_string();
     run_visual_reply_inner(options, cancel, &mut current_stage).map_err(|error| {
         let detailed = error.context(format!("{current_stage}失败"));
@@ -555,11 +592,7 @@ fn run_visual_reply_inner(
 
     wait_cancel(cancel, Duration::from_millis(250))?;
 
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("data")
-        .join("x_assistant")
-        .join("screenshots");
+    let dir = current_screenshot_dir();
     fs::create_dir_all(&dir)?;
     let id = app_log::beijing_now().format("%Y%m%d-%H%M%S-%3f");
     let mut screenshots = Vec::new();
