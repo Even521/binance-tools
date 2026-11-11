@@ -39,7 +39,7 @@ pub struct DbNewsItem {
 }
 
 const NEWS_PAGE_SIZE: i64 = 15;
-const NEWS_VISIBLE_ROWS: usize = 15;
+const NEWS_VISIBLE_ROWS: usize = 10;
 const NEWS_PREFETCH_ROWS: usize = 2;
 const NEWS_ROW_HEIGHT: f32 = 32.;
 
@@ -778,8 +778,8 @@ impl Render for CryptoNewsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .h(px(520.))
-                            .min_h(px(520.))
+                            .h(px(360.))
+                            .min_h(px(360.))
                             .min_w_0()
                             .child(
                                 div()
