@@ -1558,15 +1558,31 @@ fn run_visual_reply_inner(
     }
 
     // 7 秒补查后仍无成功提示时，检查回复弹窗是否已经关闭。
-    // 若 X 已回到 Home 且回复编辑框、草稿确认框均不存在，则本次提交结果记为 uncertain：
-    // 不重复提交当前回复，但也不阻断全自动主循环，交由运行器滚动到下一条帖子。
-    // 只有明确确认弹窗已关闭时才允许继续；OCR 识别失败仍按安全错误处理。
+    // Home 路由下若动态弹窗裁剪失败，通常意味着提交后弹窗已消失；
+    // 此时将 composer OCR 错误按“未检测到编辑框”处理，但仍需检查草稿确认框。
+    // 非 Home 路由仍严格要求 composer 状态可识别，避免把 OCR 故障误判为已关闭。
     if !status.retryable_error {
-        let composer_open = ocr::reply_composer_is_open(&done.png)
+        let current_url = ocr::recognize_current_url(&done.png)
             .map_err(|error| uncertain_send_error(
                 &run_id,
-                format!("7 秒补查后无法判断回复弹窗状态：{error:#}"),
+                format!("7 秒补查后无法再次确认页面路由：{error:#}"),
             ))?;
+        let is_home = current_url.as_deref().is_some_and(ocr::is_x_home_address);
+        let composer_open = match ocr::reply_composer_is_open(&done.png) {
+            Ok(open) => open,
+            Err(error) if is_home => {
+                automation::log_event(&format!(
+                    "[自动回复][03/03]：当前路由为 Home，回复弹窗边界 OCR 未检测到可信区域（{error:#}）；按弹窗已关闭处理，继续核验草稿确认框，不会重复发送。"
+                ));
+                false
+            }
+            Err(error) => {
+                return Err(uncertain_send_error(
+                    &run_id,
+                    format!("7 秒补查后无法判断回复弹窗状态（路由={current_url:?}）：{error:#}"),
+                ));
+            }
+        };
         let draft_confirmation_open = ocr::recognize_save_draft_confirmation(&done.png)
             .map_err(|error| uncertain_send_error(
                 &run_id,
