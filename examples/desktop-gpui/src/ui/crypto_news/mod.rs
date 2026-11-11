@@ -148,16 +148,8 @@ impl CryptoNewsPage {
     }
 
     fn reload_news(&mut self, cx: &mut Context<Self>) {
-        match Self::fetch_from_db() {
-            Ok(items) => {
-                self.news_items = items;
-                self.error = None;
-                self.refresh_table_page(cx);
-            }
-            Err(err) => {
-                self.error = Some(format!("加载新闻失败: {err}"));
-            }
-        }
+        self.error = None;
+        self.refresh_table_page(cx);
     }
 
     fn on_rewrite_requested(
