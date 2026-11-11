@@ -51,6 +51,7 @@ fn sync_latest_news(filter: NewsFilter) -> anyhow::Result<(usize, usize)> {
         ]);
     }
 
+    let sync_started = std::time::Instant::now();
     app_log::post_info!("X 自动发帖：开始同步最新 RSS，订阅源数量={}", feeds.len());
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let (items, reports) = runtime.block_on(async {
@@ -111,8 +112,8 @@ fn sync_latest_news(filter: NewsFilter) -> anyhow::Result<(usize, usize)> {
         inserted += binance_tools::db::entertainment_news::insert_news_items(&connection, &entertainment_items)?;
     }
     app_log::post_info!(
-        "X 自动发帖：RSS 同步结束，成功订阅源={}，失败订阅源={}，新增新闻={} 条",
-        successful_feeds, failed_feeds, inserted
+        "X 自动发帖：RSS 同步结束，成功订阅源={}，失败订阅源={}，新增新闻={} 条，耗时={} 秒",
+        successful_feeds, failed_feeds, inserted, sync_started.elapsed().as_secs_f32()
     );
     Ok((inserted, failed_feeds))
 }
@@ -152,6 +153,7 @@ fn run_once_with_mode(
         "已达到每小时发布上限，暂不能执行发帖（测试发帖同样计入限额）"
     );
     app_log::post_info!("[04/12] 发帖前同步最新 RSS 新闻");
+    ensure!(!cancel.load(Ordering::Acquire), "RSS 同步前收到停止指令");
     let (inserted_news, failed_feeds) = sync_latest_news(filter)?;
     app_log::post_info!(
         "[05/12] RSS 同步完成，筛选最近 24 小时新闻并排除重复内容，新增 {} 条，失败订阅源 {} 个；开始筛选最近 24 小时新闻",
