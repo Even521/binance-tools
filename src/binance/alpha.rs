@@ -170,7 +170,16 @@ impl AlphaClient {
             );
             err
         }).with_context(|| format!("parse Binance Alpha response failed: {url}"))?;
-        response.into_data()
+        response.into_data().map_err(|err| {
+            app_log::error!(
+                "[Binance][Alpha] 业务响应失败 url={} status={} error={:#} response_body={}",
+                url,
+                status,
+                err,
+                truncate_response_for_log(&body, 2000)
+            );
+            err
+        })
     }
 }
 
