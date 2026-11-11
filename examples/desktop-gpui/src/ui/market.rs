@@ -463,7 +463,8 @@ impl Render for MarketProductsPage {
             })
             .child(
                 div()
-                    .h(px(400.))
+                    // 15 行数据 + 表头需要约 640px，避免底部几行被裁切。
+                    .h(px(660.))
                     .w_full()
                     .overflow_hidden()
                     .child(
