@@ -39,12 +39,16 @@ pub struct DbNewsItem {
 }
 
 const NEWS_PAGE_SIZE: i64 = 20;
+const NEWS_VISIBLE_ROWS: usize = 15;
+const NEWS_PREFETCH_ROWS: usize = 2;
+const NEWS_ROW_HEIGHT: f32 = 32.;
 
 pub struct CryptoNewsPage {
     table: Entity<TableState<CryptoNewsTableDelegate>>,
     search_input: Entity<InputState>,
-    page_index: usize,
     total_count: usize,
+    scroll_distance: Pixels,
+    is_loading_more: bool,
     _search_subscription: Subscription,
     _table_subscription: Subscription,
     news_items: Vec<DbNewsItem>,
@@ -90,8 +94,9 @@ impl CryptoNewsPage {
         let mut instance = Self {
             table,
             search_input,
-            page_index: 0,
             total_count: 0,
+            scroll_distance: px(0.),
+            is_loading_more: false,
             _search_subscription: search_subscription,
             _table_subscription: table_subscription,
             news_items: Vec::new(),
@@ -113,7 +118,9 @@ impl CryptoNewsPage {
 
     fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
         let query = self.search_input.read(cx).value().trim().to_string();
-        match Self::fetch_from_db(self.page_index, &query) {
+        self.scroll_distance = px(0.);
+        self.is_loading_more = false;
+        match Self::fetch_from_db(0, &query) {
             Ok((items, total_count)) => {
                 self.news_items = items;
                 self.total_count = total_count;
@@ -127,10 +134,29 @@ impl CryptoNewsPage {
         }
     }
 
-    fn change_page(&mut self, next_page: usize, cx: &mut Context<Self>) {
-        let max_page = self.total_count.saturating_sub(1) / NEWS_PAGE_SIZE as usize;
-        self.page_index = next_page.min(max_page);
-        self.refresh_table_page(cx);
+    fn load_more_news(&mut self, cx: &mut Context<Self>) {
+        if self.is_loading_more || self.news_items.len() >= self.total_count {
+            return;
+        }
+
+        self.is_loading_more = true;
+        let query = self.search_input.read(cx).value().trim().to_string();
+        let offset = self.news_items.len();
+        match Self::fetch_from_db(offset, &query) {
+            Ok((mut items, total_count)) => {
+                self.total_count = total_count;
+                self.news_items.append(&mut items);
+                let visible_items = self.news_items.clone();
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().set_news(visible_items);
+                    table.refresh(cx);
+                });
+            }
+            Err(error) => {
+                self.error = Some(format!("加载更多新闻失败：{error:#}"));
+            }
+        }
+        self.is_loading_more = false;
         cx.notify();
     }
 
@@ -142,7 +168,6 @@ impl CryptoNewsPage {
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
-            self.page_index = 0;
             self.refresh_table_page(cx);
             cx.notify();
         }
@@ -261,7 +286,7 @@ impl CryptoNewsPage {
         });
     }
 
-    fn fetch_from_db(page_index: usize, query: &str) -> anyhow::Result<(Vec<DbNewsItem>, usize)> {
+    fn fetch_from_db(offset: usize, query: &str) -> anyhow::Result<(Vec<DbNewsItem>, usize)> {
         let conn = open_default_connection()?;
         // 在 SQLite 中先过滤中文标题和 ID，再执行 COUNT / LIMIT / OFFSET，
         // 避免把整张新闻表加载到 UI 后再分页。
@@ -271,7 +296,7 @@ impl CryptoNewsPage {
             [query.as_str()],
             |row| row.get(0),
         )?;
-        let offset = (page_index as i64).saturating_mul(NEWS_PAGE_SIZE);
+        let offset = offset.min(i64::MAX as usize) as i64;
         let mut stmt = conn.prepare(&format!(
             "SELECT id, source, title, summary, chinese_summary, published_at, collected_at
              FROM crypto_news WHERE {FILTER}
@@ -753,57 +778,34 @@ impl Render for CryptoNewsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .h(px(620.))
-                            .min_h(px(620.))
+                            .h(px(520.))
+                            .min_h(px(520.))
                             .min_w_0()
                             .child(
-                                div().flex_1().min_h_0().size_full().child(
-                                    DataTable::new(&self.table)
-                                        .stripe(true)
-                                        .bordered(true)
-                                        .scrollbar_visible(true, true),
-                                ),
-                            )
-                            .child(
-                                h_flex()
-                                    .h(px(38.))
-                                    .items_center()
-                                    .justify_between()
-                                    .px_2()
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .size_full()
+                                    .on_scroll(cx.listener(|this, event, window, cx| {
+                                        let delta = event.delta.pixel_delta(window.line_height());
+                                        if delta.y < px(0.) {
+                                            this.scroll_distance -= delta.y;
+                                            let rows_before_prefetch = this
+                                                .news_items
+                                                .len()
+                                                .saturating_sub(NEWS_VISIBLE_ROWS + NEWS_PREFETCH_ROWS);
+                                            let load_threshold =
+                                                px(rows_before_prefetch as f32 * NEWS_ROW_HEIGHT);
+                                            if this.scroll_distance >= load_threshold {
+                                                this.load_more_news(cx);
+                                            }
+                                        }
+                                    }))
                                     .child(
-                                        div().text_size(px(12.)).text_color(muted).child(format!(
-                                            "第 {} / {} 页 · 共 {} 条 · 每页 {} 条",
-                                            self.page_index + 1,
-                                            ((self.total_count + NEWS_PAGE_SIZE as usize - 1) / NEWS_PAGE_SIZE as usize).max(1),
-                                            self.total_count,
-                                            NEWS_PAGE_SIZE
-                                        )),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                Button::new("crypto_news_prev_page")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label("上一页")
-                                                    .disabled(self.page_index == 0)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        if this.page_index > 0 {
-                                                            this.change_page(this.page_index - 1, cx);
-                                                        }
-                                                    })),
-                                            )
-                                            .child(
-                                                Button::new("crypto_news_next_page")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label("下一页")
-                                                    .disabled((self.page_index + 1) * NEWS_PAGE_SIZE as usize >= self.total_count)
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.change_page(this.page_index + 1, cx);
-                                                    })),
-                                            ),
+                                        DataTable::new(&self.table)
+                                            .stripe(true)
+                                            .bordered(true)
+                                            .scrollbar_visible(true, true),
                                     ),
                             ),
                     )
