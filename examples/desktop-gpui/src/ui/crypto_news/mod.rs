@@ -786,7 +786,7 @@ impl Render for CryptoNewsPage {
                                     .flex_1()
                                     .min_h_0()
                                     .size_full()
-                                    .on_scroll_wheel(cx.listener(|this, event, window, cx| {
+                                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                                         let delta = event.delta.pixel_delta(window.line_height());
                                         if delta.y < px(0.) {
                                             this.scroll_distance -= delta.y;
