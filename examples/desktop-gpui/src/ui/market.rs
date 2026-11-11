@@ -463,11 +463,11 @@ impl Render for MarketProductsPage {
             })
             .child(
                 v_flex()
-                    .h(px(220.))
-                    .min_h(px(220.))
+                    .h(px(360.))
+                    .min_h(px(360.))
                     .w_full()
                     .child(
-                        div().flex_1().size_full().overflow_hidden().child(
+                        div().flex_1().size_full().child(
                             DataTable::new(&self.table)
                                 .stripe(true)
                                 .bordered(true)
