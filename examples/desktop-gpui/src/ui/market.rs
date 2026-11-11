@@ -463,9 +463,8 @@ impl Render for MarketProductsPage {
             })
             .child(
                 v_flex()
-                    .flex_1()
-                    .h_full()
-                    .min_h(px(420.))
+                    .h(px(220.))
+                    .min_h(px(220.))
                     .w_full()
                     .child(
                         div().flex_1().size_full().overflow_hidden().child(
