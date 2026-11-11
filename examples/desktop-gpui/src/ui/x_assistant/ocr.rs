@@ -405,7 +405,7 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
             );
         }
     }
-    let padding = 8_u32;
+    let padding = 24_u32;
     let left = left.saturating_sub(padding);
     let top = top.saturating_sub(padding);
     let right = (right + padding).min(width);
@@ -1399,16 +1399,52 @@ pub(super) fn locate_reply_submit_button(
         Some(200),
     )?;
     let reply_text = normalize_text(reply_text);
-    let matching_lines = doc
-        .lines
-        .iter()
+    // 先用“回复 @账号”定位实际输入框起点。只有位于该锚点下方的文字
+    // 才能作为待发送正文，避免把引用/原帖正文误判成当前回复。
+    let target_anchor_bottom = doc.lines.iter()
         .filter(|line| {
-            text_match_ratio(&normalize_text(&line.text), &reply_text) >= 0.80
+            let text = normalize_text(&line.text);
+            text.starts_with(&normalize_text("回复"))
+                && text.contains('@')
         })
+        .map(|line| line.bottom / doc.scale_y)
+        .max_by(f32::total_cmp);
+    let mut matching_lines = doc.lines.iter()
+        .filter(|line| text_match_ratio(&normalize_text(&line.text), &reply_text) >= 0.80)
+        .filter(|line| target_anchor_bottom.is_none_or(|bottom| {
+            line.top / doc.scale_y > bottom + 6.0
+        }))
         .collect::<Vec<_>>();
+    let mut used_spatial_fallback = false;
+
+    // 短回复（例如 4 个字）容易被 PP-OCR 单字误识别。只有在已识别
+    // 回复目标锚点、候选正文位于其下方且长度接近时，才允许 70% 模糊匹配。
+    if matching_lines.is_empty() {
+        if let Some(anchor_bottom) = target_anchor_bottom {
+            let expected_len = reply_text.chars().count();
+            matching_lines = doc.lines.iter()
+                .filter(|line| {
+                    let normalized = normalize_text(&line.text);
+                    let actual_len = normalized.chars().count();
+                    let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+                    let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+                    actual_len >= 3
+                        && actual_len <= expected_len.saturating_add(2)
+                        && actual_len.saturating_mul(2) >= expected_len
+                        && center_x >= crop.width as f32 * 0.06
+                        && center_x <= crop.width as f32 * 0.88
+                        && center_y > anchor_bottom + 6.0
+                        && center_y < crop.height as f32 * 0.82
+                        && text_match_ratio(&normalized, &reply_text) >= 0.70
+                })
+                .collect::<Vec<_>>();
+            used_spatial_fallback = !matching_lines.is_empty();
+        }
+    }
+
     let normalized_document = normalize_text(&doc.text);
-    let reply_text_verified =
-        !matching_lines.is_empty() || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
+    let reply_text_verified = !matching_lines.is_empty()
+        || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
     if !reply_text_verified || matching_lines.is_empty() {
         let candidates = doc.lines.iter()
             .map(|line| format!("{}({:.0},{:.0})", line.text,
@@ -1430,6 +1466,12 @@ pub(super) fn locate_reply_submit_button(
         return Ok(None);
     }
 
+    if used_spatial_fallback {
+        super::automation::log_event(
+            "[OCR][回复正文] 严格匹配未命中，已通过回复目标锚点下方的空间约束完成短文本模糊匹配（阈值 70%）"
+        );
+    }
+
     // X 的回复弹窗提交按钮固定在弹窗右下方，不与回复正文处于同一行。
     // 先用已核验的回复正文确定横向锚点，再限定在弹窗下半部的右侧查找“回复”文字。
     // 不搜索任意深色矩形，也不接受正文/引用区里的“回复”文字，避免误点。
@@ -1443,7 +1485,7 @@ pub(super) fn locate_reply_submit_button(
         .map(|line| line.bottom / doc.scale_y)
         .fold(0.0_f32, f32::max);
     let submit_region_top = (reply_bottom + 40.0).max(crop.height as f32 * 0.45);
-    let submit_region_bottom = crop.height as f32 * 0.98;
+    let submit_region_bottom = crop.height as f32 * 0.995;
 
     let ocr_button = doc.lines.iter().filter_map(|line| {
         let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
