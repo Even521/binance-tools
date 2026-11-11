@@ -357,8 +357,8 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
     ];
     let ai_started = std::time::Instant::now();
     app_log::post_info!(
-        "X 自动发帖 AI：主改写请求开始，模型={}，超时=180 秒，新闻标题={}",
-        selection.model, candidate.title
+        "X 自动发帖 AI：主改写请求开始，超时=180 秒，新闻标题={}",
+        candidate.title
     );
     let response = match send_news_rewrite_chat_blocking(
         &settings,
