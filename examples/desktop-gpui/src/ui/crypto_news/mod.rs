@@ -38,9 +38,13 @@ pub struct DbNewsItem {
     pub hot_rank: Option<usize>,
 }
 
+const NEWS_PAGE_SIZE: i64 = 20;
+
 pub struct CryptoNewsPage {
     table: Entity<TableState<CryptoNewsTableDelegate>>,
     search_input: Entity<InputState>,
+    page_index: usize,
+    total_count: usize,
     _search_subscription: Subscription,
     _table_subscription: Subscription,
     news_items: Vec<DbNewsItem>,
@@ -86,6 +90,8 @@ impl CryptoNewsPage {
         let mut instance = Self {
             table,
             search_input,
+            page_index: 0,
+            total_count: 0,
             _search_subscription: search_subscription,
             _table_subscription: table_subscription,
             news_items: Vec::new(),
@@ -107,15 +113,24 @@ impl CryptoNewsPage {
 
     fn refresh_table_page(&mut self, cx: &mut Context<Self>) {
         let query = self.search_input.read(cx).value().trim().to_string();
-        let items = if query.is_empty() {
-            self.news_items.clone()
-        } else {
-            self.news_items.iter().filter(|item| item.id.to_string() == query).cloned().collect()
-        };
-        self.table.update(cx, |table, cx| {
-            table.delegate_mut().set_news(items);
-            table.refresh(cx);
-        });
+        match Self::fetch_from_db(self.page_index, &query) {
+            Ok((items, total_count)) => {
+                self.news_items = items;
+                self.total_count = total_count;
+                self.table.update(cx, |table, cx| {
+                    table.delegate_mut().set_news(self.news_items.clone());
+                    table.refresh(cx);
+                });
+            }
+            Err(error) => self.error = Some(format!("加载新闻失败：{error:#}")),
+        }
+    }
+
+    fn change_page(&mut self, next_page: usize, cx: &mut Context<Self>) {
+        let max_page = self.total_count.saturating_sub(1) / NEWS_PAGE_SIZE as usize;
+        self.page_index = next_page.min(max_page);
+        self.refresh_table_page(cx);
+        cx.notify();
     }
 
     fn on_search_input_event(
@@ -126,6 +141,7 @@ impl CryptoNewsPage {
         cx: &mut Context<Self>,
     ) {
         if matches!(event, InputEvent::Change) {
+            self.page_index = 0;
             self.refresh_table_page(cx);
             cx.notify();
         }
@@ -252,12 +268,24 @@ impl CryptoNewsPage {
         });
     }
 
-    fn fetch_from_db() -> anyhow::Result<Vec<DbNewsItem>> {
+    fn fetch_from_db(page_index: usize, query: &str) -> anyhow::Result<(Vec<DbNewsItem>, usize)> {
         let conn = open_default_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, source, title, summary, chinese_summary, published_at, collected_at FROM crypto_news ORDER BY datetime(COALESCE(published_at, collected_at)) DESC LIMIT 1000"
+        // 在 SQLite 中先过滤中文标题和 ID，再执行 COUNT / LIMIT / OFFSET，
+        // 避免把整张新闻表加载到 UI 后再分页。
+        const FILTER: &str = "title GLOB '*[㐀-鿿豈-﫿]*' AND (?1 = '' OR CAST(id AS TEXT) = ?1)";
+        let total_count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM crypto_news WHERE {FILTER}"),
+            [query],
+            |row| row.get(0),
         )?;
-        let rows = stmt.query_map([], |row| {
+        let offset = (page_index as i64).saturating_mul(NEWS_PAGE_SIZE);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, source, title, summary, chinese_summary, published_at, collected_at
+             FROM crypto_news WHERE {FILTER}
+             ORDER BY datetime(COALESCE(published_at, collected_at)) DESC, id DESC
+             LIMIT ?2 OFFSET ?3"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![query, NEWS_PAGE_SIZE, offset], |row| {
             Ok(DbNewsItem {
                 id: row.get(0)?,
                 source: row.get(1)?,
@@ -269,14 +297,11 @@ impl CryptoNewsPage {
                 hot_rank: None,
             })
         })?;
-        let mut list = Vec::new();
+        let mut items = Vec::new();
         for row in rows {
-            let item = row?;
-            if item.title.chars().any(|ch| matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)) {
-                list.push(item);
-            }
+            items.push(row?);
         }
-        Ok(list)
+        Ok((items, total_count.max(0) as usize))
     }
 
     fn on_sync_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -686,8 +711,8 @@ impl Render for CryptoNewsPage {
                                             .text_size(px(12.))
                                             .text_color(muted)
                                             .child(format!(
-                                                "仅收集中文加密货币 RSS 快讯，自动过滤英文标题并去重入库。当前显示 {} 条资讯。",
-                                                self.news_items.len()
+                                                "仅收集中文加密货币 RSS 快讯，自动过滤英文标题并去重入库。共 {} 条资讯。",
+                                                self.total_count
                                             )),
                                     ),
                             )
@@ -745,6 +770,48 @@ impl Render for CryptoNewsPage {
                                         .bordered(true)
                                         .scrollbar_visible(true, true),
                                 ),
+                            )
+                            .child(
+                                h_flex()
+                                    .h(px(38.))
+                                    .items_center()
+                                    .justify_between()
+                                    .px_2()
+                                    .child(
+                                        div().text_size(px(12.)).text_color(muted).child(format!(
+                                            "第 {} / {} 页 · 共 {} 条 · 每页 {} 条",
+                                            self.page_index + 1,
+                                            self.total_count.max(1).div_ceil(NEWS_PAGE_SIZE as usize),
+                                            self.total_count,
+                                            NEWS_PAGE_SIZE
+                                        )),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(
+                                                Button::new("crypto_news_prev_page")
+                                                    .outline()
+                                                    .xsmall()
+                                                    .label("上一页")
+                                                    .disabled(self.page_index == 0)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if this.page_index > 0 {
+                                                            this.change_page(this.page_index - 1, cx);
+                                                        }
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("crypto_news_next_page")
+                                                    .outline()
+                                                    .xsmall()
+                                                    .label("下一页")
+                                                    .disabled((self.page_index + 1) * NEWS_PAGE_SIZE as usize >= self.total_count)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.change_page(this.page_index + 1, cx);
+                                                    })),
+                                            ),
+                                    ),
                             ),
                     )
                     .when(self.rewrite_open, |row| {
