@@ -117,8 +117,9 @@ impl CryptoNewsPage {
             Ok((items, total_count)) => {
                 self.news_items = items;
                 self.total_count = total_count;
+                let visible_items = self.news_items.clone();
                 self.table.update(cx, |table, cx| {
-                    table.delegate_mut().set_news(self.news_items.clone());
+                    table.delegate_mut().set_news(visible_items);
                     table.refresh(cx);
                 });
             }
@@ -752,8 +753,8 @@ impl Render for CryptoNewsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .h_full()
-                            .min_h(px(420.))
+                            .h(px(620.))
+                            .min_h(px(620.))
                             .min_w_0()
                             .child(
                                 div().flex_1().size_full().overflow_hidden().child(
