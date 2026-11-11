@@ -462,24 +462,15 @@ impl Render for MarketProductsPage {
                 )
             })
             .child(
-                v_flex()
-                    .h(px(360.))
-                    .min_h(px(360.))
+                div()
+                    .h(px(400.))
                     .w_full()
+                    .overflow_hidden()
                     .child(
-                        div().flex_1().size_full().child(
-                            DataTable::new(&self.table)
-                                .stripe(true)
-                                .bordered(true)
-                                .scrollbar_visible(true, true),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .ml(px(170.))
-                            .h(px(12.))
-                            .w_full()
-                            .child(Scrollbar::horizontal(&horizontal_scroll_handle)),
+                        DataTable::new(&self.table)
+                            .stripe(true)
+                            .bordered(true)
+                            .scrollbar_visible(true, true),
                     ),
             )
     }
