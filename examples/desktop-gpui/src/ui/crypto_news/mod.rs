@@ -293,7 +293,7 @@ impl CryptoNewsPage {
         const FILTER: &str = "title GLOB '*[㐀-鿿豈-﫿]*' AND (?1 = '' OR CAST(id AS TEXT) = ?1)";
         let total_count: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM crypto_news WHERE {FILTER}"),
-            [query.as_str()],
+            [query],
             |row| row.get(0),
         )?;
         let offset = offset.min(i64::MAX as usize) as i64;
@@ -303,7 +303,7 @@ impl CryptoNewsPage {
              ORDER BY datetime(COALESCE(published_at, collected_at)) DESC, id DESC
              LIMIT ?2 OFFSET ?3"
         ))?;
-        let rows = stmt.query_map((query.as_str(), NEWS_PAGE_SIZE, offset), |row| {
+        let rows = stmt.query_map((query, NEWS_PAGE_SIZE, offset), |row| {
             Ok(DbNewsItem {
                 id: row.get(0)?,
                 source: row.get(1)?,
@@ -786,7 +786,7 @@ impl Render for CryptoNewsPage {
                                     .flex_1()
                                     .min_h_0()
                                     .size_full()
-                                    .on_scroll(cx.listener(|this, event, window, cx| {
+                                    .on_scroll_wheel(cx.listener(|this, event, window, cx| {
                                         let delta = event.delta.pixel_delta(window.line_height());
                                         if delta.y < px(0.) {
                                             this.scroll_distance -= delta.y;
