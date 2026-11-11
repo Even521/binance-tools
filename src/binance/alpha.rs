@@ -144,17 +144,40 @@ impl AlphaClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let response = self
-            .client
-            .get(url.clone())
-            .send()
-            .with_context(|| format!("send Binance Alpha request failed: {url}"))?
-            .error_for_status()
-            .with_context(|| format!("Binance Alpha request returned error status: {url}"))?
-            .json::<BapiResponse<T>>()
-            .with_context(|| format!("parse Binance Alpha response failed: {url}"))?;
+        let http_response = self.client.get(url.clone()).send().map_err(|err| {
+            app_log::error!("[Binance][Alpha] 网络请求失败 method=GET url={} error={:#}", url, err);
+            err
+        }).with_context(|| format!("send Binance Alpha request failed: {url}"))?;
+        let status = http_response.status();
+        let retry_after = http_response.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("未提供").to_string();
+        let body = http_response.text()
+            .with_context(|| format!("read Binance Alpha response body failed: {url}"))?;
+        if !status.is_success() {
+            let excerpt = truncate_response_for_log(&body, 2000);
+            app_log::error!(
+                "[Binance][Alpha] HTTP请求失败 method=GET url={} status={} retry_after={} response_body={}",
+                url, status, retry_after, excerpt
+            );
+            anyhow::bail!("Binance Alpha HTTP error: status={}, retry_after={}, body={}", status, retry_after, excerpt);
+        }
+        let response = serde_json::from_str::<BapiResponse<T>>(&body).map_err(|err| {
+            app_log::error!(
+                "[Binance][Alpha] JSON解析失败 url={} status={} error={} response_body={}",
+                url, status, err, truncate_response_for_log(&body, 2000)
+            );
+            err
+        }).with_context(|| format!("parse Binance Alpha response failed: {url}"))?;
         response.into_data()
     }
+}
+
+fn truncate_response_for_log(value: &str, max_chars: usize) -> String {
+    let mut excerpt = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars { excerpt.push_str("...<truncated>"); }
+    excerpt
 }
 
 fn alpha_default_headers() -> HeaderMap {
