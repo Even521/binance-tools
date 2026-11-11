@@ -103,22 +103,30 @@ pub fn download_spot_daily_klines_blocking(
         }
 
         let url = daily_kline_url(&symbol, &interval, date);
-        let response = client
-            .get(&url)
-            .send()
-            .with_context(|| format!("Failed to download Binance Vision file: {url}"))?;
+        let response = client.get(&url).send().map_err(|err| {
+            app_log::error!("[Binance][Vision] 下载请求失败 method=GET url={} error={:#}", url, err);
+            err
+        }).with_context(|| format!("Failed to download Binance Vision file: {url}"))?;
 
-        if response.status().as_u16() == 404 {
+        let status = response.status();
+        if status.as_u16() == 404 {
             missing_files += 1;
             date += Duration::days(1);
             continue;
         }
-        if !response.status().is_success() {
-            bail!(
-                "Binance Vision returned status {}: {}",
-                response.status(),
-                url
+        if !status.is_success() {
+            let retry_after = response.headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("未提供")
+                .to_string();
+            let body = response.text().unwrap_or_else(|err| format!("<读取响应正文失败: {err}>"));
+            let excerpt = truncate_vision_log(&body, 2000);
+            app_log::error!(
+                "[Binance][Vision] HTTP下载失败 method=GET url={} status={} retry_after={} response_body={}",
+                url, status, retry_after, excerpt
             );
+            bail!("Binance Vision returned status {}: {} body={}", status, url, excerpt);
         }
 
         let bytes = response
@@ -171,6 +179,12 @@ pub fn download_spot_daily_klines_blocking(
         downloaded_files,
         missing_files,
     })
+}
+
+fn truncate_vision_log(value: &str, max_chars: usize) -> String {
+    let mut excerpt = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars { excerpt.push_str("...<truncated>"); }
+    excerpt
 }
 
 fn daily_kline_url(symbol: &str, interval: &str, date: NaiveDate) -> String {

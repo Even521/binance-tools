@@ -164,14 +164,21 @@ fn spot_rest_client(settings: BinanceSettings) -> anyhow::Result<RestApi> {
 }
 
 async fn fetch_spot_symbols_with_client(client: &RestApi) -> anyhow::Result<Vec<SpotSymbolInfo>> {
-    let response = client
-        .exchange_info(ExchangeInfoParams::default())
-        .await
-        .context("Binance spot exchange_info request failed")?;
-    let data = response
-        .data()
-        .await
-        .context("read Binance spot exchange_info response failed")?;
+    let endpoint = "api/v3/exchangeInfo";
+    let response = match client.exchange_info(ExchangeInfoParams::default()).await {
+        Ok(response) => response,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 请求失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).context("Binance spot exchange_info request failed");
+        }
+    };
+    let data = match response.data().await {
+        Ok(data) => data,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 响应读取/解析失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).context("read Binance spot exchange_info response failed");
+        }
+    };
 
     let mut symbols = data
         .symbols
@@ -185,14 +192,21 @@ async fn fetch_spot_symbols_with_client(client: &RestApi) -> anyhow::Result<Vec<
 }
 
 async fn fetch_ticker_prices(client: &RestApi) -> anyhow::Result<HashMap<String, f64>> {
-    let response = client
-        .ticker_price(TickerPriceParams::default())
-        .await
-        .context("Binance spot ticker_price request failed")?;
-    let data = response
-        .data()
-        .await
-        .context("read Binance spot ticker_price response failed")?;
+    let endpoint = "api/v3/ticker/price";
+    let response = match client.ticker_price(TickerPriceParams::default()).await {
+        Ok(response) => response,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 请求失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).context("Binance spot ticker_price request failed");
+        }
+    };
+    let data = match response.data().await {
+        Ok(data) => data,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 响应读取/解析失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).context("read Binance spot ticker_price response failed");
+        }
+    };
 
     let mut prices = HashMap::new();
     match data {
@@ -235,14 +249,21 @@ async fn fetch_daily_klines(
         .limit(i32::from(days))
         .build()
         .context("build Binance klines params failed")?;
-    let response = client
-        .klines(params)
-        .await
-        .with_context(|| format!("Binance spot klines request failed: {symbol}"))?;
-    let data = response
-        .data()
-        .await
-        .with_context(|| format!("read Binance spot klines response failed: {symbol}"))?;
+    let endpoint = format!("api/v3/klines?symbol={symbol}&interval=1d&limit={days}");
+    let response = match client.klines(params).await {
+        Ok(response) => response,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 请求失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).with_context(|| format!("Binance spot klines request failed: {symbol}"));
+        }
+    };
+    let data = match response.data().await {
+        Ok(data) => data,
+        Err(err) => {
+            app_log::error!("[Binance][现货] 响应读取/解析失败 method=GET endpoint={} error={:#}", endpoint, err);
+            return Err(err).with_context(|| format!("read Binance spot klines response failed: {symbol}"));
+        }
+    };
 
     Ok(data
         .into_iter()

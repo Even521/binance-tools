@@ -127,20 +127,40 @@ pub fn fetch_market_products_blocking() -> anyhow::Result<Vec<MarketProduct>> {
         .user_agent("binance-tools/0.1")
         .build()
         .context("build Binance products HTTP client failed")?;
-    let response = client
-        .get(PRODUCTS_URL)
-        .send()
-        .context("Binance products request failed")?
-        .error_for_status()
-        .context("Binance products request returned error status")?
-        .json::<ProductsResponse>()
-        .context("parse Binance products response failed")?;
+    let http_response = client.get(PRODUCTS_URL).send().map_err(|err| {
+        app_log::error!("[Binance][现货行情产品] 网络请求失败 method=GET url={} error={:#}", PRODUCTS_URL, err);
+        err
+    }).context("Binance products request failed")?;
+    let status = http_response.status();
+    let retry_after = http_response.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("未提供")
+        .to_string();
+    let body = http_response.text().context("read Binance products response body failed")?;
+    if !status.is_success() {
+        let excerpt = truncate_for_log(&body, 2000);
+        app_log::error!(
+            "[Binance][现货行情产品] HTTP请求失败 method=GET url={} status={} retry_after={} response_body={}",
+            PRODUCTS_URL, status, retry_after, excerpt
+        );
+        anyhow::bail!("Binance products HTTP error: status={}, retry_after={}, body={}", status, retry_after, excerpt);
+    }
+    let response = serde_json::from_str::<ProductsResponse>(&body).map_err(|err| {
+        app_log::error!(
+            "[Binance][现货行情产品] JSON解析失败 url={} status={} error={} response_body={}",
+            PRODUCTS_URL, status, err, truncate_for_log(&body, 2000)
+        );
+        err
+    }).context("parse Binance products response failed")?;
 
     if response.code != "000000" {
-        anyhow::bail!(
-            "Binance products response error: {}",
-            response.message.unwrap_or(response.code)
+        let message = response.message.unwrap_or_else(|| response.code.clone());
+        app_log::error!(
+            "[Binance][现货行情产品] 业务接口返回错误 url={} status={} code={} message={} response_body={}",
+            PRODUCTS_URL, status, response.code, message, truncate_for_log(&body, 2000)
         );
+        anyhow::bail!("Binance products response error: {message}");
     }
 
     let mut products = response
@@ -152,6 +172,12 @@ pub fn fetch_market_products_blocking() -> anyhow::Result<Vec<MarketProduct>> {
     products.sort_by(|a, b| a.symbol.cmp(&b.symbol));
 
     Ok(products)
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    let mut excerpt = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars { excerpt.push_str("...<truncated>"); }
+    excerpt
 }
 
 fn parse_number(value: Option<&str>) -> Option<f64> {
