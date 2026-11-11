@@ -803,8 +803,6 @@ impl Render for CryptoNewsPage {
                                     }))
                                     .child(
                                         DataTable::new(&self.table)
-                                            .size_full()
-                                            .min_h_0()
                                             .stripe(true)
                                             .bordered(true)
                                             .scrollbar_visible(true, true),
