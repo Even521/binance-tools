@@ -38,7 +38,7 @@ pub struct DbNewsItem {
     pub hot_rank: Option<usize>,
 }
 
-const NEWS_PAGE_SIZE: i64 = 20;
+const NEWS_PAGE_SIZE: i64 = 15;
 const NEWS_VISIBLE_ROWS: usize = 15;
 const NEWS_PREFETCH_ROWS: usize = 2;
 const NEWS_ROW_HEIGHT: f32 = 32.;
