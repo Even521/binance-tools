@@ -267,7 +267,7 @@ impl CryptoNewsPage {
         const FILTER: &str = "title GLOB '*[㐀-鿿豈-﫿]*' AND (?1 = '' OR CAST(id AS TEXT) = ?1)";
         let total_count: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM crypto_news WHERE {FILTER}"),
-            [query],
+            [query.as_str()],
             |row| row.get(0),
         )?;
         let offset = (page_index as i64).saturating_mul(NEWS_PAGE_SIZE);
@@ -277,7 +277,7 @@ impl CryptoNewsPage {
              ORDER BY datetime(COALESCE(published_at, collected_at)) DESC, id DESC
              LIMIT ?2 OFFSET ?3"
         ))?;
-        let rows = stmt.query_map(rusqlite::params![query, NEWS_PAGE_SIZE, offset], |row| {
+        let rows = stmt.query_map((query.as_str(), NEWS_PAGE_SIZE, offset), |row| {
             Ok(DbNewsItem {
                 id: row.get(0)?,
                 source: row.get(1)?,
@@ -773,7 +773,7 @@ impl Render for CryptoNewsPage {
                                         div().text_size(px(12.)).text_color(muted).child(format!(
                                             "第 {} / {} 页 · 共 {} 条 · 每页 {} 条",
                                             self.page_index + 1,
-                                            self.total_count.max(1).div_ceil(NEWS_PAGE_SIZE as usize),
+                                            ((self.total_count + NEWS_PAGE_SIZE as usize - 1) / NEWS_PAGE_SIZE as usize).max(1),
                                             self.total_count,
                                             NEWS_PAGE_SIZE
                                         )),
