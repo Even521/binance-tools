@@ -355,13 +355,33 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
             source_body
         )),
     ];
-    let response = send_news_rewrite_chat_blocking(
+    let ai_started = std::time::Instant::now();
+    app_log::post_info!(
+        "X 自动发帖 AI：主改写请求开始，模型={}，超时=180 秒，新闻标题={}",
+        selection.model, candidate.title
+    );
+    let response = match send_news_rewrite_chat_blocking(
         &settings,
         selection.clone(),
         &messages,
         Duration::from_secs(180),
-    )
-    .context("AI 生成 X 发帖文案失败")?;
+    ) {
+        Ok(response) => {
+            app_log::post_info!(
+                "X 自动发帖 AI：主改写请求完成，耗时={} 秒，返回字符数={}",
+                ai_started.elapsed().as_secs_f32(),
+                response.content.chars().count()
+            );
+            response
+        }
+        Err(error) => {
+            app_log::post_error!(
+                "X 自动发帖 AI：主改写请求失败，耗时={} 秒，错误链：{error:#}",
+                ai_started.elapsed().as_secs_f32()
+            );
+            return Err(error).context("AI 生成 X 发帖文案失败");
+        }
+    };
     let mut content = clean_ai_text(&response.content);
     ensure!(!content.is_empty(), "AI 返回的发帖文案为空");
 
@@ -373,13 +393,34 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
                 candidate.title, content
             )),
         ];
-        let retry = send_news_rewrite_chat_blocking(
+        app_log::post_warn!(
+            "X 自动发帖 AI：初稿超过 {} 字，启动二次压缩，当前字符数={}",
+            MAX_POST_CHARS,
+            content.chars().count()
+        );
+        let retry_started = std::time::Instant::now();
+        let retry = match send_news_rewrite_chat_blocking(
             &settings,
             selection,
             &retry_messages,
             Duration::from_secs(180),
-        )
-        .context("AI 二次压缩发帖文案失败")?;
+        ) {
+            Ok(response) => {
+                app_log::post_info!(
+                    "X 自动发帖 AI：二次压缩完成，耗时={} 秒，返回字符数={}",
+                    retry_started.elapsed().as_secs_f32(),
+                    response.content.chars().count()
+                );
+                response
+            }
+            Err(error) => {
+                app_log::post_error!(
+                    "X 自动发帖 AI：二次压缩失败，耗时={} 秒，错误链：{error:#}",
+                    retry_started.elapsed().as_secs_f32()
+                );
+                return Err(error).context("AI 二次压缩发帖文案失败");
+            }
+        };
         content = clean_ai_text(&retry.content);
     }
 
@@ -398,7 +439,13 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
 /// 按所选新闻类型准备一条候选，先按热点分排序，再去重、AI 改写并持久化。
 pub fn prepare_next_post_blocking(filter: NewsFilter) -> anyhow::Result<Option<PreparedPost>> {
     app_log::post_info!("X 自动发帖内容准备：进入候选准备流程");
+    let selection_started = std::time::Instant::now();
     let candidates = load_candidates(filter)?;
+    app_log::post_info!(
+        "X 自动发帖内容准备：候选读取与排序完成，数量={}，耗时={} 毫秒",
+        candidates.len(),
+        selection_started.elapsed().as_millis()
+    );
 
     for candidate in candidates {
         let news_id = format!("{}:{}", candidate.kind.table(), candidate.id);
