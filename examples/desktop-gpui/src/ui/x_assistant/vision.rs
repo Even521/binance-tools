@@ -1756,7 +1756,25 @@ fn run_visual_reply_inner(
                             format!("视觉核验不确定且关闭弹窗失败：{error:#}"),
                         )
                     })?;
-                return Err(uncertain_send_error(&run_id, "无法确认原帖下方是否已有该回复，禁止重试"));
+                let reason = "发送错误后的视觉核验无法确认是否已发布；已安全关闭回复弹窗，标记 uncertain，跳过当前帖子且不重试";
+                binance_tools::db::x_assistant::mark_reply_uncertain_blocking(&run_id, reason)
+                    .map_err(|error| anyhow::anyhow!(
+                        "回复结果未知且 SQLite uncertain 状态写入失败，停止自动化以避免重复处理：{error:#}"
+                    ))?;
+                automation::log_event(
+                    "[自动回复][03/03]：发送结果仍不确定，但回复弹窗已安全关闭；当前帖子已持久化标记 uncertain，不重发，继续处理下一条。",
+                );
+                return Ok(VisionReplyResult {
+                    screenshots,
+                    author_name,
+                    account_handle,
+                    posted_at,
+                    post_text,
+                    reply_text,
+                    completed: false,
+                    skipped_duplicate: false,
+                    summary: "提交结果未知：视觉核验无法确认是否已发布，已标记 uncertain 并安全关闭弹窗；跳过当前帖子，继续下一轮。".to_string(),
+                });
             }
         }
 
@@ -2083,10 +2101,8 @@ fn close_reply_composer_safely(
     screenshots: &mut Vec<PathBuf>,
     cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
-    for attempt in 0..2 {
+    for attempt in 0..4 {
         check_cancel(cancel)?;
-        // 只发送 Escape，不再点击固定比例的“窗口外坐标”。
-        // 固定坐标可能命中侧栏里的 Grok 导航入口，导致自动回复跳转页面。
         native::press_escape()?;
         wait_cancel(cancel, Duration::from_millis(900))?;
         let shot = capture(
@@ -2096,6 +2112,11 @@ fn close_reply_composer_safely(
             screenshots,
         )?;
         ensure_reply_page_route(&shot, "网络错误关闭回复框")?;
+        let current_url = ocr::recognize_current_url(&shot.png)?;
+        if current_url.as_deref().is_some_and(ocr::is_x_home_address) {
+            automation::log_event("[自动回复][03/03]：Escape 后已通过地址栏确认回到 X 首页；关闭流程完成。");
+            return Ok(());
+        }
 
         if let Some((discard_x, discard_y)) = ocr::locate_discard_draft_button(&shot.png)? {
             automation::log_event(&format!(
@@ -2111,31 +2132,38 @@ fn close_reply_composer_safely(
                 screenshots,
             )?;
             ensure_reply_page_route(&after_discard, "放弃草稿后")?;
-            if !ocr::reply_composer_is_open(&after_discard.png)? {
-                automation::log_event("[自动回复][03/03]：草稿确认后回复框文字已消失；页面路由仍在 X，结束关闭流程。");
+            let after_url = ocr::recognize_current_url(&after_discard.png)?;
+            if after_url.as_deref().is_some_and(ocr::is_x_home_address) {
+                automation::log_event("[自动回复][03/03]：放弃草稿后已确认回到 X 首页。");
                 return Ok(());
             }
-        } else if ocr::recognize_save_draft_confirmation(&shot.png)? {
-            // 不能在无法定位按钮时猜测坐标；保留页面供人工处理。
+            automation::log_event(&format!(
+                "[自动回复][03/03]：放弃草稿后仍处于回复路由（{after_url:?}），继续安全关闭核验。"
+            ));
+            continue;
+        }
+
+        if ocr::recognize_save_draft_confirmation(&shot.png)? {
             anyhow::bail!(
-                "识别到草稿确认框，但未能精确定位‘放弃’按钮；为避免误点 Grok/其他入口，停止自动操作"
+                "识别到草稿确认框，但未能精确定位‘放弃’按钮；保留页面，不猜测点击坐标"
             );
-        } else if !ocr::reply_composer_is_open(&shot.png)? {
-            // OCR 未识别到输入框不是关闭成功的证据。再按一次 Escape 并重新截图，
-            // 不执行任何固定坐标点击。
-            if attempt == 0 {
-                automation::log_event(
-                    "[自动回复][03/03]：OCR 未识别到回复输入框，但不据此判断已关闭；再次按 Escape 后重新核验。",
-                );
-                continue;
-            }
-            anyhow::bail!(
-                "连续两次未识别到回复输入框，且无法取得关闭成功的正向证据；保留页面供人工检查"
-            );
+        }
+
+        match ocr::reply_composer_is_open(&shot.png) {
+            Ok(true) => automation::log_event(&format!(
+                "[自动回复][03/03]：第 {}/4 次 Escape 后回复框仍打开，继续尝试安全关闭。",
+                attempt + 1
+            )),
+            Ok(false) => automation::log_event(
+                "[自动回复][03/03]：输入框 OCR 未检出，但地址栏仍为 compose 路由；不把 OCR 漏识别当作关闭成功，继续 Escape 核验。",
+            ),
+            Err(error) => automation::log_event(&format!(
+                "[自动回复][03/03]：输入框 OCR 失败（{error:#}），但地址栏仍为 compose 路由；继续 Escape，不因此终止整个任务。",
+            )),
         }
     }
 
-    anyhow::bail!("网络错误后回复窗口仍未能确认关闭；已停止自动操作，未执行盲目点击")
+    anyhow::bail!("连续 4 次安全关闭后仍未确认回到 X 首页；保留页面，不继续点击或滚动")
 }
 
 fn identify_post_for_mode(
