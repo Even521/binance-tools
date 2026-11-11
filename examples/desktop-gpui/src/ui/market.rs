@@ -462,16 +462,25 @@ impl Render for MarketProductsPage {
                 )
             })
             .child(
-                div()
-                    // 15 行数据 + 表头需要约 640px，避免底部几行被裁切。
-                    .h(px(660.))
+                v_flex()
+                    .flex_1()
+                    .h_full()
+                    .min_h(px(420.))
                     .w_full()
-                    .overflow_hidden()
                     .child(
-                        DataTable::new(&self.table)
-                            .stripe(true)
-                            .bordered(true)
-                            .scrollbar_visible(true, true),
+                        div().flex_1().size_full().overflow_hidden().child(
+                            DataTable::new(&self.table)
+                                .stripe(true)
+                                .bordered(true)
+                                .scrollbar_visible(true, true),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .ml(px(170.))
+                            .h(px(12.))
+                            .w_full()
+                            .child(Scrollbar::horizontal(&horizontal_scroll_handle)),
                     ),
             )
     }
