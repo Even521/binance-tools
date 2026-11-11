@@ -757,7 +757,7 @@ impl Render for CryptoNewsPage {
                             .min_h(px(620.))
                             .min_w_0()
                             .child(
-                                div().flex_1().size_full().overflow_hidden().child(
+                                div().flex_1().min_h_0().size_full().child(
                                     DataTable::new(&self.table)
                                         .stripe(true)
                                         .bordered(true)
