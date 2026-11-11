@@ -778,8 +778,9 @@ impl Render for CryptoNewsPage {
                     .child(
                         v_flex()
                             .flex_1()
-                            .h(px(220.))
-                            .min_h(px(220.))
+                            .h_full()
+                            .min_h(px(420.))
+                            .w_full()
                             .min_w_0()
                             .child(
                                 div()
