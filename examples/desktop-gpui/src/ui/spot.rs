@@ -113,7 +113,8 @@ impl SpotPage {
                         this.refresh_visible_symbols(cx);
                     }
                     Err(err) => {
-                        this.error = Some(err.to_string());
+                        app_log::error!("[Binance][现货页面] 数据加载失败 error={:#}", err);
+                        this.error = Some(format!("{:#}", err));
                         this.table.update(cx, |table, cx| {
                             table.delegate_mut().set_error();
                             table.refresh(cx);
