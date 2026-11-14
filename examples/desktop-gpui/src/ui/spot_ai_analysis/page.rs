@@ -13,7 +13,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSnapshot, analyze_market, build_report_prompt};
+use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
 use std::{cmp::Ordering, collections::HashMap};
 
 pub enum SpotAiAnalysisEvent {
@@ -27,7 +27,7 @@ struct SpotAiAnalysisRow {
     volume_score: f64,
     technical_score: f64,
     risk_score: f64,
-    sentiment_score: f64,
+    sentiment_score: f64,\n    sentiment_value: f64,\n    sentiment_classification: String,\n    sentiment_update_time: String,
     liquidity_score: f64,
     total_score: f64,
     trend_label: String,
@@ -452,7 +452,7 @@ fn build_analysis_rows(
     let ma = cached_ma.iter().map(|s| DailyMaSnapshot {
         symbol:s.symbol.clone(), difference_percent:s.difference_percent, samples:s.samples,
     }).collect::<Vec<_>>();
-    let scores = analyze_market(&inputs,&ma).into_iter()
+    let scores = analyze_market_with_sentiment(&inputs,&ma,sentiment).into_iter()
         .map(|s|(s.symbol.clone(),s)).collect::<HashMap<_,_>>();
     let mut rows=products.into_iter().filter_map(|product| {
         let s=scores.get(&product.symbol)?;
@@ -523,3 +523,39 @@ fn amplitude_percent(product: &MarketProduct) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+
+
+/// CMC Keyless Public API：无需 API Key，接口缓存/更新频率为 15 分钟。
+async fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
+    let response = reqwest::get(
+        "https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest",
+    )
+    .await?
+    .error_for_status()?;
+    let payload: serde_json::Value = response.json().await?;
+    let data = payload
+        .get("data")
+        .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少 data 字段"))?;
+    let value = data
+        .get("value")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少有效的 value"))?;
+    if !(0.0..=100.0).contains(&value) {
+        anyhow::bail!("CMC 恐惧贪婪指数超出 0～100 范围：{value}");
+    }
+    let classification = data
+        .get("value_classification")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Unknown")
+        .to_string();
+    let update_time = data
+        .get("update_time")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Ok(MarketSentiment {
+        value,
+        classification,
+        update_time,
+    })
+}
