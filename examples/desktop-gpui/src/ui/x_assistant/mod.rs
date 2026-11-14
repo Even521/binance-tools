@@ -627,92 +627,144 @@ impl XAssistantPage {
     }
 
     fn render_auto_reply_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-task-auto-reply")
+        let theme = cx.theme();
+        let label = if self.task_settings.auto_reply_enabled {
+            "自动回复调度：开"
+        } else {
+            "自动回复调度：关"
+        };
+        div()
+            .id("x-task-auto-reply")
             .small()
-            .outline()
-            .label(if self.task_settings.auto_reply_enabled {
-                "自动回复调度：开"
-            } else {
-                "自动回复调度：关"
-            })
-            .when(self.task_settings.auto_reply_enabled, |button| button.primary())
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .text_size(px(12.))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：点击自动回复开关");
                 this.toggle_task_setting(TaskSetting::AutoReply, cx);
             }))
+            .child(label)
             .into_any_element()
     }
 
     fn render_auto_post_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-task-auto-post")
-            .small()
-            .outline()
-            .label(if self.task_settings.auto_post_enabled {
-                "自动发帖：开"
-            } else {
-                "自动发帖：关"
-            })
-            .when(self.task_settings.auto_post_enabled, |button| button.primary())
+        let theme = cx.theme();
+        let label = if self.task_settings.auto_post_enabled {
+            "自动发帖：开"
+        } else {
+            "自动发帖：关"
+        };
+        div()
+            .id("x-task-auto-post")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .text_size(px(12.))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：点击自动发帖开关");
                 this.toggle_task_setting(TaskSetting::AutoPost, cx);
             }))
+            .child(label)
             .into_any_element()
     }
 
     fn render_auto_comment_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-task-auto-comment")
-            .small()
-            .outline()
-            .label(if self.task_settings.auto_comment_enabled {
-                "发布后自动评论：开"
-            } else {
-                "发布后自动评论：关"
-            })
-            .when(self.task_settings.auto_comment_enabled, |button| button.primary())
+        let theme = cx.theme();
+        let label = if self.task_settings.auto_comment_enabled {
+            "发布后自动评论：开"
+        } else {
+            "发布后自动评论：关"
+        };
+        div()
+            .id("x-task-auto-comment")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .text_size(px(12.))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：点击自动评论开关");
                 this.toggle_task_setting(TaskSetting::AutoComment, cx);
             }))
+            .child(label)
             .into_any_element()
     }
 
     fn render_own_post_reply_setting_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        Button::new("x-task-own-post-reply")
-            .small()
-            .outline()
-            .label(if self.task_settings.own_post_reply_enabled {
-                "回复自己帖子评论：开（预留）"
-            } else {
-                "回复自己帖子评论：关（预留）"
-            })
-            .when(self.task_settings.own_post_reply_enabled, |button| button.primary())
+        let theme = cx.theme();
+        let label = if self.task_settings.own_post_reply_enabled {
+            "回复自己帖子评论：开（预留）"
+        } else {
+            "回复自己帖子评论：关（预留）"
+        };
+        div()
+            .id("x-task-own-post-reply")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .text_size(px(12.))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：点击回复自己帖子评论开关");
                 this.toggle_task_setting(TaskSetting::OwnPostReply, cx);
             }))
+            .child(label)
             .into_any_element()
     }
 
     fn render_post_rate_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let minus_button = Button::new("x-task-post-rate-minus")
-            .small()
-            .outline()
-            .label("−")
+        let theme = cx.theme();
+        let minus_button = div()
+            .id("x-task-post-rate-minus")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：每小时发帖数量减一");
                 this.adjust_posts_per_hour(-1, cx);
             }))
+            .child("−")
             .into_any_element();
 
-        let plus_button = Button::new("x-task-post-rate-plus")
-            .small()
-            .outline()
-            .label("+")
+        let plus_button = div()
+            .id("x-task-post-rate-plus")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：每小时发帖数量加一");
                 this.adjust_posts_per_hour(1, cx);
             }))
+            .child("+")
             .into_any_element();
 
         h_flex()
@@ -731,24 +783,39 @@ impl XAssistantPage {
     }
 
     fn render_daily_reply_limit_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let minus_button = Button::new("x-task-daily-reply-limit-minus")
-            .small()
-            .outline()
-            .label("−")
+        let theme = cx.theme();
+        let minus_button = div()
+            .id("x-task-daily-reply-limit-minus")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：每日最大回复数减 100");
                 this.adjust_daily_reply_limit(-100, cx);
             }))
+            .child("−")
             .into_any_element();
 
-        let plus_button = Button::new("x-task-daily-reply-limit-plus")
-            .small()
-            .outline()
-            .label("+")
+        let plus_button = div()
+            .id("x-task-daily-reply-limit-plus")
+            .rounded(px(6.))
+            .border_1()
+            .border_color(palette::border(theme))
+            .bg(palette::surface(theme))
+            .text_color(palette::text(theme))
+            .px_2()
+            .py_1()
+            .cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| {
                 app_log::x_info!("X 任务设置：每日最大回复数加 100");
                 this.adjust_daily_reply_limit(100, cx);
             }))
+            .child("+")
             .into_any_element();
 
         let today_count = binance_tools::db::x_assistant::today_sent_reply_count_blocking()
