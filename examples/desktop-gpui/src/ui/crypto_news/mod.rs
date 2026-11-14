@@ -3,7 +3,7 @@ use binance_tools::{
     ai::{AiSettings, ChatMessage, send_news_rewrite_chat_blocking},
     db::{
         crypto_news::{
-            NewsItemEntity, insert_news_items, update_news_rewrite,
+            NewsItemEntity, delete_all_news, delete_news_older_than_three_days, insert_news_items, update_news_rewrite,
         },
         open_default_connection,
     },
@@ -62,6 +62,8 @@ pub struct CryptoNewsPage {
     rewrite_result: Option<String>,
     rewrite_error: Option<String>,
     is_rewriting: bool,
+    clear_all_confirm: bool,
+    clear_old_confirm: bool,
     _rewrite_task: Task<()>,
 }
 
@@ -110,6 +112,8 @@ impl CryptoNewsPage {
             rewrite_result: None,
             rewrite_error: None,
             is_rewriting: false,
+            clear_all_confirm: false,
+            clear_old_confirm: false,
             _rewrite_task: Task::ready(()),
         };
         instance.reload_news(cx);
@@ -284,6 +288,62 @@ impl CryptoNewsPage {
                 cx.notify();
             });
         });
+    }
+
+    fn on_clear_all_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_syncing { return; }
+        if !self.clear_all_confirm {
+            self.clear_all_confirm = true;
+            self.status = Some("再次点击‘确认清空’将永久删除全部加密新闻数据。".to_string());
+            cx.notify();
+            return;
+        }
+        match (|| -> anyhow::Result<usize> {
+            let conn = open_default_connection()?;
+            delete_all_news(&conn)
+        })() {
+            Ok(deleted) => {
+                self.clear_all_confirm = false;
+                self.clear_old_confirm = false;
+                self.rewrite_open = false;
+                self.status = Some(format!("已清空加密新闻数据，共删除 {deleted} 条。"));
+                self.error = None;
+                self.reload_news(cx);
+            }
+            Err(err) => {
+                self.clear_all_confirm = false;
+                self.error = Some(format!("清空数据失败：{err}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_clear_old_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_syncing { return; }
+        if !self.clear_old_confirm {
+            self.clear_old_confirm = true;
+            self.status = Some("再次点击‘确认清理’将删除发布时间早于 3 天前的加密新闻；无发布时间的新闻按采集时间计算。".to_string());
+            cx.notify();
+            return;
+        }
+        match (|| -> anyhow::Result<usize> {
+            let conn = open_default_connection()?;
+            delete_news_older_than_three_days(&conn)
+        })() {
+            Ok(deleted) => {
+                self.clear_old_confirm = false;
+                self.clear_all_confirm = false;
+                self.rewrite_open = false;
+                self.status = Some(format!("已清理 3 天前的加密新闻，共删除 {deleted} 条。"));
+                self.error = None;
+                self.reload_news(cx);
+            }
+            Err(err) => {
+                self.clear_old_confirm = false;
+                self.error = Some(format!("清理旧数据失败：{err}"));
+            }
+        }
+        cx.notify();
     }
 
     fn fetch_from_db(offset: usize, query: &str) -> anyhow::Result<(Vec<DbNewsItem>, usize)> {
@@ -750,6 +810,22 @@ impl Render for CryptoNewsPage {
                                             .label(if self.is_syncing { "正在同步..." } else { "立即同步 RSS" })
                                             .disabled(self.is_syncing)
                                             .on_click(cx.listener(Self::on_sync_click)),
+                                    )
+                                    .child(
+                                        Button::new("clear_old_crypto_news_btn")
+                                            .outline()
+                                            .xsmall()
+                                            .label(if self.clear_old_confirm { "确认清理" } else { "清空 3 天前" })
+                                            .disabled(self.is_syncing || self.total_count == 0)
+                                            .on_click(cx.listener(Self::on_clear_old_click)),
+                                    )
+                                    .child(
+                                        Button::new("clear_all_crypto_news_btn")
+                                            .outline()
+                                            .xsmall()
+                                            .label(if self.clear_all_confirm { "确认清空" } else { "清空所有" })
+                                            .disabled(self.is_syncing || self.total_count == 0)
+                                            .on_click(cx.listener(Self::on_clear_all_click)),
                                     ),
                             ),
                     )
