@@ -1,14 +1,36 @@
 //! USDT 现货候选筛选与六维基础评分。
 
-use crate::{AnalysisResult, DailyMaSnapshot, MarketSnapshot};
+use crate::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot};
 use std::{cmp::Ordering, collections::HashMap};
 
 pub const SCORE_WEIGHTS: [f64; 6] = [0.25, 0.20, 0.20, 0.15, 0.10, 0.10];
 
+/// 不参与现货方向性分析的稳定币基础资产（报价资产 USDT 不受影响）。
+const STABLECOIN_BASE_ASSETS: &[&str] = &[
+    "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP", "USDE",
+    "PYUSD", "USDS", "GUSD", "FRAX", "LUSD", "USDD", "UST", "USTC",
+    "USD1", "USDJ", "CRVUSD", "EURI", "AEUR", "RLUSD", "USDG",
+];
+
+fn is_stablecoin_base_asset(asset: &str) -> bool {
+    STABLECOIN_BASE_ASSETS
+        .iter()
+        .any(|stablecoin| asset.eq_ignore_ascii_case(stablecoin))
+}
+
 /// 筛选可交易 USDT 现货币种，计算六维基础分并按总分降序排列。
 pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]) -> Vec<AnalysisResult> {
+    analyze_market_with_sentiment(products, cached_ma, None)
+}
+
+/// 使用 CoinMarketCap 全市场恐惧与贪婪指数计算情绪维度。
+pub fn analyze_market_with_sentiment(
+    products: &[MarketSnapshot],
+    cached_ma: &[DailyMaSnapshot],
+    sentiment: Option<&MarketSentiment>,
+) -> Vec<AnalysisResult> {
     let candidates = products.iter()
-        .filter(|p| p.quote_asset == "USDT" && p.is_trading && !p.is_etf)
+        .filter(|p| p.quote_asset == "USDT" && p.is_trading && !p.is_etf && !is_stablecoin_base_asset(&p.base_asset))
         .collect::<Vec<_>>();
     let mut volumes = candidates.iter().filter_map(|p| p.quote_volume)
         .filter(|v| v.is_finite() && *v >= 0.0).collect::<Vec<_>>();
@@ -24,10 +46,10 @@ pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]
         let amplitude = p.high_price.zip(p.low_price).filter(|(_, low)| *low > 0.0)
             .map(|(high, low)| (high - low) / low * 100.0).unwrap_or(0.0);
         let risk = (100.0 - amplitude * 4.0).clamp(0.0, 100.0);
-        // 新闻情绪源尚未接入，使用中性占位并在报告中披露。
-        let sentiment = 50.0;
+        // 使用全市场恐惧与贪婪指数；无数据时回退为中性值。
+        let sentiment_score = sentiment.map(|s| s.value.clamp(0.0, 100.0)).unwrap_or(50.0);
         let liquidity = volume * 0.7 + (100.0 - amplitude * 2.0).clamp(0.0, 100.0) * 0.3;
-        let scores = [trend, volume, technical, risk, sentiment, liquidity];
+        let scores = [trend, volume, technical, risk, sentiment_score, liquidity];
         let total = scores.iter().zip(SCORE_WEIGHTS).map(|(s, w)| s * w).sum();
         let label = if change >= 3.0 { "趋势偏强" }
             else if change >= 0.8 { "温和走强" }
@@ -40,7 +62,10 @@ pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]
         };
         AnalysisResult {
             symbol: p.symbol.clone(), trend_score: trend, volume_score: volume,
-            technical_score: technical, risk_score: risk, sentiment_score: sentiment,
+            technical_score: technical, risk_score: risk, sentiment_score,
+            sentiment_value: sentiment.map(|s| s.value).unwrap_or(50.0),
+            sentiment_classification: sentiment.map(|s| s.classification.clone()).unwrap_or_else(|| "数据暂不可用（中性占位）".to_string()),
+            sentiment_update_time: sentiment.map(|s| s.update_time.clone()).unwrap_or_else(|| "".to_string()),
             liquidity_score: liquidity, total_score: total, trend_label: label, basis,
         }
     }).collect::<Vec<_>>();
@@ -73,6 +98,23 @@ mod tests {
         let rows = analyze_market(&[sample("BTCUSDT", 2.0, 5000.0), sample("ETHUSDT", 1.0, 3000.0), inactive], &[]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].symbol, "BTCUSDT");
+    }
+
+    #[test]
+    fn uses_coinmarketcap_sentiment_value() {
+        let sentiment = MarketSentiment {
+            value: 73.0,
+            classification: "贪婪".into(),
+            update_time: "2026-11-14T00:00:00Z".into(),
+        };
+        let rows = analyze_market_with_sentiment(
+            &[sample("BTC", 1.0, 5000.0)],
+            &[],
+            Some(&sentiment),
+        );
+        assert_eq!(rows[0].sentiment_score, 73.0);
+        assert_eq!(rows[0].sentiment_value, 73.0);
+        assert_eq!(rows[0].sentiment_classification, "贪婪");
     }
 
     #[test]

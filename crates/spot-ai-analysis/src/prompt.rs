@@ -5,11 +5,11 @@ use crate::{AnalysisResult, MarketSnapshot};
 /// 只依据已提供数据生成提示词，禁止 AI 编造缺失指标、新闻或盘口。
 pub fn build_report_prompt(m: &MarketSnapshot, a: &AnalysisResult) -> String {
     format!(
-        "你是一名严谨的加密货币市场研究分析师。请用中文输出结构清晰、内容充分的研究报告，不要给出保证收益或直接下单指令。只能依据下列数据，不得编造 K 线、指标、支撑阻力、新闻或盘口数据。缺失数据必须明确写“数据不足”。\n\n交易对：{}\n最新价：{}\n24小时涨跌：{}\n24小时最高：{}\n24小时最低：{}\n24小时成交量：{}\n24小时成交额：{}\n日线均线缓存偏离：{}\n六维评分：趋势 {:.1}、成交活跃度 {:.1}、技术指标 {:.1}、波动风险 {:.1}、市场情绪 {:.1}、流动性 {:.1}；加权总分 {:.1}/100。\n数据限制：当前未接入 15m/1h/4h 完整指标、新闻情绪和实时盘口深度。成交额排名仅代表相对活跃程度，不代表资金净流入。\n\n请按章节输出：一、核心结论；二、趋势分析；三、成交量与活跃度；四、技术指标；五、风险分析；六、市场情绪；七、流动性；八、潜在机会；九、主要风险；十、需要进一步确认的条件。不要将评分直接当作买卖信号。",
+        "你是一名严谨的加密货币市场研究分析师。请用中文输出结构清晰、内容充分的研究报告，不要给出保证收益或直接下单指令。只能依据下列数据，不得编造 K 线、指标、支撑阻力、新闻或盘口数据。缺失数据必须明确写“数据不足”。\n\n交易对：{}\n最新价：{}\n24小时涨跌：{}\n24小时最高：{}\n24小时最低：{}\n24小时成交量：{}\n24小时成交额：{}\n日线均线缓存偏离：{}\n六维评分：趋势 {:.1}、成交活跃度 {:.1}、技术指标 {:.1}、波动风险 {:.1}、市场情绪 {:.1}、流动性 {:.1}；加权总分 {:.1}/100。\n市场情绪来源：CoinMarketCap 恐惧与贪婪指数，指数值 {:.0}/100，情绪分类：{}，数据更新时间：{}。这是全市场情绪，不是该交易对独立情绪。若情绪分类为“数据暂不可用（中性占位）”，必须说明数据获取失败；若分类包含“缓存数据”，必须说明使用的是上次成功获取的数据。\n数据限制：当前未接入 15m/1h/4h 完整指标、新闻情绪和实时盘口深度。成交额排名仅代表相对活跃程度，不代表资金净流入。\n\n请按章节输出：一、核心结论；二、趋势分析；三、成交量与活跃度；四、技术指标；五、风险分析；六、市场情绪；七、流动性；八、潜在机会；九、主要风险；十、需要进一步确认的条件。不要将评分直接当作买卖信号。",
         m.symbol, fmt_price(m.last_price), fmt_percent(m.price_change_percent),
         fmt_price(m.high_price), fmt_price(m.low_price), fmt_compact(m.volume),
         fmt_compact(m.quote_volume), a.basis, a.trend_score, a.volume_score,
-        a.technical_score, a.risk_score, a.sentiment_score, a.liquidity_score, a.total_score
+        a.technical_score, a.risk_score, a.sentiment_score, a.liquidity_score, a.total_score, a.sentiment_value, a.sentiment_classification, a.sentiment_update_time
     )
 }
 

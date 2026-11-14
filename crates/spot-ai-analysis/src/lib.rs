@@ -3,6 +3,6 @@ mod model;
 mod prompt;
 mod scoring;
 
-pub use model::{AnalysisResult, DailyMaSnapshot, MarketSnapshot};
+pub use model::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot};
 pub use prompt::build_report_prompt;
-pub use scoring::{analyze_market, SCORE_WEIGHTS};
+pub use scoring::{analyze_market, analyze_market_with_sentiment, SCORE_WEIGHTS};
