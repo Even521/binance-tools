@@ -51,6 +51,16 @@ pub fn delete_all_news(connection: &Connection) -> anyhow::Result<usize> {
         .context("delete all entertainment news failed")
 }
 
+/// 删除发布时间（缺失时使用采集时间）早于当前时间 3 天的娱乐新闻。
+pub fn delete_news_older_than_three_days(connection: &Connection) -> anyhow::Result<usize> {
+    connection
+        .execute(
+            "DELETE FROM entertainment_news WHERE datetime(COALESCE(NULLIF(published_at, ''), collected_at)) < datetime('now', '-3 days')",
+            [],
+        )
+        .context("delete entertainment news older than three days failed")
+}
+
 /// 保存 X 文案改写结果，只更新中文摘要/翻译字段，不改动中文标题。
 pub fn update_news_rewrite(
     connection: &Connection,
