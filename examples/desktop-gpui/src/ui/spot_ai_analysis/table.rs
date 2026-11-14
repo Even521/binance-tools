@@ -32,26 +32,41 @@ impl SpotAiAnalysisTableDelegate {
         }
     }
 
-    fn set_loading(&mut self, loading: bool) {
+    pub(super) fn set_loading(&mut self, loading: bool) {
         self.loading = loading;
-        if loading { self.rows.clear(); }
+        if loading {
+            self.rows.clear();
+        }
     }
 
-    fn set_rows(&mut self, rows: Vec<SpotAiAnalysisRow>) {
+    pub(super) fn set_rows(&mut self, rows: Vec<SpotAiAnalysisRow>) {
         self.rows = rows;
         self.loading = false;
     }
 
-    fn set_error(&mut self) {
+    pub(super) fn set_error(&mut self) {
         self.rows.clear();
         self.loading = false;
     }
 
     fn cell(value: impl Into<SharedString>, color: Hsla) -> AnyElement {
-        div().size_full().flex().items_center().px_1().text_size(px(11.)).text_color(color).child(value.into()).into_any_element()
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .px_1()
+            .text_size(px(11.))
+            .text_color(color)
+            .child(value.into())
+            .into_any_element()
     }
 
-    fn symbol_cell(&self, row_ix: usize, row: &SpotAiAnalysisRow, theme: &gpui_component::Theme) -> AnyElement {
+    fn symbol_cell(
+        &self,
+        row_ix: usize,
+        row: &SpotAiAnalysisRow,
+        theme: &gpui_component::Theme,
+    ) -> AnyElement {
         let page = self.page.clone();
         let symbol = row.product.symbol.clone();
         Button::new(("spot-ai-row", row_ix))
@@ -67,41 +82,90 @@ impl SpotAiAnalysisTableDelegate {
 }
 
 impl TableDelegate for SpotAiAnalysisTableDelegate {
-    fn columns_count(&self, _: &App) -> usize { self.columns.len() }
-    fn rows_count(&self, _: &App) -> usize { self.rows.len() }
-    fn column(&self, col_ix: usize, _: &App) -> &Column { &self.columns[col_ix] }
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
 
-    fn render_td(&mut self, row_ix: usize, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+    fn rows_count(&self, _: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> &Column {
+        &self.columns[col_ix]
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
-        let Some(row) = self.rows.get(row_ix) else { return Self::cell("", palette::text(theme)); };
+        let Some(row) = self.rows.get(row_ix) else {
+            return Self::cell("", palette::text(theme));
+        };
         match self.columns[col_ix].key.as_ref() {
             "symbol" => self.symbol_cell(row_ix, row, theme),
             "change" => {
                 let value = row.product.price_change_percent.unwrap_or(0.0);
-                Self::cell(format!("{value:+.2}%"), if value >= 0.0 { theme.success } else { theme.danger })
+                Self::cell(
+                    format!("{value:+.2}%"),
+                    if value >= 0.0 {
+                        theme.success
+                    } else {
+                        theme.danger
+                    },
+                )
             }
             "trend" => Self::cell(row.trend_label.clone(), palette::text(theme)),
             "score" => Self::cell(format!("{:.0}", row.total_score), palette::text(theme)),
-            "turnover" => Self::cell(format_compact(row.product.quote_volume), palette::text(theme)),
+            "turnover" => Self::cell(
+                format_compact(row.product.quote_volume),
+                palette::text(theme),
+            ),
             _ => Self::cell("", palette::text(theme)),
         }
     }
 
-    fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, _: &mut Window, _: &mut Context<TableState<Self>>) {
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
         let descending = matches!(sort, ColumnSort::Descending);
         let key = self.columns[col_ix].key.to_string();
         self.rows.sort_by(|a, b| {
             let order = match key.as_str() {
                 "symbol" => a.product.symbol.cmp(&b.product.symbol),
-                "change" => a.product.price_change_percent.partial_cmp(&b.product.price_change_percent).unwrap_or(Ordering::Equal),
-                "score" => a.total_score.partial_cmp(&b.total_score).unwrap_or(Ordering::Equal),
-                "turnover" => a.product.quote_volume.partial_cmp(&b.product.quote_volume).unwrap_or(Ordering::Equal),
+                "change" => a
+                    .product
+                    .price_change_percent
+                    .partial_cmp(&b.product.price_change_percent)
+                    .unwrap_or(Ordering::Equal),
+                "score" => a
+                    .total_score
+                    .partial_cmp(&b.total_score)
+                    .unwrap_or(Ordering::Equal),
+                "turnover" => a
+                    .product
+                    .quote_volume
+                    .partial_cmp(&b.product.quote_volume)
+                    .unwrap_or(Ordering::Equal),
                 "trend" => a.trend_label.cmp(&b.trend_label),
                 _ => Ordering::Equal,
             };
-            if descending { order.reverse() } else { order }
+            if descending {
+                order.reverse()
+            } else {
+                order
+            }
         });
     }
 
-    fn loading(&self, _: &App) -> bool { self.loading }
+    fn loading(&self, _: &App) -> bool {
+        self.loading
+    }
 }
