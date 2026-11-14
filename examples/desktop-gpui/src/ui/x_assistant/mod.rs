@@ -960,7 +960,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, _, cx| {
                         this.log_tail = Some(run_log::LogTail::new());
                         this.show_run_status = true;
                         this.show_reply_list = false;
@@ -991,7 +991,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.show_reply_flow(cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx)))
                     .child("自动回复"),
             )
             .child(
@@ -1014,7 +1014,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.open_auto_post(cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_auto_post(cx)))
                     .child("自动发帖"),
             )
             .child(
@@ -1038,7 +1038,7 @@ impl XAssistantPage {
             .py_1()
             .cursor_pointer()
             .when(self.replying, |button| button.opacity(0.45))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, _, cx| {
                 if !this.replying {
                     app_log::x_info!("[全局开始按钮] 点击事件已触发");
                     this.start_all_automation(cx);
@@ -1060,7 +1060,7 @@ impl XAssistantPage {
             .py_1()
             .cursor_pointer()
             .when(!self.replying, |button| button.opacity(0.45))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+            .on_click(cx.listener(|this, _, _, cx| {
                 if this.replying {
                     this.stop_visual_reply(cx);
                 }
@@ -1080,7 +1080,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.open_reply_list(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_reply_list(window, cx)))
                     .child("回复列表"),
             )
             .child(
@@ -1103,7 +1103,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.open_post_history(window, cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_post_history(window, cx)))
                     .child("发帖历史"),
             )
             .child(
@@ -1126,7 +1126,7 @@ impl XAssistantPage {
                     .px_2()
                     .py_1()
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
                     .child("任务设置"),
             )
             .child(
