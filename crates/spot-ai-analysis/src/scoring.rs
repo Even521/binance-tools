@@ -5,10 +5,23 @@ use std::{cmp::Ordering, collections::HashMap};
 
 pub const SCORE_WEIGHTS: [f64; 6] = [0.25, 0.20, 0.20, 0.15, 0.10, 0.10];
 
+/// 不参与现货方向性分析的稳定币基础资产（报价资产 USDT 不受影响）。
+const STABLECOIN_BASE_ASSETS: &[&str] = &[
+    "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP", "USDE",
+    "PYUSD", "USDS", "GUSD", "FRAX", "LUSD", "USDD", "UST", "USTC",
+    "USD1", "USDJ", "CRVUSD", "EURI", "AEUR", "RLUSD", "USDG",
+];
+
+fn is_stablecoin_base_asset(asset: &str) -> bool {
+    STABLECOIN_BASE_ASSETS
+        .iter()
+        .any(|stablecoin| asset.eq_ignore_ascii_case(stablecoin))
+}
+
 /// 筛选可交易 USDT 现货币种，计算六维基础分并按总分降序排列。
 pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]) -> Vec<AnalysisResult> {
     let candidates = products.iter()
-        .filter(|p| p.quote_asset == "USDT" && p.is_trading && !p.is_etf)
+        .filter(|p| p.quote_asset == "USDT" && p.is_trading && !p.is_etf && !is_stablecoin_base_asset(&p.base_asset))
         .collect::<Vec<_>>();
     let mut volumes = candidates.iter().filter_map(|p| p.quote_volume)
         .filter(|v| v.is_finite() && *v >= 0.0).collect::<Vec<_>>();
