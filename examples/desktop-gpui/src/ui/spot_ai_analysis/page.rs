@@ -545,51 +545,79 @@ fn amplitude_percent(product: &MarketProduct) -> String {
 async fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
     static CACHE: OnceLock<Mutex<Option<(Instant, MarketSentiment)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
-    if let Some((cached_at, value)) = cache.lock().ok().and_then(|guard| guard.clone()) {
+    let cached = cache.lock().ok().and_then(|guard| guard.clone());
+    if let Some((cached_at, value)) = cached.as_ref() {
         if cached_at.elapsed() < Duration::from_secs(15 * 60) {
-            return Ok(value);
+            return Ok(value.clone());
         }
     }
-    let response = reqwest::get(
-        "https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest",
-    )
-    .await?
-    .error_for_status()?;
-    let payload: serde_json::Value = response.json().await?;
-    let data = payload
-        .get("data")
-        .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少 data 字段"))?;
-    let value = data
-        .get("value")
-        .and_then(serde_json::Value::as_f64)
-        .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少有效的 value"))?;
-    if !(0.0..=100.0).contains(&value) {
-        anyhow::bail!("CMC 恐惧贪婪指数超出 0～100 范围：{value}");
-    }
-    let raw_classification = data
-        .get("value_classification")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("Unknown");
-    let classification = match raw_classification {
-        "Extreme Fear" => "极度恐惧",
-        "Fear" => "恐惧",
-        "Neutral" => "中性",
-        "Greed" => "贪婪",
-        "Extreme Greed" => "极度贪婪",
-        other => other,
-    }.to_string();
-    let update_time = data
-        .get("update_time")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let sentiment = MarketSentiment { value, classification, update_time };
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some((Instant::now(), sentiment.clone()));
-    }
-    Ok(sentiment)
-}
 
+    let fetched = async {
+        let response = reqwest::get(
+            "https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest",
+        )
+        .await?
+        .error_for_status()?;
+        let payload: serde_json::Value = response.json().await?;
+        let data = payload
+            .get("data")
+            .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少 data 字段"))?;
+        let value = data
+            .get("value")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| anyhow::anyhow!("CMC 响应缺少有效的 value"))?;
+        if !(0.0..=100.0).contains(&value) {
+            anyhow::bail!("CMC 恐惧贪婪指数超出 0～100 范围：{value}");
+        }
+        let raw_classification = data
+            .get("value_classification")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Unknown");
+        let classification = match raw_classification {
+            "Extreme Fear" => "极度恐惧",
+            "Fear" => "恐惧",
+            "Neutral" => "中性",
+            "Greed" => "贪婪",
+            "Extreme Greed" => "极度贪婪",
+            other => other,
+        }
+        .to_string();
+        let update_time = data
+            .get("update_time")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok::<_, anyhow::Error>(MarketSentiment {
+            value,
+            classification,
+            update_time,
+        })
+    }
+    .await;
+
+    match fetched {
+        Ok(sentiment) => {
+            if let Ok(mut guard) = cache.lock() {
+                *guard = Some((Instant::now(), sentiment.clone()));
+            }
+            Ok(sentiment)
+        }
+        Err(error) => {
+            if let Some((_, mut stale)) = cached {
+                stale.classification.push_str("（缓存数据）");
+                app_log::warn!(
+                    "[现货AI分析] CoinMarketCap 请求失败，沿用上次缓存指数={} 更新时间={} error={:#}",
+                    stale.value,
+                    stale.update_time,
+                    error
+                );
+                Ok(stale)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
 fn format_beijing_time(value: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
