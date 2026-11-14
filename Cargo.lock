@@ -1821,6 +1821,7 @@ dependencies = [
  "tokio",
  "windows 0.61.3",
  "winresource",
+ "spot-ai-analysis",
 ]
 
 [[package]]
@@ -6757,6 +6758,10 @@ dependencies = [
  "base64ct",
  "der",
 ]
+
+[[package]]
+name = "spot-ai-analysis"
+version = "0.1.0"
 
 [[package]]
 name = "stable_deref_trait"
