@@ -816,7 +816,7 @@ impl Render for CryptoNewsPage {
                                             .outline()
                                             .xsmall()
                                             .label(if self.clear_old_confirm { "确认清理" } else { "清空 3 天前" })
-                                            .disabled(self.is_syncing || self.total_count == 0)
+                                            .disabled(self.is_syncing)
                                             .on_click(cx.listener(Self::on_clear_old_click)),
                                     )
                                     .child(
@@ -824,7 +824,7 @@ impl Render for CryptoNewsPage {
                                             .outline()
                                             .xsmall()
                                             .label(if self.clear_all_confirm { "确认清空" } else { "清空所有" })
-                                            .disabled(self.is_syncing || self.total_count == 0)
+                                            .disabled(self.is_syncing)
                                             .on_click(cx.listener(Self::on_clear_all_click)),
                                     ),
                             ),
