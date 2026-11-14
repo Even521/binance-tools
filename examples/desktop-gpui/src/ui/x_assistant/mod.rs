@@ -1112,14 +1112,30 @@ impl XAssistantPage {
             .into_any_element()
     }
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建运行状态按钮"); }
         let status_button = self.render_status_tab_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 运行状态按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建自动回复按钮"); }
         let reply_flow_button = self.render_reply_flow_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 自动回复按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建自动发帖按钮"); }
         let auto_post_button = self.render_auto_post_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 自动发帖按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建全局开始按钮"); }
         let start_all_button = self.render_start_all_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 全局开始按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建全局停止按钮"); }
         let stop_all_button = self.render_stop_all_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 全局停止按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建回复列表按钮"); }
         let reply_list_button = self.render_reply_list_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 回复列表按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建发帖历史按钮"); }
         let post_history_button = self.render_post_history_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 发帖历史按钮构建完成"); }
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建任务设置按钮"); }
         let task_settings_button = self.render_task_settings_button(cx);
+        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 任务设置按钮构建完成"); }
 
         let theme = cx.theme();
         // 六个页面统一使用下划线 Tabs；运行状态和全局控制按钮位于同一行。
@@ -1190,10 +1206,14 @@ impl Render for XAssistantPage {
             }
         }
         if !self.render_diagnostic_logged {
-            self.render_diagnostic_logged = true;
+            app_log::x_info!("[X助手首次渲染] 进入 Render::render，准备构建页面菜单");
         }
         if self.show_run_status {
             let menu = self.render_page_menu(cx);
+            if !self.render_diagnostic_logged {
+                self.render_diagnostic_logged = true;
+                app_log::x_info!("[X助手首次渲染] 页面菜单构建完成，开始读取统计数据和构建运行状态面板");
+            }
             let theme = cx.theme();
             let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
             let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
@@ -1305,6 +1325,7 @@ impl Render for XAssistantPage {
 
         if self.show_task_settings {
             let menu = self.render_page_menu(cx);
+            self.render_diagnostic_logged = true;
             let task_settings = self.render_task_settings(cx);
             let theme = cx.theme();
             return v_flex()
@@ -1336,6 +1357,7 @@ impl Render for XAssistantPage {
 
         if self.show_auto_post {
             let menu = self.render_page_menu(cx);
+            self.render_diagnostic_logged = true;
             let theme = cx.theme();
             return v_flex()
                 .size_full()
@@ -1434,13 +1456,15 @@ impl Render for XAssistantPage {
         }
 
         if self.show_reply_list || self.show_post_history {
+            let menu = self.render_page_menu(cx);
+            self.render_diagnostic_logged = true;
             return v_flex()
                 .size_full()
                 .min_w_0()
                 .min_h_0()
                 .gap_3()
                 .p_4()
-                .child(self.render_page_menu(cx))
+                .child(menu)
                 .when_some(self.reply_list.clone(), |page, reply_list| {
                     if self.show_reply_list { page.child(reply_list) } else { page }
                 })
@@ -1450,6 +1474,7 @@ impl Render for XAssistantPage {
                 .into_any_element();
         }
         let menu = self.render_page_menu(cx);
+        self.render_diagnostic_logged = true;
         let theme = cx.theme();
         let selected_image = self.screenshots.get(self.selected_screenshot).cloned();
         let zoom_image = selected_image.clone();
