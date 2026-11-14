@@ -19,7 +19,16 @@ fn is_stablecoin_base_asset(asset: &str) -> bool {
 }
 
 /// 筛选可交易 USDT 现货币种，计算六维基础分并按总分降序排列。
-pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]) -> Vec<AnalysisResult> {\n    analyze_market_with_sentiment(products, cached_ma, None)\n}\n\n/// 使用 CoinMarketCap 全市场恐惧与贪婪指数计算情绪维度。\npub fn analyze_market_with_sentiment(\n    products: &[MarketSnapshot],\n    cached_ma: &[DailyMaSnapshot],\n    sentiment: Option<&MarketSentiment>,\n) -> Vec<AnalysisResult> {
+pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]) -> Vec<AnalysisResult> {
+    analyze_market_with_sentiment(products, cached_ma, None)
+}
+
+/// 使用 CoinMarketCap 全市场恐惧与贪婪指数计算情绪维度。
+pub fn analyze_market_with_sentiment(
+    products: &[MarketSnapshot],
+    cached_ma: &[DailyMaSnapshot],
+    sentiment: Option<&MarketSentiment>,
+) -> Vec<AnalysisResult> {
     let candidates = products.iter()
         .filter(|p| p.quote_asset == "USDT" && p.is_trading && !p.is_etf && !is_stablecoin_base_asset(&p.base_asset))
         .collect::<Vec<_>>();
@@ -37,8 +46,8 @@ pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]
         let amplitude = p.high_price.zip(p.low_price).filter(|(_, low)| *low > 0.0)
             .map(|(high, low)| (high - low) / low * 100.0).unwrap_or(0.0);
         let risk = (100.0 - amplitude * 4.0).clamp(0.0, 100.0);
-        // 新闻情绪源尚未接入，使用中性占位并在报告中披露。
-        let sentiment = 50.0;
+        // 使用全市场恐惧与贪婪指数；无数据时回退为中性值。
+        let sentiment_score = sentiment.map(|s| s.value.clamp(0.0, 100.0)).unwrap_or(50.0);
         let liquidity = volume * 0.7 + (100.0 - amplitude * 2.0).clamp(0.0, 100.0) * 0.3;
         let scores = [trend, volume, technical, risk, sentiment_score, liquidity];
         let total = scores.iter().zip(SCORE_WEIGHTS).map(|(s, w)| s * w).sum();
@@ -53,7 +62,10 @@ pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]
         };
         AnalysisResult {
             symbol: p.symbol.clone(), trend_score: trend, volume_score: volume,
-            technical_score: technical, risk_score: risk, sentiment_score,\n            sentiment_value: sentiment.map(|s| s.value).unwrap_or(50.0),\n            sentiment_classification: sentiment.map(|s| s.classification.clone()).unwrap_or_else(|| \"数据暂不可用（中性占位）\".to_string()),\n            sentiment_update_time: sentiment.map(|s| s.update_time.clone()).unwrap_or_else(|| \"\".to_string()),
+            technical_score: technical, risk_score: risk, sentiment_score,
+            sentiment_value: sentiment.map(|s| s.value).unwrap_or(50.0),
+            sentiment_classification: sentiment.map(|s| s.classification.clone()).unwrap_or_else(|| \"数据暂不可用（中性占位）\".to_string()),
+            sentiment_update_time: sentiment.map(|s| s.update_time.clone()).unwrap_or_else(|| \"\".to_string()),
             liquidity_score: liquidity, total_score: total, trend_label: label, basis,
         }
     }).collect::<Vec<_>>();
