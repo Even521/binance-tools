@@ -116,7 +116,7 @@ impl SpotAiAnalysisPage {
             let result = cx
                 .background_spawn(async move {
                     let products =
-                        binance_tools::db::market::load_or_fetch_market_products_blocking()?;
+                        binance_tools::db::market::refresh_market_products_blocking()?;
                     let cached_ma = binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30)
                         .unwrap_or_default();
                     Ok::<_, anyhow::Error>(build_analysis_rows(products, &cached_ma))
@@ -210,10 +210,10 @@ impl SpotAiAnalysisPage {
         let dimensions = [
             ("趋势结构", row.trend_score),
             ("成交活跃度", row.volume_score),
-            ("技术指标", row.technical_score),
+            ("日线均价偏离", row.technical_score),
             ("波动风险", row.risk_score),
             ("市场情绪", row.sentiment_score),
-            ("流动性代理", row.liquidity_score),
+            ("流动性参考", row.liquidity_score),
         ];
 
         v_flex()
@@ -303,7 +303,7 @@ impl SpotAiAnalysisPage {
                     .text_size(px(11.))
                     .text_color(palette::muted(theme))
                     .line_height(px(17.))
-                    .child("第一版使用已有 24 小时行情与本地日线均线缓存；未取得的多周期指标、新闻情绪和盘口深度不会伪造，AI 报告会明确标记数据缺口。"),
+                    .child("第一版使用已有 24 小时行情与本地日线均线缓存；日线均价偏离是技术参考，不代表完整技术指标。成交额排名和振幅仅是流动性参考，不等于盘口深度。未取得的多周期指标、新闻情绪和盘口数据不会伪造，AI 报告会明确标记数据缺口。"),
             )
             .into_any_element()
     }
@@ -442,7 +442,7 @@ fn build_analysis_rows(
         let risk_score = (100.0 - amplitude * 4.0).clamp(0.0, 100.0);
         // No reliable news sentiment source is wired into this first iteration.
         let sentiment_score = 50.0;
-        let liquidity_score = volume_score;
+        let liquidity_score = (volume_score * 0.7 + (100.0 - amplitude * 2.0).clamp(0.0, 100.0) * 0.3);
         let scores = [trend_score, volume_score, technical_score, risk_score, sentiment_score, liquidity_score];
         let total_score = scores.iter().zip(SCORE_WEIGHTS).map(|(score, weight)| score * weight).sum();
         let trend_label = if change >= 3.0 { "趋势偏强" } else if change >= 0.8 { "温和走强" } else if change <= -3.0 { "趋势偏弱" } else if change <= -0.8 { "温和走弱" } else { "区间震荡" }.to_string();
@@ -548,7 +548,7 @@ impl SpotAiAnalysisTableDelegate {
                 Column::new("symbol", "交易对").width(px(130.)).fixed_left().sortable(),
                 Column::new("change", "24h 涨跌").width(px(90.)).sortable(),
                 Column::new("trend", "趋势判断").width(px(100.)).sortable(),
-                Column::new("score", "AI 评分").width(px(82.)).sortable(),
+                Column::new("score", "综合评分").width(px(82.)).sortable(),
                 Column::new("turnover", "24h 成交额").width(px(110.)).sortable(),
             ],
             rows: Vec::new(),
