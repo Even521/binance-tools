@@ -2,7 +2,7 @@ use super::{SpotAiAnalysisPage, SpotAiAnalysisRow};
 use crate::ui::palette;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
     table::{Column, ColumnSort, TableDelegate, TableState},
 };
@@ -47,6 +47,10 @@ impl SpotAiAnalysisTableDelegate {
     pub(super) fn set_error(&mut self) {
         self.rows.clear();
         self.loading = false;
+    }
+
+    pub(super) fn visible_rows_count(&self) -> usize {
+        self.rows.len()
     }
 
     fn cell(value: impl Into<SharedString>, color: Hsla) -> AnyElement {
@@ -167,5 +171,21 @@ impl TableDelegate for SpotAiAnalysisTableDelegate {
 
     fn loading(&self, _: &App) -> bool {
         self.loading
+    }
+}
+
+fn format_compact(value: Option<f64>) -> String {
+    let Some(value) = value else {
+        return "-".to_string();
+    };
+    let abs = value.abs();
+    if abs >= 1_000_000_000.0 {
+        format!("{:.2}B", value / 1_000_000_000.0)
+    } else if abs >= 1_000_000.0 {
+        format!("{:.2}M", value / 1_000_000.0)
+    } else if abs >= 1_000.0 {
+        format!("{:.2}K", value / 1_000.0)
+    } else {
+        format!("{value:.2}")
     }
 }

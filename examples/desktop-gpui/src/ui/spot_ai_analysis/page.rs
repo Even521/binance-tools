@@ -5,7 +5,7 @@ use self::table::SpotAiAnalysisTableDelegate;
 use binance_tools::binance::market::MarketProduct;
 use gpui::{prelude::FluentBuilder, *};
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -13,7 +13,7 @@ use gpui_component::{
     v_flex,
 };
 use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSnapshot, analyze_market, build_report_prompt};
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 pub enum SpotAiAnalysisEvent {
     AnalyzeWithAi { prompt: String, display_content: String },
@@ -306,7 +306,7 @@ impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
 impl Render for SpotAiAnalysisPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let visible_count = self.table.read(cx).delegate().rows.len();
+        let visible_count = self.table.read(cx).delegate().visible_rows_count();
         let selected_count = self.rows.len();
         let loading = self.loading;
 
