@@ -27,7 +27,7 @@ pub(super) mod native {
         Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, ClientToScreen, CreateCompatibleBitmap,
             CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits,
-            ReleaseDC, SRCCOPY, SelectObject,
+            ReleaseDC, ScreenToClient, SRCCOPY, SelectObject,
         },
         UI::{
             Input::KeyboardAndMouse::{
@@ -38,7 +38,7 @@ pub(super) mod native {
             WindowsAndMessaging::{
                 EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
                 GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
-                IsWindowVisible, ScreenToClient, SM_CXSCREEN, SM_CYSCREEN,
+                IsWindowVisible, SM_CXSCREEN, SM_CYSCREEN,
                 SW_MAXIMIZE, SetCursorPos,
                 SetForegroundWindow, ShowWindow,
             },
