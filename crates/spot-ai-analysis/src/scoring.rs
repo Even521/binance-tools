@@ -64,8 +64,8 @@ pub fn analyze_market_with_sentiment(
             symbol: p.symbol.clone(), trend_score: trend, volume_score: volume,
             technical_score: technical, risk_score: risk, sentiment_score,
             sentiment_value: sentiment.map(|s| s.value).unwrap_or(50.0),
-            sentiment_classification: sentiment.map(|s| s.classification.clone()).unwrap_or_else(|| \"数据暂不可用（中性占位）\".to_string()),
-            sentiment_update_time: sentiment.map(|s| s.update_time.clone()).unwrap_or_else(|| \"\".to_string()),
+            sentiment_classification: sentiment.map(|s| s.classification.clone()).unwrap_or_else(|| "数据暂不可用（中性占位）".to_string()),
+            sentiment_update_time: sentiment.map(|s| s.update_time.clone()).unwrap_or_else(|| "".to_string()),
             liquidity_score: liquidity, total_score: total, trend_label: label, basis,
         }
     }).collect::<Vec<_>>();
