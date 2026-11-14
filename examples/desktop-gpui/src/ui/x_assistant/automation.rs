@@ -38,7 +38,7 @@ pub(super) mod native {
             WindowsAndMessaging::{
                 EnumWindows, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
                 GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
-                IsWindowVisible, SM_CXSCREEN, SM_CYSCREEN,
+                IsWindowVisible, ScreenToClient, SM_CXSCREEN, SM_CYSCREEN,
                 SW_MAXIMIZE, SetCursorPos,
                 SetForegroundWindow, ShowWindow,
             },
