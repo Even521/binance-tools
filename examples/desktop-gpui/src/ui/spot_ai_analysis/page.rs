@@ -27,7 +27,10 @@ struct SpotAiAnalysisRow {
     volume_score: f64,
     technical_score: f64,
     risk_score: f64,
-    sentiment_score: f64,\n    sentiment_value: f64,\n    sentiment_classification: String,\n    sentiment_update_time: String,
+    sentiment_score: f64,
+    sentiment_value: f64,
+    sentiment_classification: String,
+    sentiment_update_time: String,
     liquidity_score: f64,
     total_score: f64,
     trend_label: String,
@@ -112,17 +115,23 @@ impl SpotAiAnalysisPage {
                         binance_tools::db::market::refresh_market_products_blocking()?;
                     let cached_ma = binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30)
                         .unwrap_or_default();
-                    Ok::<_, anyhow::Error>(build_analysis_rows(products, &cached_ma))
+                    let sentiment = fetch_cmc_sentiment().await.ok();
+                    Ok::<_, anyhow::Error>((build_analysis_rows(products, &cached_ma, sentiment.as_ref()), sentiment))
                 })
                 .await;
 
             _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
-                    Ok(rows) => {
+                    Ok((rows, sentiment)) => {
                         this.scanned_count = rows.len();
                         this.selected_symbol = rows.first().map(|row| row.product.symbol.clone());
                         this.rows = rows;
+                        if let Some(s) = sentiment.as_ref() {
+                            app_log::info!("[现货AI分析] CoinMarketCap 恐惧贪婪指数={} 分类={} 更新时间={}", s.value, s.classification, s.update_time);
+                        } else {
+                            app_log::warn!("[现货AI分析] CoinMarketCap 恐惧贪婪指数获取失败，当前使用 50 分中性占位");
+                        }
                         this.refresh_visible_rows(cx);
                         app_log::info!(
                             "[现货AI分析] 扫描完成：交易对={}，使用已有日线均线缓存辅助评分",
@@ -224,7 +233,7 @@ impl SpotAiAnalysisPage {
             (
                 "市场情绪",
                 row.sentiment_score,
-                "权重 10%。当前尚未接入新闻、社交媒体或情绪数据源，因此统一使用 50 分作为中性占位值。这个分数不代表系统已经判断出市场情绪。",
+                "权重 10%。使用 CoinMarketCap 全市场恐惧与贪婪指数原始值（0～100）作为情绪分。该指标反映整个加密市场，不代表当前交易对的独立情绪。若请求失败则使用 50 分中性占位。",
             ),
             (
                 "流动性参考",
@@ -281,6 +290,8 @@ impl SpotAiAnalysisPage {
             )
             .child(div().h(px(1.)).bg(palette::border(theme)))
             .child(div().text_size(px(12.)).font_semibold().child("行情摘要"))
+            .child(detail_stat("市场恐惧贪婪指数", format!("{:.0} · {}", row.sentiment_value, row.sentiment_classification), theme))
+            .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 更新于 {}", if row.sentiment_update_time.is_empty() { "暂无数据" } else { &row.sentiment_update_time })))
             .child(
                 h_flex()
                     .gap_2()
@@ -442,6 +453,7 @@ impl Render for SpotAiAnalysisPage {
 fn build_analysis_rows(
     products: Vec<MarketProduct>,
     cached_ma: &[binance_tools::binance::spot::DailyMaSignal],
+    sentiment: Option<&MarketSentiment>,
 ) -> Vec<SpotAiAnalysisRow> {
     let inputs = products.iter().map(|p| MarketSnapshot {
         symbol:p.symbol.clone(), base_asset:p.base_asset.clone(), asset_name:p.asset_name.clone(),
@@ -459,7 +471,9 @@ fn build_analysis_rows(
         Some(SpotAiAnalysisRow {
             product, trend_score:s.trend_score, volume_score:s.volume_score,
             technical_score:s.technical_score, risk_score:s.risk_score,
-            sentiment_score:s.sentiment_score, liquidity_score:s.liquidity_score,
+            sentiment_score:s.sentiment_score, sentiment_value:s.sentiment_value,
+            sentiment_classification:s.sentiment_classification.clone(), sentiment_update_time:s.sentiment_update_time.clone(),
+            liquidity_score:s.liquidity_score,
             total_score:s.total_score, trend_label:s.trend_label.clone(), basis:s.basis.clone(),
         })
     }).collect::<Vec<_>>();
@@ -479,7 +493,9 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
     let analysis=AnalysisResult {
         symbol:row.product.symbol.clone(), trend_score:row.trend_score, volume_score:row.volume_score,
         technical_score:row.technical_score, risk_score:row.risk_score,
-        sentiment_score:row.sentiment_score, liquidity_score:row.liquidity_score,
+        sentiment_score:row.sentiment_score, sentiment_value:row.sentiment_value,
+        sentiment_classification:row.sentiment_classification.clone(), sentiment_update_time:row.sentiment_update_time.clone(),
+        liquidity_score:row.liquidity_score,
         total_score:row.total_score, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
     };
     build_report_prompt(&market,&analysis)
