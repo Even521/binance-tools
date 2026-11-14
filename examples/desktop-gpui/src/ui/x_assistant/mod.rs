@@ -949,34 +949,40 @@ fn load_reply_rules() -> String {
 impl XAssistantPage {
     // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
     fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] 进入函数");
         let selected = self.show_run_status;
-        v_flex()
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] 状态读取完成 selected={}", selected);
+        let button = Button::new("x-assistant-status-tab");
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] Button::new 完成");
+        let button = button
+            .ghost()
+            .small()
+            .label("运行状态");
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] 样式和标签构建完成");
+        let button = button.on_click(cx.listener(|this, _, _, cx| {
+            // 每次打开运行状态页都重新读取当天（北京时间）的日志，
+            // 避免任务停止后跨日仍显示上一次打开时缓存的旧日志。
+            this.log_tail = Some(run_log::LogTail::new());
+            this.show_run_status = true;
+            this.show_reply_list = false;
+            this.show_post_history = false;
+            this.show_task_settings = false;
+            this.show_auto_post = false;
+            cx.notify();
+        }));
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] 点击监听器构建完成");
+        let element = v_flex()
             .w(px(112.))
             .gap_1()
-            .child(
-                Button::new("x-assistant-status-tab")
-                    .ghost()
-                    .small()
-                    .label("运行状态")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                // 每次打开运行状态页都重新读取当天（北京时间）的日志，
-                // 避免任务停止后跨日仍显示上一次打开时缓存的旧日志。
-                this.log_tail = Some(run_log::LogTail::new());
-                this.show_run_status = true;
-                this.show_reply_list = false;
-                this.show_post_history = false;
-                this.show_task_settings = false;
-                this.show_auto_post = false;
-                cx.notify();
-            })),
-            )
+            .child(button)
             .child(
                 div()
                     .w_full()
                     .h(px(2.))
                     .when(selected, |line| line.bg(gpui::hsla(0.59, 0.78, 0.56, 1.0))),
-            )
-            .into_any_element()
+            );
+        app_log::x_info!("[X助手首次渲染][运行状态按钮] 布局构建完成");
+        element.into_any_element()
     }
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post;
