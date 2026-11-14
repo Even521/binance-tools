@@ -1028,34 +1028,44 @@ impl XAssistantPage {
 
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        Button::new("x-assistant-start-all-automation")
-            .label("开始")
-            .small()
+        div()
+            .id("x-assistant-start-all-automation")
             .rounded_full()
             .bg(palette::surface(theme))
             .text_color(palette::text(theme))
+            .text_size(px(12.))
             .px_4()
-            .disabled(self.replying)
-            .tooltip("启动自动化回复、发帖")
-            .on_click(cx.listener(|this, _, _, cx| {
-                app_log::x_info!("[全局开始按钮] 点击事件已触发");
-                this.start_all_automation(cx);
+            .py_1()
+            .cursor_pointer()
+            .when(self.replying, |button| button.opacity(0.45))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if !this.replying {
+                    app_log::x_info!("[全局开始按钮] 点击事件已触发");
+                    this.start_all_automation(cx);
+                }
             }))
+            .child("开始")
             .into_any_element()
     }
 
     fn render_stop_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        Button::new("x-assistant-stop-all-automation")
-            .label("停止")
-            .small()
+        div()
+            .id("x-assistant-stop-all-automation")
             .rounded_full()
             .bg(palette::surface(theme))
             .text_color(palette::text(theme))
+            .text_size(px(12.))
             .px_4()
-            .disabled(!self.replying)
-            .tooltip("中断自动化")
-            .on_click(cx.listener(|this, _, _, cx| this.stop_visual_reply(cx)))
+            .py_1()
+            .cursor_pointer()
+            .when(!self.replying, |button| button.opacity(0.45))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                if this.replying {
+                    this.stop_visual_reply(cx);
+                }
+            }))
+            .child("停止")
             .into_any_element()
     }
 
