@@ -270,6 +270,7 @@ impl EntertainmentNewsPage {
             Ok(deleted) => {
                 self.news_items.clear();
                 self.clear_confirm = false;
+                self.clear_old_confirm = false;
                 self.rewrite_open = false;
                 self.status = Some(format!("已清空娱乐新闻数据，共删除 {deleted} 条。"));
                 self.error = None;
