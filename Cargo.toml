@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs", "crates/crypto-rss", "crates/app-log"]
+members = ["examples/desktop-gpui", "crates/evm-wallet", "crates/ocr-rs", "crates/crypto-rss", "crates/app-log", "crates/spot-ai-analysis"]
 default-members = ["."]
 resolver = "3"
 
