@@ -1818,10 +1818,10 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "spot-ai-analysis",
  "tokio",
  "windows 0.61.3",
  "winresource",
- "spot-ai-analysis",
 ]
 
 [[package]]
