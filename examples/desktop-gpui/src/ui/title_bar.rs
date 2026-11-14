@@ -24,6 +24,7 @@ actions!(
         OpenMarketProducts,
         OpenSpotBacktest,
         OpenSpotSymbols,
+        OpenSpotAiAnalysis,
         OpenWalletGenerator,
         OpenXAssistant,
         OpenSquareKeySettings,
@@ -124,6 +125,14 @@ impl Render for DesktopTitleBar {
                                             window.dispatch_action(Box::new(OpenSpotSymbols), cx);
                                         },
                                     ),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("AI 分析")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenSpotAiAnalysis), cx);
+                                    }),
                                 )
                                 .item(
                                     PopupMenuItem::element(|_, _| {

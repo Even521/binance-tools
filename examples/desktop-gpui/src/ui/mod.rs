@@ -13,6 +13,7 @@ pub mod ma_signal;
 pub mod market;
 pub mod palette;
 pub mod spot;
+pub mod spot_ai_analysis;
 pub mod square;
 pub mod strategy_help;
 pub mod task_board;

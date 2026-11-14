@@ -19,6 +19,7 @@ use crate::ui::{
     market::{MarketProductsEvent, MarketProductsPage},
     palette,
     spot::SpotPage,
+    spot_ai_analysis::{SpotAiAnalysisEvent, SpotAiAnalysisPage},
     square::{SquareKeySettingsPage, SquareSendLogsPage, SquareTasksPage},
     strategy_help::StrategyHelpPage,
     task_board::TaskBoardPage,
@@ -26,7 +27,7 @@ use crate::ui::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
         OpenAlphaTokens, OpenCalculator, OpenCryptoNews, OpenEntertainmentNews, OpenDailyMaSignals, OpenDocumentConvert,
         OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols,
-        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenStrategyHelp,
+        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenSpotAiAnalysis, OpenStrategyHelp,
         OpenTaskBoard, OpenWalletGenerator, OpenXAssistant,
     },
     tools::DocumentConvertPage,
@@ -53,6 +54,7 @@ pub struct Dashboard {
     alpha_heatmap_page: Option<Entity<AlphaHeatmapPage>>,
     alpha_daily_ma_signal_page: Option<Entity<AlphaDailyMaSignalPage>>,
     spot_page: Option<Entity<SpotPage>>,
+    spot_ai_analysis_page: Option<Entity<SpotAiAnalysisPage>>,
     spot_backtest_page: Option<Entity<SpotBacktestPage>>,
     daily_ma_signal_page: Option<Entity<DailyMaSignalPage>>,
     kline_candlestick_page: Option<Entity<KlineCandlestickPage>>,
@@ -89,6 +91,7 @@ enum ActivePage {
     AlphaHeatmap,
     AlphaDailyMaSignal,
     Spot,
+    SpotAiAnalysis,
     SpotBacktest,
     DailyMaSignal,
     KlineCandlestick,
@@ -134,6 +137,7 @@ impl Dashboard {
             alpha_heatmap_page: None,
             alpha_daily_ma_signal_page: None,
             spot_page: None,
+            spot_ai_analysis_page: None,
             spot_backtest_page: None,
             daily_ma_signal_page: None,
             kline_candlestick_page: None,
@@ -165,6 +169,15 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.open_spot_page(window, cx);
+    }
+
+    fn on_open_spot_ai_analysis(
+        &mut self,
+        _: &OpenSpotAiAnalysis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_spot_ai_analysis_page(window, cx);
     }
 
     fn on_open_market_products(
@@ -273,6 +286,31 @@ impl Dashboard {
         match event {
             AiChatEvent::OpenProviders => self.open_ai_providers_page(window, cx),
             AiChatEvent::OpenRules => self.open_ai_rules_page(window, cx),
+        }
+    }
+
+    fn on_spot_ai_analysis_event(
+        &mut self,
+        _: &Entity<SpotAiAnalysisPage>,
+        event: &SpotAiAnalysisEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SpotAiAnalysisEvent::AnalyzeWithAi { prompt, display_content } => {
+                self.ai_providers_page = None;
+                self.ai_rules_page = None;
+                self.ai_providers_maximized = false;
+                self.ai_chat_panel.update(cx, |panel, cx| {
+                    panel.submit_external_prompt(
+                        prompt.clone(),
+                        display_content.clone(),
+                        Some(("spot_ai_analysis".to_string(), "现货 AI 分析".to_string())),
+                        cx,
+                    );
+                });
+                cx.notify();
+            }
         }
     }
 
@@ -577,6 +615,20 @@ impl Dashboard {
             self.spot_page = Some(cx.new(|cx| SpotPage::new(window, cx)));
         }
         self.activate_page(ActivePage::Spot, cx);
+        cx.notify();
+    }
+
+    fn open_spot_ai_analysis_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.spot_ai_analysis_page.is_none() {
+            let page = cx.new(|cx| SpotAiAnalysisPage::new(window, cx));
+            self._subscriptions.push(cx.subscribe_in(
+                &page,
+                window,
+                Self::on_spot_ai_analysis_event,
+            ));
+            self.spot_ai_analysis_page = Some(page);
+        }
+        self.activate_page(ActivePage::SpotAiAnalysis, cx);
         cx.notify();
     }
 
@@ -890,6 +942,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::SpotAiAnalysis => self
+                .spot_ai_analysis_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::SpotBacktest => self
                 .spot_backtest_page
                 .as_ref()
@@ -1141,6 +1205,7 @@ impl Render for Dashboard {
             .bg(bg)
             .text_color(fg)
             .on_action(cx.listener(Self::on_open_spot_symbols))
+            .on_action(cx.listener(Self::on_open_spot_ai_analysis))
             .on_action(cx.listener(Self::on_open_market_products))
             .on_action(cx.listener(Self::on_open_market_heatmap))
             .on_action(cx.listener(Self::on_open_spot_backtest))
