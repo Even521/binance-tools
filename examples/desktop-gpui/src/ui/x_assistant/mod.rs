@@ -635,7 +635,6 @@ impl XAssistantPage {
         };
         div()
             .id("x-task-auto-reply")
-            .small()
             .rounded(px(6.))
             .border_1()
             .border_color(palette::border(theme))
