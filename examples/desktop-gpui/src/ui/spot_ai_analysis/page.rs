@@ -10,6 +10,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     table::{Table as DataTable, TableState},
+    tooltip::Tooltip,
     v_flex,
 };
 use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSnapshot, analyze_market, build_report_prompt};
@@ -200,12 +201,36 @@ impl SpotAiAnalysisPage {
 
         let theme = cx.theme();
         let dimensions = [
-            ("趋势结构", row.trend_score),
-            ("成交活跃度", row.volume_score),
-            ("日线均价偏离", row.technical_score),
-            ("波动风险", row.risk_score),
-            ("市场情绪", row.sentiment_score),
-            ("流动性参考", row.liquidity_score),
+            (
+                "趋势结构",
+                row.trend_score,
+                "权重 25%。依据 24 小时涨跌幅计算：50 + 涨跌幅(%) × 5，结果限制在 0～100 分。涨幅为 0 时得 50 分；涨跌幅每变化 1 个百分点，分数变化 5 分。它反映短期价格方向，不代表趋势一定持续。",
+            ),
+            (
+                "成交活跃度",
+                row.volume_score,
+                "权重 20%。取该币种 24 小时 USDT 成交额，在本次符合条件的 USDT 现货候选币种中计算百分位排名。排名越靠前得分越高；这是相对排名，不代表资金净流入。",
+            ),
+            (
+                "日线均价偏离",
+                row.technical_score,
+                "权重 20%。依据本地缓存的近 30 日日线收盘均价偏离：55 + 偏离幅度(%) × 4，结果限制在 0～100 分。偏离为正表示价格高于均价，偏离为负表示低于均价。缺少完整均线缓存时暂按 50 分。",
+            ),
+            (
+                "波动风险",
+                row.risk_score,
+                "权重 15%。先计算 24 小时振幅：(24h 最高价 - 24h 最低价) ÷ 24h 最低价 × 100%；再按 100 - 振幅(%) × 4 计分，并限制在 0～100 分。振幅越大，风险参考分越低。",
+            ),
+            (
+                "市场情绪",
+                row.sentiment_score,
+                "权重 10%。当前尚未接入新闻、社交媒体或情绪数据源，因此统一使用 50 分作为中性占位值。这个分数不代表系统已经判断出市场情绪。",
+            ),
+            (
+                "流动性参考",
+                row.liquidity_score,
+                "权重 10%。由成交活跃度百分位排名 × 70% + 振幅参考分 × 30% 组成；振幅参考分为 100 - 振幅(%) × 2，并限制在 0～100 分。当前没有盘口深度、买卖价差数据，因此不能等同于真实盘口流动性。",
+            ),
         ];
 
         v_flex()
@@ -266,11 +291,20 @@ impl SpotAiAnalysisPage {
                     .child(detail_stat("24h 振幅", amplitude_percent(&row.product), theme)),
             )
             .child(div().text_size(px(12.)).font_semibold().child("六维研究评分"))
-            .children(dimensions.into_iter().map(|(label, score)| {
+            .children(dimensions.into_iter().map(|(label, score, explanation)| {
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(div().w(px(74.)).text_size(px(11.)).text_color(palette::muted(theme)).child(label))
+                    .child(
+                        div()
+                            .w(px(74.))
+                            .text_size(px(11.))
+                            .text_color(palette::muted(theme))
+                            .child(format!("{label} ⓘ"))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| Tooltip::new(explanation))
+                            }),
+                    )
                     .child(
                         div()
                             .flex_1()
