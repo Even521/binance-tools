@@ -30,9 +30,19 @@ pub struct AnalysisResult {
     pub volume_score: f64,
     pub technical_score: f64,
     pub risk_score: f64,
-    pub sentiment_score: f64,
+    pub sentiment_score: f64,\n    pub sentiment_value: f64,\n    pub sentiment_classification: String,\n    pub sentiment_update_time: String,
     pub liquidity_score: f64,
     pub total_score: f64,
     pub trend_label: String,
     pub basis: String,
+}
+
+
+/// CoinMarketCap 全市场恐惧与贪婪指数。
+#[derive(Clone, Debug)]
+pub struct MarketSentiment {
+    /// 指数原始值，范围 0..=100。
+    pub value: f64,
+    pub classification: String,
+    pub update_time: String,
 }
