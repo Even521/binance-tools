@@ -986,11 +986,13 @@ impl XAssistantPage {
             .w(px(112.))
             .gap_1()
             .child(
-                Button::new("x-assistant-reply-flow-tab")
-                    .ghost()
-                    .small()
-                    .label("自动回复")
-                    .on_click(cx.listener(|this, _, _, cx| this.show_reply_flow(cx))),
+                div()
+                    .id("x-assistant-reply-flow-tab")
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.show_reply_flow(cx)))
+                    .child("自动回复"),
             )
             .child(
                 div()
@@ -1000,17 +1002,20 @@ impl XAssistantPage {
             )
             .into_any_element()
     }
+
     fn render_auto_post_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_auto_post;
         v_flex()
             .w(px(112.))
             .gap_1()
             .child(
-                Button::new("x-assistant-auto-post-tab")
-                    .ghost()
-                    .small()
-                    .label("自动发帖")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_auto_post(cx))),
+                div()
+                    .id("x-assistant-auto-post-tab")
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.open_auto_post(cx)))
+                    .child("自动发帖"),
             )
             .child(
                 div()
@@ -1020,6 +1025,7 @@ impl XAssistantPage {
             )
             .into_any_element()
     }
+
     fn render_start_all_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         Button::new("x-assistant-start-all-automation")
@@ -1059,11 +1065,13 @@ impl XAssistantPage {
             .w(px(112.))
             .gap_1()
             .child(
-                Button::new("x-assistant-reply-list-tab")
-                    .ghost()
-                    .small()
-                    .label("回复列表")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_reply_list(window, cx))),
+                div()
+                    .id("x-assistant-reply-list-tab")
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.open_reply_list(window, cx)))
+                    .child("回复列表"),
             )
             .child(
                 div()
@@ -1073,17 +1081,20 @@ impl XAssistantPage {
             )
             .into_any_element()
     }
+
     fn render_post_history_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_post_history;
         v_flex()
             .w(px(112.))
             .gap_1()
             .child(
-                Button::new("x-assistant-post-history-tab")
-                    .ghost()
-                    .small()
-                    .label("发帖历史")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_post_history(window, cx))),
+                div()
+                    .id("x-assistant-post-history-tab")
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.open_post_history(window, cx)))
+                    .child("发帖历史"),
             )
             .child(
                 div()
@@ -1093,17 +1104,20 @@ impl XAssistantPage {
             )
             .into_any_element()
     }
+
     fn render_task_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.show_task_settings;
         v_flex()
             .w(px(112.))
             .gap_1()
             .child(
-                Button::new("x-assistant-task-settings-tab")
-                    .ghost()
-                    .small()
-                    .label("任务设置")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_task_settings(cx))),
+                div()
+                    .id("x-assistant-task-settings-tab")
+                    .px_2()
+                    .py_1()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.open_task_settings(cx)))
+                    .child("任务设置"),
             )
             .child(
                 div()
@@ -1113,6 +1127,7 @@ impl XAssistantPage {
             )
             .into_any_element()
     }
+
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建运行状态按钮"); }
         let status_button = self.render_status_tab_button(cx);
