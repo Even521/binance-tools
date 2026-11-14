@@ -336,7 +336,7 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
                 ocr::locate_discard_draft_button(&after_escape.png)?
             {
                 automation::log_event("全自动恢复：发现草稿确认框，点击‘放弃’以关闭未发送回复。");
-                native::click_at_client_position(discard_x, discard_y)?;
+                native::click_at_desktop_position(discard_x, discard_y)?;
                 wait_cancel(cancel, Duration::from_millis(700))?;
                 let after_discard = capture_desktop(
                     &dir,
@@ -347,19 +347,9 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
                 current_url = ocr::recognize_current_url(&after_discard.png)?;
             } else if ocr::recognize_save_draft_confirmation(&after_escape.png)? {
                 automation::log_event(
-                    "全自动恢复：发现草稿确认框（未精准定位放弃按钮），点击备用位置关闭。",
+                    "全自动恢复：发现草稿确认框，但未能精准定位‘放弃’按钮；为避免误点，不执行备用坐标点击。",
                 );
-                let fallback_x = after_escape.width as i32 * 50 / 100;
-                let fallback_y = after_escape.height as i32 * 60 / 100;
-                native::click_at_client_position(fallback_x, fallback_y)?;
-                wait_cancel(cancel, Duration::from_millis(700))?;
-                let after_discard = capture_desktop(
-                    &dir,
-                    &id,
-                    "full-auto-error-state-after-discard",
-                    &mut screenshots,
-                )?;
-                current_url = ocr::recognize_current_url(&after_discard.png)?;
+                current_url = ocr::recognize_current_url(&after_escape.png)?;
             } else {
                 current_url = ocr::recognize_current_url(&after_escape.png)?;
             }
@@ -389,7 +379,7 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
             {
                 automation::log_event("全自动恢复：识别到草稿放弃按钮，点击识别到的按钮坐标。");
 
-                native::click_at_client_position(discard_x, discard_y)?;
+                native::click_at_desktop_position(discard_x, discard_y)?;
                 std::thread::sleep(Duration::from_millis(700));
 
                 let after_discard = capture_desktop(
