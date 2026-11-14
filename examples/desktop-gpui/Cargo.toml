@@ -23,6 +23,7 @@ binance_tools = { path = "../.." }
 crypto-rss = { path = "../../crates/crypto-rss" }
 evm-wallet = { path = "../../crates/evm-wallet" }
 ocr-rs = { path = "../../crates/ocr-rs" }
+spot-ai-analysis = { path = "../../crates/spot-ai-analysis" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "png"] }
 
