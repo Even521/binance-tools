@@ -553,11 +553,14 @@ async fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
     }
 
     let fetched = async {
-        let response = reqwest::get(
-            "https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest",
-        )
-        .await?
-        .error_for_status()?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .build()?;
+        let response = client
+            .get("https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest")
+            .send()
+            .await?
+            .error_for_status()?;
         let payload: serde_json::Value = response.json().await?;
         let data = payload
             .get("data")
