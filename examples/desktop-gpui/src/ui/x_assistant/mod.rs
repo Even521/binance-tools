@@ -948,18 +948,28 @@ fn load_reply_rules() -> String {
 
 impl XAssistantPage {
     // 将每个按钮拆分到独立函数，避免在 GPUI render 回调中创建一个过大的临时栈帧。
-    fn render_status_tab_button(&self, _cx: &mut Context<Self>) -> AnyElement {
-        // 临时隔离 GPUI Button：历史崩溃日志停在容器 .child(button)。
-        // 先用普通 div 验证页面能否完成首帧渲染。
+    fn render_status_tab_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        // 使用 GPUI 原生 div 处理点击，绕开历史崩溃点：容器 .child(Button)。
         let selected = self.show_run_status;
         v_flex()
             .w(px(112.))
             .gap_1()
             .child(
                 div()
+                    .id("x-assistant-status-tab")
                     .px_2()
                     .py_1()
-                    .child("运行状态（诊断）"),
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.log_tail = Some(run_log::LogTail::new());
+                        this.show_run_status = true;
+                        this.show_reply_list = false;
+                        this.show_post_history = false;
+                        this.show_task_settings = false;
+                        this.show_auto_post = false;
+                        cx.notify();
+                    }))
+                    .child("运行状态"),
             )
             .child(
                 div()
