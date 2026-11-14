@@ -101,6 +101,23 @@ mod tests {
     }
 
     #[test]
+    fn uses_coinmarketcap_sentiment_value() {
+        let sentiment = MarketSentiment {
+            value: 73.0,
+            classification: "贪婪".into(),
+            update_time: "2026-11-14T00:00:00Z".into(),
+        };
+        let rows = analyze_market_with_sentiment(
+            &[sample("BTC", 1.0, 5000.0)],
+            &[],
+            Some(&sentiment),
+        );
+        assert_eq!(rows[0].sentiment_score, 73.0);
+        assert_eq!(rows[0].sentiment_value, 73.0);
+        assert_eq!(rows[0].sentiment_classification, "贪婪");
+    }
+
+    #[test]
     fn score_weights_sum_to_one() {
         assert!((SCORE_WEIGHTS.iter().sum::<f64>() - 1.0).abs() < f64::EPSILON);
     }
