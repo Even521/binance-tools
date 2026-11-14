@@ -550,6 +550,40 @@ pub(super) mod native {
         click_current_position()
     }
 
+    /// 将全桌面截图中的屏幕坐标转换为浏览器客户区坐标后点击。
+    /// 全桌面 OCR 返回的是屏幕坐标，不能直接传给 click_at_client_position。
+    pub fn click_at_desktop_position(screen_x: i32, screen_y: i32) -> anyhow::Result<()> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        anyhow::ensure!(!hwnd.is_invalid(), "无法找到前台浏览器窗口");
+        let mut class_name = [0u16; 128];
+        let count = unsafe { GetClassNameW(hwnd, &mut class_name) }.max(0) as usize;
+        let class_name = String::from_utf16_lossy(&class_name[..count]);
+        anyhow::ensure!(
+            class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass",
+            "全桌面坐标点击前，浏览器必须处于前台"
+        );
+
+        let mut client_point = POINT { x: screen_x, y: screen_y };
+        anyhow::ensure!(
+            unsafe { ScreenToClient(hwnd, &mut client_point) }.as_bool(),
+            "无法将全桌面屏幕坐标转换为浏览器客户区坐标"
+        );
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rect)? };
+        anyhow::ensure!(
+            client_point.x >= rect.left
+                && client_point.x < rect.right
+                && client_point.y >= rect.top
+                && client_point.y < rect.bottom,
+            "全桌面 OCR 点击坐标 ({screen_x}, {screen_y}) 不在浏览器客户区内，拒绝点击"
+        );
+        super::log_event(&format!(
+            "全桌面 OCR 坐标转换：屏幕 ({screen_x}, {screen_y}) -> 浏览器客户区 ({}, {})",
+            client_point.x, client_point.y
+        ));
+        click_at_client_position(client_point.x, client_point.y)
+    }
+
     /// 获取当前浏览器客户区尺寸，不采集截图。
     ///
     /// 用于鼠标定位等只需要窗口宽高的场景，
@@ -706,6 +740,9 @@ pub(super) mod native {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn click_at_client_position(_: i32, _: i32) -> anyhow::Result<()> {
+        bail!("X 辅助桌面控制仅支持 Windows")
+    }
+    pub fn click_at_desktop_position(_: i32, _: i32) -> anyhow::Result<()> {
         bail!("X 辅助桌面控制仅支持 Windows")
     }
     pub fn press_f5() -> anyhow::Result<()> {
