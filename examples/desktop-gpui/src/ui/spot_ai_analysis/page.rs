@@ -14,7 +14,7 @@ use gpui_component::{
     v_flex,
 };
 use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
 pub enum SpotAiAnalysisEvent {
     AnalyzeWithAi { prompt: String, display_content: String },
@@ -291,7 +291,7 @@ impl SpotAiAnalysisPage {
             .child(div().h(px(1.)).bg(palette::border(theme)))
             .child(div().text_size(px(12.)).font_semibold().child("行情摘要"))
             .child(detail_stat("市场恐惧贪婪指数", format!("{:.0} · {}", row.sentiment_value, row.sentiment_classification), theme))
-            .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 更新于 {}", if row.sentiment_update_time.is_empty() { "暂无数据" } else { &row.sentiment_update_time })))
+            .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 北京时间 {}", format_beijing_time(&row.sentiment_update_time))))
             .child(
                 h_flex()
                     .gap_2()
@@ -543,6 +543,13 @@ fn amplitude_percent(product: &MarketProduct) -> String {
 
 /// CMC Keyless Public API：无需 API Key，接口缓存/更新频率为 15 分钟。
 async fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, MarketSentiment)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Some((cached_at, value)) = cache.lock().ok().and_then(|guard| guard.clone()) {
+        if cached_at.elapsed() < Duration::from_secs(15 * 60) {
+            return Ok(value);
+        }
+    }
     let response = reqwest::get(
         "https://pro-api.coinmarketcap.com/public-api/v3/fear-and-greed/latest",
     )
@@ -559,19 +566,34 @@ async fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
     if !(0.0..=100.0).contains(&value) {
         anyhow::bail!("CMC 恐惧贪婪指数超出 0～100 范围：{value}");
     }
-    let classification = data
+    let raw_classification = data
         .get("value_classification")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("Unknown")
-        .to_string();
+        .unwrap_or("Unknown");
+    let classification = match raw_classification {
+        "Extreme Fear" => "极度恐惧",
+        "Fear" => "恐惧",
+        "Neutral" => "中性",
+        "Greed" => "贪婪",
+        "Extreme Greed" => "极度贪婪",
+        other => other,
+    }.to_string();
     let update_time = data
         .get("update_time")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_string();
-    Ok(MarketSentiment {
-        value,
-        classification,
-        update_time,
-    })
+    let sentiment = MarketSentiment { value, classification, update_time };
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), sentiment.clone()));
+    }
+    Ok(sentiment)
+}
+
+fn format_beijing_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .and_then(|time| chrono::FixedOffset::east_opt(8 * 60 * 60).map(|offset| time.with_timezone(&offset)))
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| if value.is_empty() { "暂无数据".to_string() } else { value.to_string() })
 }
