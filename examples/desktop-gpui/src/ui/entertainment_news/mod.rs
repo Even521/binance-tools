@@ -3,7 +3,7 @@ use binance_tools::{
     ai::{AiSettings, ChatMessage, send_news_rewrite_chat_blocking},
     db::{
         entertainment_news::{
-            NewsItemEntity, delete_all_news, insert_news_items, update_news_rewrite,
+            NewsItemEntity, delete_all_news, delete_news_older_than_three_days, insert_news_items, update_news_rewrite,
         },
         open_default_connection,
     },
@@ -56,6 +56,7 @@ pub struct EntertainmentNewsPage {
     is_rewriting: bool,
     _rewrite_task: Task<()>,
     clear_confirm: bool,
+    clear_old_confirm: bool,
 }
 
 struct EntertainmentNewsRewriteRequested {
@@ -102,6 +103,7 @@ impl EntertainmentNewsPage {
             is_rewriting: false,
             _rewrite_task: Task::ready(()),
             clear_confirm: false,
+            clear_old_confirm: false,
         };
         instance.reload_news(cx);
         instance
@@ -276,6 +278,34 @@ impl EntertainmentNewsPage {
             Err(err) => {
                 self.clear_confirm = false;
                 self.error = Some(format!("清空数据失败：{err}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_clear_old_click(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_syncing { return; }
+        if !self.clear_old_confirm {
+            self.clear_old_confirm = true;
+            self.status = Some("再次点击‘确认清理’将删除发布时间早于 3 天前的娱乐新闻；无发布时间的新闻按采集时间计算。".to_string());
+            cx.notify();
+            return;
+        }
+        match (|| -> anyhow::Result<usize> {
+            let conn = open_default_connection()?;
+            delete_news_older_than_three_days(&conn)
+        })() {
+            Ok(deleted) => {
+                self.clear_old_confirm = false;
+                self.clear_confirm = false;
+                self.rewrite_open = false;
+                self.status = Some(format!("已清理 3 天前的娱乐新闻，共删除 {deleted} 条。"));
+                self.error = None;
+                self.reload_news(cx);
+            }
+            Err(err) => {
+                self.clear_old_confirm = false;
+                self.error = Some(format!("清理旧数据失败：{err}"));
             }
         }
         cx.notify();
@@ -751,10 +781,18 @@ impl Render for EntertainmentNewsPage {
                                             .on_click(cx.listener(Self::on_sync_click)),
                                     )
                                     .child(
+                                        Button::new("clear_entertainment_old_news_btn")
+                                            .outline()
+                                            .xsmall()
+                                            .label(if self.clear_old_confirm { "确认清理" } else { "清空 3 天前" })
+                                            .disabled(self.is_syncing || self.news_items.is_empty())
+                                            .on_click(cx.listener(Self::on_clear_old_click)),
+                                    )
+                                    .child(
                                         Button::new("clear_entertainment_news_btn")
                                             .outline()
                                             .xsmall()
-                                            .label(if self.clear_confirm { "确认清空" } else { "清空数据" })
+                                            .label(if self.clear_confirm { "确认清空" } else { "清空所有" })
                                             .disabled(self.is_syncing || self.news_items.is_empty())
                                             .on_click(cx.listener(Self::on_clear_all_click)),
                                     ),
