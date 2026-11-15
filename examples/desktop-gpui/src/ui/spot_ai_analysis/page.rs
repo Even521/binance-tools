@@ -446,8 +446,7 @@ impl SpotAiAnalysisPage {
                                         )
                                     }),
                             )
-                            .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true)))
-,
+                            .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true))),
                     ),
             )
             .child(
