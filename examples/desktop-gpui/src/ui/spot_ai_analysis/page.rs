@@ -14,7 +14,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use spot_ai_analysis::{AnalysisResult, DailyKlineSnapshot, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
+use spot_ai_analysis::{AnalysisResult, BacktestCandle, BacktestResult, DailyKlineSnapshot, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt, run_backtest};
 use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +63,9 @@ pub struct SpotAiAnalysisPage {
     error: Option<String>,
     loading: bool,
     scanned_count: usize,
+    backtest_result: Option<BacktestResult>,
+    backtest_loading: bool,
+    _backtest_task: Task<()>,
     _load_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -94,6 +97,9 @@ impl SpotAiAnalysisPage {
             error: None,
             loading: false,
             scanned_count: 0,
+            backtest_result: None,
+            backtest_loading: false,
+            _backtest_task: Task::ready(()),
             _load_task: Task::ready(()),
             _subscriptions,
         };
@@ -487,9 +493,58 @@ impl SpotAiAnalysisPage {
             .into_any_element()
     }
 
+    fn run_backtest(&mut self, cx: &mut Context<Self>) {
+        if self.backtest_loading { return; }
+        self.backtest_loading = true;
+        self.error = None;
+        cx.notify();
+        self._backtest_task = cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let cached = binance_tools::db::spot::load_cached_usdt_daily_klines_for_backtest_blocking()?;
+                let mut candles = Vec::new();
+                for (symbol, rows) in cached {
+                    if !symbol.ends_with("USDT") { continue; }
+                    let base_asset = symbol.trim_end_matches("USDT").to_string();
+                    for row in rows {
+                        candles.push(BacktestCandle {
+                            symbol: symbol.clone(), base_asset: base_asset.clone(),
+                            asset_name: base_asset.clone(), open_time: row.open_time,
+                            high: row.high_price, low: row.low_price, close: row.close_price,
+                            quote_turnover: row.close_price * row.volume,
+                        });
+                    }
+                }
+                if candles.is_empty() {
+                    anyhow::bail!("本地 SQLite 没有已收盘的 USDT 日线数据，请先在量化选币页点击“同步”。");
+                }
+                Ok::<_, anyhow::Error>(run_backtest(&candles, 180))
+            }).await;
+            _ = this.update(cx, |this, cx| {
+                this.backtest_loading = false;
+                match result {
+                    Ok(result) if result.points.is_empty() => {
+                        this.backtest_result = Some(result);
+                        this.error = Some("可用历史不足：回测需要至少 121 根预热日线，并且至少 2 个连续评估交易日。请先同步更长时间的日线历史。".to_string());
+                    }
+                    Ok(result) => {
+                        app_log::info!("[现货回测] 完成 symbols={} points={} return={:.2}% max_drawdown={:.2}%",
+                            result.data_symbols, result.points.len(), result.total_return_percent, result.max_drawdown_percent);
+                        this.backtest_result = Some(result);
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("回测失败：{:#}", error));
+                        app_log::error!("[现货回测] 执行失败 error={:#}", error);
+                    }
+                }
+                cx.notify();
+            });
+        });
+    }
+
     fn render_backtest_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        v_flex()
+        let result = self.backtest_result.as_ref();
+        let mut view = v_flex()
             .flex_1()
             .w_full()
             .min_h(px(420.))
@@ -499,15 +554,39 @@ impl SpotAiAnalysisPage {
             .bg(palette::surface_strong(theme))
             .border_1()
             .border_color(palette::border(theme))
-            .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
-            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child("回测引擎尚未接入，当前不会展示虚构的收益率、胜率或最大回撤。"))
-            .child(div().h(px(1.)).bg(palette::border(theme)))
-            .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("计划验证的策略"))
-            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("1–7 天持有周期；趋势与动量、成交活跃度、波动风险、价格位置、流动性和市场情绪六因子；回调入场与放量突破两种信号分别测试；ATR 动态止损、分批止盈和最长持有期限。"))
-            .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测评价指标"))
-            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("扣除手续费和滑点后的净收益、胜率、盈亏比、Profit Factor、最大回撤、Sharpe Ratio、平均持仓天数及连续亏损次数。"))
-            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("下一阶段将复用本地 SQLite K 线缓存，按时间切分训练与验证区间，避免未来数据泄漏。"))
-            .into_any_element()
+            .child(h_flex().items_center().justify_between()
+                .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
+                .child(Button::new("spot-ai-run-backtest").primary().small()
+                    .label(if self.backtest_loading { "回测计算中…" } else { "运行最近 180 天回测" })
+                    .loading(self.backtest_loading).disabled(self.backtest_loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.run_backtest(cx)))))
+            .child(div().text_size(px(11.)).text_color(palette::muted(theme))
+                .child("V2 六因子横截面排名 · 每日收盘评分、下一交易日执行 · 前 5 名等权 · 单次往返成本估算 0.30% · BTC 买入持有基准"));
+        if let Some(result) = result {
+            view = view
+                .child(h_flex().gap_2()
+                    .child(detail_stat_colored("策略净收益", format!("{:+.2}%", result.total_return_percent), change_color(Some(result.total_return_percent), theme), theme))
+                    .child(detail_stat_colored("BTC 基准", format!("{:+.2}%", result.benchmark_return_percent), change_color(Some(result.benchmark_return_percent), theme), theme))
+                    .child(detail_stat_colored("最大回撤", format!("{:.2}%", result.max_drawdown_percent), theme.danger, theme))
+                    .child(detail_stat("胜率", format!("{:.1}%", result.win_rate_percent), theme))
+                    .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme)))
+                .child(div().text_size(px(11.)).text_color(palette::muted(theme))
+                    .child(format!("区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
+                        result.start_date, result.end_date, result.data_symbols, result.trade_days, result.selected_days)))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("账户资金曲线（柱形趋势）"))
+                .child(render_backtest_bars(&result.points, false, theme))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("BTC 基准曲线"))
+                .child(render_backtest_bars(&result.points, true, theme))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("策略回撤"))
+                .child(render_drawdown_bars(&result.points, theme));
+        } else {
+            view = view
+                .child(div().h(px(1.)).bg(palette::border(theme)))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测规则"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 121 根用于指标预热，最近 180 天用于评估。每个交易日只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每天选取综合评分前 5 名，等权持有至下一根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
+        }
+        view.into_any_element()
     }
 
 }
@@ -608,6 +687,28 @@ impl Render for SpotAiAnalysisPage {
                 SpotAiView::Backtest => self.render_backtest_view(cx),
             })
     }
+}
+
+fn render_backtest_bars(points: &[spot_ai_analysis::BacktestPoint], benchmark: bool, theme: &gpui_component::Theme) -> AnyElement {
+    if points.is_empty() { return div().child("暂无回测数据").into_any_element(); }
+    let stride = (points.len() / 60).max(1);
+    let values = points.iter().step_by(stride).map(|p| if benchmark { p.benchmark } else { p.equity }).collect::<Vec<_>>();
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = (max - min).max(1.0);
+    h_flex().w_full().h(px(150.)).items_end().gap(px(2.)).children(values.into_iter().map(|value| {
+        let height = (18.0 + (value - min) / range * 112.0) as f32;
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded_t(px(2.))
+            .bg(if benchmark { theme.info } else { theme.success }.opacity(0.78))
+    })).into_any_element()
+}
+
+fn render_drawdown_bars(points: &[spot_ai_analysis::BacktestPoint], theme: &gpui_component::Theme) -> AnyElement {
+    let stride = (points.len() / 60).max(1);
+    h_flex().w_full().h(px(90.)).items_end().gap(px(2.)).children(points.iter().step_by(stride).map(|point| {
+        let height = (point.drawdown_percent.abs().min(100.0) / 100.0 * 78.0).max(2.0) as f32;
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded_t(px(2.)).bg(theme.danger.opacity(0.78))
+    })).into_any_element()
 }
 
 fn build_analysis_rows(
