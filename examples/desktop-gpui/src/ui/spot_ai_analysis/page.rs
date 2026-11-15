@@ -308,7 +308,6 @@ impl SpotAiAnalysisPage {
             .child(
                 h_flex()
                     .w_full()
-                    .items_stretch()
                     .gap_2()
                     .child(detail_stat_colored("24h 涨跌", format_signed_percent(row.product.price_change_percent), change_color(row.product.price_change_percent, theme), theme))
                     .child(detail_stat("最新价格", format_price(row.product.last_price), theme))
