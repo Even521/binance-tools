@@ -572,7 +572,7 @@ impl SpotAiAnalysisPage {
                     .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme)))
                 .child(div().text_size(px(11.)).text_color(palette::muted(theme))
                     .child(format!("区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
-                        result.start_date, result.end_date, result.data_symbols, result.trade_days, result.selected_days)))
+                        result.start_date, result.end_date, result.data_symbols, result.points.len(), result.selected_days)))
                 .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("账户资金曲线（柱形趋势）"))
                 .child(render_backtest_bars(&result.points, false, theme))
                 .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("BTC 基准曲线"))
@@ -584,7 +584,7 @@ impl SpotAiAnalysisPage {
                 .child(div().h(px(1.)).bg(palette::border(theme)))
                 .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测规则"))
                 .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 30 根用于指标预热，最近 180 天用于评估。每个交易日只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
-                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每天选取综合评分前 5 名，等权持有至下一根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每 3 个交易日选取综合评分前 5 名，下一交易日买入并等权持有 3 根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
         }
         view.into_any_element()
     }
