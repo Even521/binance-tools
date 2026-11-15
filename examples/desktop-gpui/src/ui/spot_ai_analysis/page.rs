@@ -14,7 +14,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
+use spot_ai_analysis::{AnalysisResult, DailyKlineSnapshot, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
 use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +129,7 @@ impl SpotAiAnalysisPage {
                     SpotLoadMode::Refresh => binance_tools::db::market::refresh_market_products_blocking()?,
                 };
                 let cached_ma = binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30).unwrap_or_default();
+                let cached_daily = binance_tools::db::spot::load_cached_usdt_daily_klines_blocking().unwrap_or_default();
                 let cached_ma120 = if matches!(mode, SpotLoadMode::Sync) {
                     match binance_tools::db::spot::load_or_fetch_usdt_daily_ma_signals_blocking(BinanceSettings::production(), 120) {
                         Ok(signals) => signals,
@@ -139,7 +140,7 @@ impl SpotAiAnalysisPage {
                     }
                 } else { binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120).unwrap_or_default() };
                 let sentiment = if matches!(mode, SpotLoadMode::Cache) { None } else { fetch_cmc_sentiment().ok() };
-                let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, sentiment.as_ref());
+                let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, &cached_daily, sentiment.as_ref());
                 Ok::<_, anyhow::Error>((rows, sentiment))
             }).await;
             _ = this.update(cx, |this, cx| {
@@ -240,34 +241,34 @@ impl SpotAiAnalysisPage {
         let theme = cx.theme();
         let dimensions = [
             (
-                "趋势结构",
+                "趋势与动量",
                 row.trend_score,
-                "权重 25%。依据 24 小时涨跌幅计算：50 + 涨跌幅(%) × 5，结果限制在 0～100 分。涨幅为 0 时得 50 分；涨跌幅每变化 1 个百分点，分数变化 5 分。它反映短期价格方向，不代表趋势一定持续。",
+                "权重 30%。使用已收盘日线的 1/3/7 日收益率，并结合价格相对 MA30、MA30 相对 MA120 的结构。历史不足时该因子不计入总分。",
             ),
             (
                 "成交活跃度",
                 row.volume_score,
-                "权重 20%。取该币种 24 小时 USDT 成交额，在本次符合条件的 USDT 现货候选币种中计算百分位排名。排名越靠前得分越高；这是相对排名，不代表资金净流入。",
+                "权重 20%。结合 24 小时成交额在候选币中的百分位，以及缓存日线近 20 日平均成交额。无 20 日历史时只使用可用的相对成交额排名。",
             ),
             (
-                "日线均价偏离",
+                "入场位置",
                 row.technical_score,
-                "权重 20%。依据本地缓存的近 30 日日线收盘均价偏离：55 + 偏离幅度(%) × 4，结果限制在 0～100 分。偏离为正表示价格高于均价，偏离为负表示低于均价。缺少完整均线缓存时暂按 50 分。",
+                "权重 15%。评估价格相对 MA30 的偏离，以及相对近 20 日高点的位置；偏离过大或追高会降低分数。缺少足够日线历史时不参与总分。",
             ),
             (
-                "波动风险",
+                "风险控制",
                 row.risk_score,
-                "权重 15%。先计算 24 小时振幅：(24h 最高价 - 24h 最低价) ÷ 24h 最低价 × 100%；再按 100 - 振幅(%) × 4 计分，并限制在 0～100 分。振幅越大，风险参考分越低。",
+                "权重 20%。根据 ATR14 相对价格的比例和近 7 日最大回撤评估波动风险。历史数据不足时不参与总分。",
             ),
             (
                 "市场情绪",
                 row.sentiment_score,
-                "权重 10%。使用 CoinMarketCap 全市场恐惧与贪婪指数原始值（0～100）作为情绪分。该指标反映整个加密市场，不代表当前交易对的独立情绪。若请求失败则使用 50 分中性占位。",
+                "权重 5%。使用 CoinMarketCap 恐惧与贪婪指数；请求失败时该因子不计入总分，不使用中性占位冒充有效数据。",
             ),
             (
                 "流动性参考",
                 row.liquidity_score,
-                "权重 10%。由成交活跃度百分位排名 × 70% + 振幅参考分 × 30% 组成；振幅参考分为 100 - 振幅(%) × 2，并限制在 0～100 分。当前没有盘口深度、买卖价差数据，因此不能等同于真实盘口流动性。",
+                "权重 10%。当前使用 24 小时 USDT 成交额的相对排名作为流动性代理；尚未接入盘口深度与买卖价差，不能视为真实盘口流动性。",
             ),
         ];
 
@@ -311,7 +312,8 @@ impl SpotAiAnalysisPage {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(detail_stat_colored("综合评分", format!("{:.0} / 100", row.total_score), score_color(row.total_score, theme), theme))
+                    .child(detail_stat_colored("V2 综合评分", format!("{:.0} / 100", row.total_score), score_color(row.total_score, theme), theme))
+                    .child(detail_stat("数据完整度", format!("{:.0}%", row.data_completeness), theme))
                     .child(detail_stat_colored("恐惧与贪婪", format!("{:.0} · {}", row.sentiment_value, row.sentiment_classification), score_color(row.sentiment_value, theme), theme))
             )
             .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 北京时间 {}", format_beijing_time(&row.sentiment_update_time))))
@@ -611,6 +613,7 @@ fn build_analysis_rows(
     products: Vec<MarketProduct>,
     cached_ma: &[binance_tools::binance::spot::DailyMaSignal],
     cached_ma120: &[binance_tools::binance::spot::DailyMaSignal],
+    cached_daily: &HashMap<String, Vec<binance_tools::binance::spot::SpotDailyKline>>,
     sentiment: Option<&MarketSentiment>,
 ) -> Vec<SpotAiAnalysisRow> {
     let inputs = products.iter().map(|p| MarketSnapshot {
@@ -618,6 +621,9 @@ fn build_analysis_rows(
         quote_asset:p.quote_asset.clone(), is_trading:p.is_trading, is_etf:p.is_etf,
         price_change_percent:p.price_change_percent, quote_volume:p.quote_volume,
         last_price:p.last_price, high_price:p.high_price, low_price:p.low_price, volume:p.volume,
+        daily_klines: cached_daily.get(&p.symbol).into_iter().flatten().map(|k| DailyKlineSnapshot {
+            high:k.high_price, low:k.low_price, close:k.close_price, quote_turnover:k.close_price*k.volume,
+        }).collect(),
     }).collect::<Vec<_>>();
     let ma = cached_ma.iter().map(|s| DailyMaSnapshot {
         symbol:s.symbol.clone(), difference_percent:s.difference_percent, samples:s.samples,
@@ -664,7 +670,7 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
         is_trading:row.product.is_trading, is_etf:row.product.is_etf,
         price_change_percent:row.product.price_change_percent, quote_volume:row.product.quote_volume,
         last_price:row.product.last_price, high_price:row.product.high_price,
-        low_price:row.product.low_price, volume:row.product.volume,
+        low_price:row.product.low_price, volume:row.product.volume, daily_klines: Vec::new(),
     };
     let analysis=AnalysisResult {
         symbol:row.product.symbol.clone(), trend_score:row.trend_score, volume_score:row.volume_score,
@@ -672,7 +678,7 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
         sentiment_score:row.sentiment_score, sentiment_value:row.sentiment_value,
         sentiment_classification:row.sentiment_classification.clone(), sentiment_update_time:row.sentiment_update_time.clone(),
         liquidity_score:row.liquidity_score,
-        total_score:row.total_score, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
+        total_score:row.total_score, data_completeness:100.0, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
     };
     build_report_prompt(&market,&analysis)
 }
