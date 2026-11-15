@@ -556,12 +556,12 @@ impl SpotAiAnalysisPage {
             .border_color(palette::border(theme))
             .child(h_flex().items_center().justify_between()
                 .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
-                .child(Button::new("spot-ai-run-backtest").primary().small()
+                .child(Button::new("spot-ai-run-backtest").primary().xsmall()
                     .label(if self.backtest_loading { "回测计算中…" } else { "运行最近 180 天回测" })
                     .loading(self.backtest_loading).disabled(self.backtest_loading)
                     .on_click(cx.listener(|this, _, _, cx| this.run_backtest(cx)))))
             .child(div().text_size(px(11.)).text_color(palette::muted(theme))
-                .child("V2 六因子横截面排名 · 每日收盘评分、下一交易日执行 · 前 5 名等权 · 单次往返成本估算 0.30% · BTC 买入持有基准"));
+                .child("V2 六因子横截面排名 · 每 3 日调仓 · 下一日执行并持有 3 根日线 · 前 5 名等权 · 往返成本估算 0.30% · BTC 买入持有基准"));
         if let Some(result) = result {
             view = view
                 .child(h_flex().gap_2()
