@@ -295,11 +295,25 @@ impl SpotAiAnalysisPage {
                             .child(div().text_size(px(10.)).text_color(palette::muted_soft(theme)).child("现货研究 · USDT")),
                     )
                     .child(
-                        Button::new("spot-ai-deep-analysis")
-                            .primary()
-                            .xsmall()
-                            .label("AI 深度分析")
-                            .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("spot-ai-back-to-quant")
+                                    .outline()
+                                    .xsmall()
+                                    .label("返回量化选币")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_view(SpotAiView::QuantSelection, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("spot-ai-deep-analysis")
+                                    .primary()
+                                    .xsmall()
+                                    .label("AI 深度分析")
+                                    .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
+                            ),
                     ),
             )
             .child(div().h(px(1.)).bg(palette::border(theme)))
