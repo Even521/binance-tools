@@ -18,7 +18,7 @@ use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketS
 use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SpotAiView { QuantSelection, SingleAnalysis, Backtest }
+enum SpotAiView { QuantSelection, Backtest }
 
 #[derive(Clone, Copy, Debug)]
 enum SpotLoadMode { Cache, Sync, Refresh }
@@ -168,7 +168,6 @@ impl SpotAiAnalysisPage {
 
     fn select_symbol(&mut self, symbol: String, cx: &mut Context<Self>) {
         self.selected_symbol = Some(symbol);
-        self.view = SpotAiView::SingleAnalysis;
         cx.notify();
     }
 
@@ -298,15 +297,6 @@ impl SpotAiAnalysisPage {
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                Button::new("spot-ai-back-to-quant")
-                                    .outline()
-                                    .xsmall()
-                                    .label("返回量化选币")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.set_view(SpotAiView::QuantSelection, cx);
-                                    })),
-                            )
                             .child(
                                 Button::new("spot-ai-deep-analysis")
                                     .primary()
@@ -463,16 +453,32 @@ impl SpotAiAnalysisPage {
                     ),
             )
             .child(
-                v_flex()
+                h_flex()
                     .flex_1()
                     .min_h(px(360.))
                     .w_full()
+                    .gap_3()
                     .overflow_hidden()
                     .child(
-                        DataTable::new(&self.table)
-                            .stripe(true)
-                            .bordered(true)
-                            .scrollbar_visible(true, true),
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(500.))
+                            .h_full()
+                            .overflow_hidden()
+                            .child(
+                                DataTable::new(&self.table)
+                                    .stripe(true)
+                                    .bordered(true)
+                                    .scrollbar_visible(true, true),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(410.))
+                            .min_w(px(340.))
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_detail(cx)),
                     ),
             )
             .into_any_element()
@@ -568,14 +574,6 @@ impl Render for SpotAiAnalysisPage {
                                     .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::QuantSelection, cx))),
                             )
                             .child(
-                                Button::new("spot-ai-tab-single")
-                                    .outline()
-                                    .xsmall()
-                                    .label("单币分析")
-                                    .when(self.view == SpotAiView::SingleAnalysis, |button| button.primary())
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
-                            )
-                            .child(
                                 Button::new("spot-ai-tab-backtest")
                                     .outline()
                                     .xsmall()
@@ -586,7 +584,7 @@ impl Render for SpotAiAnalysisPage {
                             .child(
                                 div()
                                     .flex_1()
-                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("多币种筛选、单币研究与策略验证分开展示")),
+                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("左侧筛选排名 · 右侧实时查看所选币种研究")),
                             ),
                     )
             )
@@ -604,7 +602,6 @@ impl Render for SpotAiAnalysisPage {
             })
             .child(match self.view {
                 SpotAiView::QuantSelection => self.render_quant_view(cx),
-                SpotAiView::SingleAnalysis => self.render_detail(cx),
                 SpotAiView::Backtest => self.render_backtest_view(cx),
             })
     }
