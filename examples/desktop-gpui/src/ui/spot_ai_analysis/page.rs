@@ -700,7 +700,7 @@ fn render_backtest_bars(points: &[spot_ai_analysis::BacktestPoint], benchmark: b
     h_flex().w_full().h(px(150.)).items_end().gap(px(2.)).children(values.into_iter().map(|value| {
         let height = (18.0 + (value - min) / range * 112.0) as f32;
         div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.))
-            .bg(if benchmark { theme.primary } else { theme.success }.opacity(0.78))
+            .bg((if benchmark { theme.primary } else { theme.success }).opacity(0.78))
     })).into_any_element()
 }
 
@@ -708,7 +708,7 @@ fn render_drawdown_bars(points: &[spot_ai_analysis::BacktestPoint], theme: &gpui
     let stride = (points.len() / 60).max(1);
     h_flex().w_full().h(px(90.)).items_end().gap(px(2.)).children(points.iter().step_by(stride).map(|point| {
         let height = (point.drawdown_percent.abs().min(100.0) / 100.0 * 78.0).max(2.0) as f32;
-        div().flex_1().min_w(px(1.)).h(px(height)).rounded_t(px(2.)).bg(theme.danger.opacity(0.78))
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.)).bg(theme.danger.opacity(0.78))
     })).into_any_element()
 }
 
