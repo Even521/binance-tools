@@ -524,7 +524,7 @@ impl SpotAiAnalysisPage {
                 match result {
                     Ok(result) if result.points.is_empty() => {
                         this.backtest_result = Some(result);
-                        this.error = Some("可用历史不足：回测需要至少 121 根预热日线，并且至少 2 个连续评估交易日。请先同步更长时间的日线历史。".to_string());
+                        this.error = Some("可用历史不足：回测需要至少 30 根预热日线，并且至少 2 个连续评估交易日。请先同步更长时间的日线历史。".to_string());
                     }
                     Ok(result) => {
                         app_log::info!("[现货回测] 完成 symbols={} points={} return={:.2}% max_drawdown={:.2}%",
@@ -583,7 +583,7 @@ impl SpotAiAnalysisPage {
             view = view
                 .child(div().h(px(1.)).bg(palette::border(theme)))
                 .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测规则"))
-                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 121 根用于指标预热，最近 180 天用于评估。每个交易日只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 30 根用于指标预热，最近 180 天用于评估。每个交易日只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
                 .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每天选取综合评分前 5 名，等权持有至下一根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
         }
         view.into_any_element()
@@ -698,8 +698,8 @@ fn render_backtest_bars(points: &[spot_ai_analysis::BacktestPoint], benchmark: b
     let range = (max - min).max(1.0);
     h_flex().w_full().h(px(150.)).items_end().gap(px(2.)).children(values.into_iter().map(|value| {
         let height = (18.0 + (value - min) / range * 112.0) as f32;
-        div().flex_1().min_w(px(1.)).h(px(height)).rounded_t(px(2.))
-            .bg(if benchmark { theme.info } else { theme.success }.opacity(0.78))
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.))
+            .bg(if benchmark { theme.primary } else { theme.success }.opacity(0.78))
     })).into_any_element()
 }
 
