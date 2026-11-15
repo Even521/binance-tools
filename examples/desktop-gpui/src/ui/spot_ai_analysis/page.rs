@@ -557,7 +557,7 @@ impl SpotAiAnalysisPage {
             .child(h_flex().items_center().justify_between()
                 .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
                 .child(Button::new("spot-ai-run-backtest").primary().xsmall()
-                    .label(if self.backtest_loading { "回测计算中…" } else { "运行最近 180 天回测" })
+                    .label(if self.backtest_loading { "回测计算中…" } else { "运行回测（最多 180 天）" })
                     .loading(self.backtest_loading).disabled(self.backtest_loading)
                     .on_click(cx.listener(|this, _, _, cx| this.run_backtest(cx)))))
             .child(div().text_size(px(11.)).text_color(palette::muted(theme))
@@ -584,7 +584,7 @@ impl SpotAiAnalysisPage {
             view = view
                 .child(div().h(px(1.)).bg(palette::border(theme)))
                 .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测规则"))
-                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 30 根用于指标预热，最近 180 天用于评估。每个交易日只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 30 根用于指标预热，最多回测最近 180 天；若本地缓存不足则自动缩短区间，结果会显示实际起止日期。每次调仓只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
                 .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每 3 个交易日选取综合评分前 5 名，下一交易日买入并等权持有 3 根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
         }
         view.into_any_element()
