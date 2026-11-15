@@ -383,7 +383,6 @@ impl SpotAiAnalysisPage {
         let theme = cx.theme();
         let visible_count = self.table.read(cx).delegate().visible_rows_count();
         let selected_count = self.rows.len();
-        let loading = self.loading;
 
         v_flex()
             .flex_1()
