@@ -130,7 +130,6 @@ impl SpotAiAnalysisPage {
                     SpotLoadMode::Refresh => binance_tools::db::market::refresh_market_products_blocking()?,
                 };
                 let cached_ma = binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30).unwrap_or_default();
-                let cached_daily = binance_tools::db::spot::load_cached_usdt_daily_klines_blocking().unwrap_or_default();
                 let cached_ma120 = if matches!(mode, SpotLoadMode::Sync) {
                     match binance_tools::db::spot::load_or_fetch_usdt_daily_ma_signals_blocking(BinanceSettings::production(), 120) {
                         Ok(signals) => signals,
@@ -140,6 +139,7 @@ impl SpotAiAnalysisPage {
                         }
                     }
                 } else { binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120).unwrap_or_default() };
+                let cached_daily = binance_tools::db::spot::load_cached_usdt_daily_klines_blocking().unwrap_or_default();
                 let sentiment = if matches!(mode, SpotLoadMode::Cache) { None } else { fetch_cmc_sentiment().ok() };
                 let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, &cached_daily, sentiment.as_ref());
                 Ok::<_, anyhow::Error>((rows, sentiment))
