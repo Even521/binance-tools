@@ -168,6 +168,7 @@ impl SpotAiAnalysisPage {
 
     fn select_symbol(&mut self, symbol: String, cx: &mut Context<Self>) {
         self.selected_symbol = Some(symbol);
+        self.view = SpotAiView::SingleAnalysis;
         cx.notify();
     }
 
@@ -446,14 +447,7 @@ impl SpotAiAnalysisPage {
                                     }),
                             )
                             .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true)))
-                            .child(
-                                Button::new("spot-ai-open-single")
-                                    .outline()
-                                    .xsmall()
-                                    .label("单币分析")
-                                    .disabled(self.selected_symbol.is_none() || loading)
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
-                            ),
+,
                     ),
             )
             .child(
