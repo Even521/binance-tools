@@ -569,7 +569,8 @@ impl SpotAiAnalysisPage {
                     .child(detail_stat_colored("BTC 基准", format!("{:+.2}%", result.benchmark_return_percent), change_color(Some(result.benchmark_return_percent), theme), theme))
                     .child(detail_stat_colored("最大回撤", format!("{:.2}%", result.max_drawdown_percent), theme.danger, theme))
                     .child(detail_stat("胜率", format!("{:.1}%", result.win_rate_percent), theme))
-                    .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme)))
+                    .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme))
+                    .child(detail_stat("Sharpe Ratio", format!("{:.2}", result.sharpe_ratio), theme))
                 .child(div().text_size(px(11.)).text_color(palette::muted(theme))
                     .child(format!("区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
                         result.start_date, result.end_date, result.data_symbols, result.points.len(), result.selected_days)))
