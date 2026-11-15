@@ -583,31 +583,6 @@ impl Render for SpotAiAnalysisPage {
                                     .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("多币种筛选、单币研究与策略验证分开展示")),
                             ),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .when(self.view != SpotAiView::QuantSelection, |bar| bar.child(
-                                Button::new("spot-ai-tab-quant-action")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("量化选币")
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::QuantSelection, cx))),
-                            ))
-                            .when(self.view != SpotAiView::SingleAnalysis, |bar| bar.child(
-                                Button::new("spot-ai-tab-single-action")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("单币分析")
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
-                            ))
-                            .when(self.view != SpotAiView::Backtest, |bar| bar.child(
-                                Button::new("spot-ai-tab-backtest-action")
-                                    .ghost()
-                                    .xsmall()
-                                    .label("回测中心")
-                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::Backtest, cx))),
-                            )),
-                    ),
             )
             .when_some(self.error.clone(), |parent, error| {
                 parent.child(
