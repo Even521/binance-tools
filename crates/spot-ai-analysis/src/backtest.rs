@@ -17,6 +17,7 @@ pub struct BacktestResult {
     pub max_drawdown_percent: f64,
     pub win_rate_percent: f64,
     pub profit_factor: f64,
+    pub sharpe_ratio: f64,
     pub trade_days: usize,
     pub selected_days: usize,
     pub data_symbols: usize,
@@ -65,7 +66,8 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
     let mut peak = equity;
     let mut max_drawdown: f64 = 0.0;
     let mut points = Vec::new();
-    let mut daily_returns = Vec::new();
+    let mut position_returns = Vec::new();
+    let mut period_returns = Vec::new();
     let mut gross_profit = 0.0;
     let mut gross_loss = 0.0;
     let mut selected_days = 0usize;
@@ -117,14 +119,13 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
                 if current <= 0.0 { continue; }
                 let ret = next_close / current - 1.0 - ROUND_TRIP_COST;
                 portfolio_return += ret;
-                daily_returns.push(ret);
+                position_returns.push(ret);
                 if ret > 0.0 { gross_profit += ret; }
                 else { gross_loss += ret.abs(); }
             }
             portfolio_return /= selected.len() as f64;
-        } else {
-            daily_returns.push(0.0);
         }
+        period_returns.push(portfolio_return);
         equity *= 1.0 + portfolio_return;
         peak = peak.max(equity);
         let dd = if peak > 0.0 { (equity / peak - 1.0) * 100.0 } else { 0.0 };
@@ -143,7 +144,13 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
             .map(|d| d.format("%m-%d").to_string()).unwrap_or_else(|| next_day.to_string());
         points.push(BacktestPoint { date, equity, benchmark: benchmark_value, drawdown_percent: dd });
     }
-    let wins = daily_returns.iter().filter(|r| **r > 0.0).count();
+    let wins = position_returns.iter().filter(|r| **r > 0.0).count();
+    let mean = if period_returns.is_empty() { 0.0 } else { period_returns.iter().sum::<f64>() / period_returns.len() as f64 };
+    let variance = if period_returns.len() < 2 { 0.0 } else {
+        period_returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (period_returns.len() - 1) as f64
+    };
+    let std_dev = variance.sqrt();
+    let sharpe_ratio = if std_dev > 0.0 { mean / std_dev * (365.0_f64 / 3.0).sqrt() } else { 0.0 };
     let total_return = (equity / INITIAL_EQUITY - 1.0) * 100.0;
     let benchmark_return = btc_start.zip(btc_last).filter(|(a,_)|*a>0.0)
         .map(|(a,b)|(b/a-1.0)*100.0).unwrap_or(0.0);
@@ -151,9 +158,9 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
     let end_date = points.last().map(|p|p.date.clone()).unwrap_or_default();
     BacktestResult {
         points, total_return_percent: total_return, benchmark_return_percent: benchmark_return,
-        max_drawdown_percent: max_drawdown, win_rate_percent: if daily_returns.is_empty(){0.0}else{wins as f64/daily_returns.len() as f64*100.0},
+        max_drawdown_percent: max_drawdown, win_rate_percent: if position_returns.is_empty(){0.0}else{wins as f64/position_returns.len() as f64*100.0},
         profit_factor: if gross_loss > 0.0 { gross_profit/gross_loss } else if gross_profit > 0.0 { f64::INFINITY } else { 0.0 },
-        trade_days: daily_returns.len(), selected_days, data_symbols: by_symbol.len(), start_date, end_date,
+        sharpe_ratio, trade_days: position_returns.len(), selected_days, data_symbols: by_symbol.len(), start_date, end_date,
     }
 }
 
