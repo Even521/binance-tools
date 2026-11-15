@@ -38,7 +38,7 @@ pub struct BacktestCandle {
 
 const INITIAL_EQUITY: f64 = 10_000.0;
 const MAX_POSITIONS: usize = 5;
-const MIN_HISTORY: usize = 121;
+const MIN_HISTORY: usize = 30;
 const ROUND_TRIP_COST: f64 = 0.003; // 手续费与双边滑点合计估算 0.30%。
 
 /// 每日收盘后按当日可见数据评分，下一根日线才产生收益；等权持有排名前五的币。
@@ -138,7 +138,7 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
             if btc_start.is_none() { btc_start = start; }
             if let (Some(a), Some(b)) = (btc_start, now) { btc_last = Some(b); benchmark = INITIAL_EQUITY * b / a; }
         }
-        let date = chrono::DateTime::from_timestamp_millis(next_day)
+        let date = chrono::DateTime::from_timestamp_millis(next_day + 8 * 60 * 60 * 1000)
             .map(|d| d.format("%m-%d").to_string()).unwrap_or_else(|| next_day.to_string());
         points.push(BacktestPoint { date, equity, benchmark, drawdown_percent: dd });
     }
