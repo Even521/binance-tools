@@ -17,6 +17,9 @@ use gpui_component::{
 use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
 use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpotAiView { QuantSelection, SingleAnalysis, Backtest }
+
 #[derive(Clone, Copy, Debug)]
 enum SpotLoadMode { Cache, Sync, Refresh }
 
@@ -49,6 +52,7 @@ impl SpotAiAnalysisRow {
 }
 
 pub struct SpotAiAnalysisPage {
+    view: SpotAiView,
     table: Entity<TableState<SpotAiAnalysisTableDelegate>>,
     search_input: Entity<InputState>,
     rows: Vec<SpotAiAnalysisRow>,
@@ -79,6 +83,7 @@ impl SpotAiAnalysisPage {
             vec![cx.subscribe_in(&search_input, window, Self::on_search_input_event)];
 
         let mut this = Self {
+            view: SpotAiView::QuantSelection,
             table,
             search_input,
             rows: Vec::new(),
@@ -268,7 +273,7 @@ impl SpotAiAnalysisPage {
 
         v_flex()
             .flex_1()
-            .min_w(px(340.))
+            .w_full()
             .h_full()
             .overflow_y_scrollbar()
             .gap_4()
@@ -367,6 +372,129 @@ impl SpotAiAnalysisPage {
             )
             .into_any_element()
     }
+
+    fn set_view(&mut self, view: SpotAiView, cx: &mut Context<Self>) {
+        self.view = view;
+        cx.notify();
+    }
+
+    fn render_quant_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let visible_count = self.table.read(cx).delegate().visible_rows_count();
+        let selected_count = self.rows.len();
+        let loading = self.loading;
+
+        v_flex()
+            .flex_1()
+            .min_h(px(420.))
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child(format!("当前显示 {} 个 / 共 {} 个候选币种", visible_count, selected_count)))
+                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("1–7 天波段 · 按综合评分排序")),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                v_flex()
+                                    .relative()
+                                    .child(
+                                        Button::new("spot-ai-ma120-filter")
+                                            .outline()
+                                            .xsmall()
+                                            .label(format!("120日线：{} ▾", self.ma120_filter))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.ma120_filter_open = !this.ma120_filter_open;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(self.ma120_filter_open, |this| {
+                                        this.child(
+                                            v_flex()
+                                                .absolute()
+                                                .top(px(28.))
+                                                .right_0()
+                                                .w(px(116.))
+                                                .p_1()
+                                                .gap_1()
+                                                .rounded(px(6.))
+                                                .bg(palette::surface_strong(theme))
+                                                .border_1()
+                                                .border_color(palette::border(theme))
+                                                .shadow_lg()
+                                                .children(["全部", "线上", "趋近", "线下"].into_iter().map(|filter| {
+                                                    let selected = self.ma120_filter == filter;
+                                                    Button::new(SharedString::from(format!("spot-ai-ma120-option-{filter}")))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .w_full()
+                                                        .label(filter)
+                                                        .when(selected, |button| button.bg(theme.primary.opacity(0.14)).text_color(palette::text_strong(theme)))
+                                                        .on_click(cx.listener(move |this, _, _, cx| this.set_ma120_filter(filter.to_string(), cx)))
+                                                })),
+                                        )
+                                    }),
+                            )
+                            .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true)))
+                            .child(
+                                Button::new("spot-ai-open-single")
+                                    .outline()
+                                    .xsmall()
+                                    .label("单币分析")
+                                    .disabled(self.selected_symbol.is_none() || loading)
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h(px(360.))
+                    .w_full()
+                    .overflow_hidden()
+                    .child(
+                        DataTable::new(&self.table)
+                            .stripe(true)
+                            .bordered(true)
+                            .scrollbar_visible(true, true),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_backtest_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        v_flex()
+            .flex_1()
+            .w_full()
+            .min_h(px(420.))
+            .gap_3()
+            .p_4()
+            .rounded(px(8.))
+            .bg(palette::surface_strong(theme))
+            .border_1()
+            .border_color(palette::border(theme))
+            .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
+            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child("回测引擎尚未接入，当前不会展示虚构的收益率、胜率或最大回撤。"))
+            .child(div().h(px(1.)).bg(palette::border(theme)))
+            .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("计划验证的策略"))
+            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("1–7 天持有周期；趋势与动量、成交活跃度、波动风险、价格位置、流动性和市场情绪六因子；回调入场与放量突破两种信号分别测试；ATR 动态止损、分批止盈和最长持有期限。"))
+            .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测评价指标"))
+            .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("扣除手续费和滑点后的净收益、胜率、盈亏比、Profit Factor、最大回撤、Sharpe Ratio、平均持仓天数及连续亏损次数。"))
+            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("下一阶段将复用本地 SQLite K 线缓存，按时间切分训练与验证区间，避免未来数据泄漏。"))
+            .into_any_element()
+    }
+
 }
 
 impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
@@ -374,7 +502,6 @@ impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
 impl Render for SpotAiAnalysisPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let visible_count = self.table.read(cx).delegate().visible_rows_count();
         let selected_count = self.rows.len();
         let loading = self.loading;
 
@@ -398,8 +525,8 @@ impl Render for SpotAiAnalysisPage {
                                 v_flex()
                                     .flex_1()
                                     .gap_1()
-                                    .child(div().text_size(px(16.)).font_semibold().child("AI 分析"))
-                                    .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child(format!("现货市场研究 · USDT 交易对 · 已载入 {} 个候选币种", selected_count))),
+                                    .child(div().text_size(px(16.)).font_semibold().child("现货量化分析"))
+                                    .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child(format!("USDT 现货市场 · 已载入 {} 个候选币种 · 波段周期 1–7 天", selected_count))),
                             )
                             .child(
                                 h_flex()
@@ -420,75 +547,66 @@ impl Render for SpotAiAnalysisPage {
                                             .label("刷新")
                                             .disabled(loading)
                                             .on_click(cx.listener(|this, _, _, cx| this.refresh_data(cx))),
-                                    )
-                                    .child(
-                                        Button::new("spot-ai-run")
-                                            .primary()
-                                            .xsmall()
-                                            .label("分析所选币种")
-                                            .disabled(loading || selected_count == 0)
-                                            .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
                                     ),
                             ),
                     )
                     .child(
                         h_flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
+                            .gap_2()
                             .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child(format!("当前显示 {} 个", visible_count)))
-                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("评分由本地行情规则计算")),
+                                Button::new("spot-ai-tab-quant")
+                                    .outline()
+                                    .xsmall()
+                                    .label("量化选币")
+                                    .when(self.view == SpotAiView::QuantSelection, |button| button.primary())
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::QuantSelection, cx))),
                             )
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        v_flex()
-                                            .relative()
-                                            .child(
-                                                Button::new("spot-ai-ma120-filter")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label(format!("120日线：{} ▾", self.ma120_filter))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.ma120_filter_open = !this.ma120_filter_open;
-                                                        cx.notify();
-                                                    })),
-                                            )
-                                            .when(self.ma120_filter_open, |this| {
-                                                this.child(
-                                                    v_flex()
-                                                        .absolute()
-                                                        .top(px(28.))
-                                                        .right_0()
-                                                        .w(px(116.))
-                                                        .p_1()
-                                                        .gap_1()
-                                                        .rounded(px(6.))
-                                                        .bg(palette::surface_strong(theme))
-                                                        .border_1()
-                                                        .border_color(palette::border(theme))
-                                                        .shadow_lg()
-                                                        .children(["全部", "线上", "趋近", "线下"].into_iter().map(|filter| {
-                                                            let selected = self.ma120_filter == filter;
-                                                            Button::new(SharedString::from(format!("spot-ai-ma120-option-{filter}")))
-                                                                .ghost()
-                                                                .xsmall()
-                                                                .w_full()
-                                                                .label(filter)
-                                                                .when(selected, |button| button.bg(theme.primary.opacity(0.14)).text_color(palette::text_strong(theme)))
-                                                                .on_click(cx.listener(move |this, _, _, cx| this.set_ma120_filter(filter.to_string(), cx)))
-                                                        })),
-                                                )
-                                            }),
-                                    )
-                                    .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true))),
+                                Button::new("spot-ai-tab-single")
+                                    .outline()
+                                    .xsmall()
+                                    .label("单币分析")
+                                    .when(self.view == SpotAiView::SingleAnalysis, |button| button.primary())
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
+                            )
+                            .child(
+                                Button::new("spot-ai-tab-backtest")
+                                    .outline()
+                                    .xsmall()
+                                    .label("回测中心")
+                                    .when(self.view == SpotAiView::Backtest, |button| button.primary())
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::Backtest, cx))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("多币种筛选、单币研究与策略验证分开展示")),
                             ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .when(self.view != SpotAiView::QuantSelection, |bar| bar.child(
+                                Button::new("spot-ai-tab-quant-action")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("量化选币")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::QuantSelection, cx))),
+                            ))
+                            .when(self.view != SpotAiView::SingleAnalysis, |bar| bar.child(
+                                Button::new("spot-ai-tab-single-action")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("单币分析")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::SingleAnalysis, cx))),
+                            ))
+                            .when(self.view != SpotAiView::Backtest, |bar| bar.child(
+                                Button::new("spot-ai-tab-backtest-action")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("回测中心")
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::Backtest, cx))),
+                            )),
                     ),
             )
             .when_some(self.error.clone(), |parent, error| {
@@ -503,26 +621,11 @@ impl Render for SpotAiAnalysisPage {
                         .child(error),
                 )
             })
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h(px(420.))
-                    .gap_3()
-                    .child(
-                        v_flex()
-                            .w(px(780.))
-                            .min_w(px(780.))
-                            .h_full()
-                            .overflow_hidden()
-                            .child(
-                                DataTable::new(&self.table)
-                                    .stripe(true)
-                                    .bordered(true)
-                                    .scrollbar_visible(true, true),
-                            ),
-                    )
-                    .child(self.render_detail(cx)),
-            )
+            .child(match self.view {
+                SpotAiView::QuantSelection => self.render_quant_view(cx),
+                SpotAiView::SingleAnalysis => self.render_detail(cx),
+                SpotAiView::Backtest => self.render_backtest_view(cx),
+            })
     }
 }
 
