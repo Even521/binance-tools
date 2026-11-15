@@ -82,7 +82,7 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
             let end = history.partition_point(|c| c.open_time <= day);
             if end < MIN_HISTORY { continue; }
             let Some(today) = history.get(end - 1) else { continue };
-            let Some(next) = history.get(end + 3) else { continue };
+            let Some(next) = history.get(end + 2) else { continue };
             if next.open_time != next_day { continue; }
             let closes = history[..end].iter().map(|c| c.close).collect::<Vec<_>>();
             let previous = closes.get(closes.len().saturating_sub(2)).copied().unwrap_or(today.close);
