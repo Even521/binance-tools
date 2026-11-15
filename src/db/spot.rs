@@ -380,6 +380,43 @@ fn mark_spot_archive_import(
     Ok(())
 }
 
+/// Load up to 121 closed daily candles for every cached USDT spot symbol in one SQLite query.
+pub fn load_cached_usdt_daily_klines_blocking(
+) -> anyhow::Result<std::collections::HashMap<String, Vec<SpotDailyKline>>> {
+    let connection = super::open_default_connection()?;
+    let now = current_time_millis();
+    let mut statement = connection.prepare(
+        r#"
+        WITH ranked AS (
+            SELECT symbol, interval, open_time, open_price, high_price, low_price,
+                   close_price, volume, close_time,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY open_time DESC) AS rn
+            FROM spot_klines_1d
+            WHERE interval = '1d' AND close_time < ?1
+        )
+        SELECT symbol, interval, open_time, open_price, high_price, low_price,
+               close_price, volume, close_time
+        FROM ranked
+        WHERE rn <= 121
+        ORDER BY symbol, open_time
+        "#
+    )?;
+    let rows = statement.query_map([now], |row| {
+        Ok(SpotDailyKline {
+            symbol: row.get(0)?, interval: row.get(1)?, open_time: row.get(2)?,
+            open_price: row.get(3)?, high_price: row.get(4)?, low_price: row.get(5)?,
+            close_price: row.get(6)?, volume: row.get(7)?, close_time: row.get(8)?,
+        })
+    })?;
+    let mut result: std::collections::HashMap<String, Vec<SpotDailyKline>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let kline = row?;
+        result.entry(kline.symbol.clone()).or_default().push(kline);
+    }
+    Ok(result)
+}
+
 pub fn list_spot_daily_klines_blocking(
     symbol: String,
     limit: usize,
