@@ -41,6 +41,7 @@ struct SpotAiAnalysisRow {
     sentiment_update_time: String,
     liquidity_score: f64,
     total_score: f64,
+    data_completeness: f64,
     trend_label: String,
     basis: String,
     ma120_average_price: Option<f64>,
@@ -654,7 +655,7 @@ fn build_analysis_rows(
             sentiment_score:s.sentiment_score, sentiment_value:s.sentiment_value,
             sentiment_classification:s.sentiment_classification.clone(), sentiment_update_time:s.sentiment_update_time.clone(),
             liquidity_score:s.liquidity_score,
-            total_score:s.total_score, trend_label:s.trend_label.clone(),
+            total_score:s.total_score, data_completeness:s.data_completeness, trend_label:s.trend_label.clone(),
             basis:format!("{} {}", s.basis, ma120_basis),
             ma120_average_price, ma120_difference_percent, ma120_samples,
         })
@@ -678,7 +679,7 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
         sentiment_score:row.sentiment_score, sentiment_value:row.sentiment_value,
         sentiment_classification:row.sentiment_classification.clone(), sentiment_update_time:row.sentiment_update_time.clone(),
         liquidity_score:row.liquidity_score,
-        total_score:row.total_score, data_completeness:100.0, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
+        total_score:row.total_score, data_completeness:row.data_completeness, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
     };
     build_report_prompt(&market,&analysis)
 }
