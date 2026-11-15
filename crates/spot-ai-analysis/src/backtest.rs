@@ -73,7 +73,8 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
     let mut btc_last = None::<f64>;
 
     // eval_start 前的数据只作为指标预热；每天只使用当日及以前的已收盘 K 线。
-    for day_index in (eval_start..all_dates.len().saturating_sub(3)).step_by(3) {
+    let last_entry_index = all_dates.len().saturating_sub(4);
+    for day_index in (eval_start..=last_entry_index).step_by(3) {
         let day = all_dates[day_index];
         let next_day = all_dates[day_index + 3];
         let mut snapshots = Vec::new();
@@ -136,9 +137,11 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
             if btc_start.is_none() { btc_start = start; }
             if let (Some(a), Some(b)) = (btc_start, now) { btc_last = Some(b); }
         }
+        let benchmark_value = btc_start.zip(btc_last).filter(|(a, _)| *a > 0.0)
+            .map(|(a, b)| INITIAL_EQUITY * b / a).unwrap_or(INITIAL_EQUITY);
         let date = chrono::DateTime::from_timestamp_millis(next_day + 8 * 60 * 60 * 1000)
             .map(|d| d.format("%m-%d").to_string()).unwrap_or_else(|| next_day.to_string());
-        points.push(BacktestPoint { date, equity, benchmark, drawdown_percent: dd });
+        points.push(BacktestPoint { date, equity, benchmark: benchmark_value, drawdown_percent: dd });
     }
     let wins = daily_returns.iter().filter(|r| **r > 0.0).count();
     let total_return = (equity / INITIAL_EQUITY - 1.0) * 100.0;
