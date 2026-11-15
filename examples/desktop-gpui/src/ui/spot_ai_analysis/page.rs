@@ -306,9 +306,10 @@ impl SpotAiAnalysisPage {
             )
             .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 北京时间 {}", format_beijing_time(&row.sentiment_update_time))))
             .child(
-                v_flex()
+                h_flex()
                     .w_full()
-                    .gap_3()
+                    .items_stretch()
+                    .gap_2()
                     .child(detail_stat_colored("24h 涨跌", format_signed_percent(row.product.price_change_percent), change_color(row.product.price_change_percent, theme), theme))
                     .child(detail_stat("最新价格", format_price(row.product.last_price), theme))
                     .child(detail_stat("24h 成交额", format_compact(row.product.quote_volume), theme))
@@ -599,13 +600,13 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
 fn detail_stat(label: &'static str, value: String, theme: &gpui_component::Theme) -> AnyElement {
     v_flex()
         .flex_1()
-        .min_w(px(90.))
+        .min_w(px(0.))
         .gap_1()
         .p_2()
         .rounded(px(6.))
         .bg(theme.muted.opacity(0.08))
-        .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
-        .child(div().text_size(px(12.)).font_semibold().child(value))
+        .child(div().w_full().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
+        .child(div().w_full().text_size(px(11.)).font_semibold().child(value))
         .into_any_element()
 }
 
@@ -618,15 +619,15 @@ fn detail_stat_colored(
 ) -> AnyElement {
     v_flex()
         .flex_1()
-        .min_w(px(90.))
+        .min_w(px(0.))
         .gap_1()
         .p_2()
         .rounded(px(6.))
         .bg(color.opacity(0.08))
         .border_1()
         .border_color(color.opacity(0.18))
-        .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
-        .child(div().text_size(px(12.)).font_semibold().text_color(color).child(value))
+        .child(div().w_full().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
+        .child(div().w_full().text_size(px(11.)).font_semibold().text_color(color).child(value))
         .into_any_element()
 }
 
