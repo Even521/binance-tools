@@ -41,8 +41,8 @@ const MAX_POSITIONS: usize = 5;
 const MIN_HISTORY: usize = 30;
 const ROUND_TRIP_COST: f64 = 0.003; // 手续费与双边滑点合计估算 0.30%。
 
-/// 每日收盘后按当日可见数据评分，下一根日线才产生收益；等权持有排名前五的币。
-/// 只纳入至少 121 根历史日线且当日数据完整度不低于 70% 的交易对。
+/// 每 3 个交易日收盘后按当日可见数据评分，下一交易日买入并持有 3 根日线；等权持有排名前五的币。
+/// 只纳入至少 30 根历史日线且当日数据完整度不低于 70% 的交易对。
 pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestResult {
     use std::collections::{BTreeMap, HashMap};
     let mut by_symbol: HashMap<String, Vec<&BacktestCandle>> = HashMap::new();
@@ -62,12 +62,10 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
     }
     let eval_start = all_dates.len().saturating_sub(period_days.saturating_add(1));
     let mut equity = INITIAL_EQUITY;
-    let mut benchmark = INITIAL_EQUITY;
     let mut peak = equity;
     let mut max_drawdown: f64 = 0.0;
     let mut points = Vec::new();
     let mut daily_returns = Vec::new();
-    let mut positive = 0usize;
     let mut gross_profit = 0.0;
     let mut gross_loss = 0.0;
     let mut selected_days = 0usize;
@@ -75,16 +73,16 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
     let mut btc_last = None::<f64>;
 
     // eval_start 前的数据只作为指标预热；每天只使用当日及以前的已收盘 K 线。
-    for day_index in eval_start..all_dates.len().saturating_sub(1) {
+    for day_index in (eval_start..all_dates.len().saturating_sub(3)).step_by(3) {
         let day = all_dates[day_index];
-        let next_day = all_dates[day_index + 1];
+        let next_day = all_dates[day_index + 3];
         let mut snapshots = Vec::new();
         let mut next_prices = HashMap::<String, f64>::new();
         for (symbol, history) in &by_symbol {
             let end = history.partition_point(|c| c.open_time <= day);
             if end < MIN_HISTORY { continue; }
             let Some(today) = history.get(end - 1) else { continue };
-            let Some(next) = history.get(end) else { continue };
+            let Some(next) = history.get(end + 3) else { continue };
             if next.open_time != next_day { continue; }
             let closes = history[..end].iter().map(|c| c.close).collect::<Vec<_>>();
             let previous = closes.get(closes.len().saturating_sub(2)).copied().unwrap_or(today.close);
@@ -119,7 +117,7 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
                 let ret = next_close / current - 1.0 - ROUND_TRIP_COST;
                 portfolio_return += ret;
                 daily_returns.push(ret);
-                if ret > 0.0 { positive += 1; gross_profit += ret; }
+                if ret > 0.0 { gross_profit += ret; }
                 else { gross_loss += ret.abs(); }
             }
             portfolio_return /= selected.len() as f64;
@@ -133,18 +131,16 @@ pub fn run_backtest(candles: &[BacktestCandle], period_days: usize) -> BacktestR
 
         // BTC 仅作买入持有基准，不参与策略选币。
         if let Some(btc) = by_symbol.get("BTCUSDT") {
-            let start = btc.iter().find(|c| c.open_time == all_dates[eval_start]).map(|c| c.close);
+            let start = btc.iter().find(|c| c.open_time == day).map(|c| c.close);
             let now = btc.iter().find(|c| c.open_time == next_day).map(|c| c.close);
             if btc_start.is_none() { btc_start = start; }
-            if let (Some(a), Some(b)) = (btc_start, now) { btc_last = Some(b); benchmark = INITIAL_EQUITY * b / a; }
+            if let (Some(a), Some(b)) = (btc_start, now) { btc_last = Some(b); }
         }
         let date = chrono::DateTime::from_timestamp_millis(next_day + 8 * 60 * 60 * 1000)
             .map(|d| d.format("%m-%d").to_string()).unwrap_or_else(|| next_day.to_string());
         points.push(BacktestPoint { date, equity, benchmark, drawdown_percent: dd });
     }
     let wins = daily_returns.iter().filter(|r| **r > 0.0).count();
-    let losses = daily_returns.iter().filter(|r| **r < 0.0).count();
-    let _ = losses;
     let total_return = (equity / INITIAL_EQUITY - 1.0) * 100.0;
     let benchmark_return = btc_start.zip(btc_last).filter(|(a,_)|*a>0.0)
         .map(|(a,b)|(b/a-1.0)*100.0).unwrap_or(0.0);
