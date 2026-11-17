@@ -346,6 +346,87 @@ pub fn is_post_duplicate_blocking(
     )?)
 }
 
+/// Returns the oldest fully prepared post waiting for submission.
+pub fn load_next_pending_post_blocking() -> anyhow::Result<Option<(i64, String)>> {
+    let connection = super::open_default_connection()?;
+    ensure_schema(&connection)?;
+    Ok(connection
+        .query_row(
+            "SELECT id, content FROM x_published_posts
+             WHERE status = 'pending' ORDER BY id ASC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+pub fn count_pending_posts_blocking() -> anyhow::Result<usize> {
+    let connection = super::open_default_connection()?;
+    ensure_schema(&connection)?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM x_published_posts WHERE status = 'pending'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as usize)
+}
+
+/// Detects likely repeated wording among recent posts and prepared queue items.
+/// Exact duplicates are handled by the fingerprint check; this catches similar rewrites.
+pub fn is_post_similar_blocking(content: &str) -> anyhow::Result<bool> {
+    use std::collections::HashSet;
+
+    fn normalized_chars(value: &str) -> Vec<char> {
+        value
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    fn bigrams(chars: &[char]) -> HashSet<(char, char)> {
+        chars.windows(2).map(|pair| (pair[0], pair[1])).collect()
+    }
+
+    let candidate = normalized_chars(content);
+    if candidate.len() < 12 {
+        return Ok(false);
+    }
+
+    let connection = super::open_default_connection()?;
+    ensure_schema(&connection)?;
+    let mut statement = connection.prepare(
+        "SELECT content FROM x_published_posts
+         WHERE status IN ('pending', 'submitting', 'published', 'unknown')
+         ORDER BY id DESC LIMIT 30",
+    )?;
+    let existing = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let candidate_bigrams = bigrams(&candidate);
+    let candidate_prefix = &candidate[..candidate.len().min(12)];
+
+    for previous in existing {
+        let previous = normalized_chars(&previous?);
+        if previous.len() < 12 {
+            continue;
+        }
+        let previous_bigrams = bigrams(&previous);
+        let shared = candidate_bigrams.intersection(&previous_bigrams).count();
+        let union = candidate_bigrams.union(&previous_bigrams).count();
+        let jaccard = if union == 0 { 0.0 } else { shared as f64 / union as f64 };
+        let prefix_len = candidate_prefix.len().min(previous.len().min(12));
+        let matching_prefix = candidate_prefix
+            .iter()
+            .zip(previous.iter())
+            .take_while(|(left, right)| left == right)
+            .count();
+        let prefix_similarity = matching_prefix as f64 / prefix_len as f64;
+        if jaccard >= 0.72 || (matching_prefix >= 9 && prefix_similarity >= 0.75) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Creates a durable Pending record before the browser is touched.
 /// Reuses an earlier Failed row with the same fingerprint.
 pub fn reserve_post_blocking(
@@ -441,6 +522,19 @@ pub fn mark_post_failed_blocking(id: i64, reason: &str) -> anyhow::Result<()> {
     update_post_status(id, "failed", None, Some(reason))
 }
 
+pub fn load_post_status_blocking(id: i64) -> anyhow::Result<String> {
+    let connection = super::open_default_connection()?;
+    ensure_schema(&connection)?;
+    connection
+        .query_row(
+            "SELECT status FROM x_published_posts WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .with_context(|| format!("X 发帖记录不存在：{id}"))
+}
+
 fn update_post_status(
     id: i64,
     status: &str,
@@ -452,7 +546,9 @@ fn update_post_status(
     let published = status == "published";
     let allowed_previous = match status {
         "published" | "unknown" => "('submitting', 'unknown')",
-        "failed" => "('pending', 'submitting', 'unknown')",
+        // Only an unclaimed pending row may be failed before a click. This keeps
+        // a competing sender from changing another worker's submitting row.
+        "failed" => "('pending')",
         _ => anyhow::bail!("不支持的发帖状态转换：{status}"),
     };
     let sql = format!(

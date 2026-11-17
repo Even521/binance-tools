@@ -17,6 +17,7 @@ pub mod alpha;
 pub mod crypto_news;
 pub mod entertainment_news;
 pub mod market;
+pub mod news_send_tasks;
 pub mod spot;
 pub mod square;
 pub mod task_board;

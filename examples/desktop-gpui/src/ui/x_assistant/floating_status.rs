@@ -5,34 +5,63 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
+const TASK_REPLY: u8 = 0;
+const TASK_POST: u8 = 1;
+const TASK_TEST_POST: u8 = 2;
+static WAITING_FOR_POST: AtomicBool = AtomicBool::new(false);
+
+pub fn set_waiting_for_post(waiting: bool) {
+    WAITING_FOR_POST.store(waiting, Ordering::Release);
+    #[cfg(windows)]
+    windows_overlay::request_redraw();
+}
 pub struct FloatingStatus {
     stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
 }
 
 impl FloatingStatus {
     /// Show the application logo and a running indicator over the browser toolbar.
     pub fn show(task_label: &'static str, accent_color: (u8, u8, u8)) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(true));
+        let task_kind = Arc::new(AtomicU8::new(match task_label {
+            "auto_reply" => TASK_REPLY,
+            "test_post" => TASK_TEST_POST,
+            _ => TASK_POST,
+        }));
 
         #[cfg(windows)]
         {
             let thread_stop = Arc::clone(&stop);
-            std::thread::spawn(move || windows_overlay::run(thread_stop, task_label, accent_color));
+            let thread_running = Arc::clone(&running);
+            let thread_task_kind = Arc::clone(&task_kind);
+            std::thread::spawn(move || windows_overlay::run(thread_stop, thread_running, thread_task_kind, task_label, accent_color));
         }
 
         #[cfg(not(windows))]
         let _ = (task_label, accent_color);
 
-        Self { stop }
+        Self { stop, running }
     }
 
     /// Hide the overlay. The native window is destroyed by its owning thread.
     pub fn hide(&self) {
         self.stop.store(true, Ordering::Release);
+        #[cfg(windows)]
+        windows_overlay::request_redraw();
     }
+
+    /// Mark the background automation as stopped while leaving its status window visible.
+    pub fn mark_stopped(&self) {
+        self.running.store(false, Ordering::Release);
+        #[cfg(windows)]
+        windows_overlay::request_redraw();
+    }
+
 }
 
 impl Drop for FloatingStatus {
@@ -43,13 +72,16 @@ impl Drop for FloatingStatus {
 
 #[cfg(not(windows))]
 mod windows_overlay {
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::{Arc, atomic::{AtomicBool, AtomicIsize, AtomicU8}};
 
-    pub(super) fn run(_: Arc<AtomicBool>, _: &'static str, _: (u8, u8, u8)) {}
+    pub(super) fn run(_: Arc<AtomicBool>, _: Arc<AtomicBool>, _: Arc<AtomicU8>, _: &'static str, _: (u8, u8, u8)) {}
 }
 
 #[cfg(windows)]
 mod windows_overlay {
+    const TASK_POST: u8 = 1;
+    const TASK_TEST_POST: u8 = 2;
+
     use std::{
         mem::zeroed,
         sync::{
@@ -89,16 +121,21 @@ mod windows_overlay {
     const COLOR_KEY: COLORREF = COLORREF(0x00FF00FF);
 
     static ICON_HANDLE: AtomicIsize = AtomicIsize::new(0);
-    static TASK_KIND: AtomicU8 = AtomicU8::new(0);
     static ACCENT_COLOR: AtomicU32 = AtomicU32::new(0x00D77800);
+    static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 
-    pub(super) fn run(stop: Arc<AtomicBool>, task_label: &'static str, accent_color: (u8, u8, u8)) {
-        let task_kind = match task_label {
-            "自动发帖" => 1,
-            "测试发帖" => 2,
-            _ => 3,
-        };
-        TASK_KIND.store(task_kind, Ordering::Release);
+    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+    const WM_APP_REDRAW: u32 = 0x8001;
+
+    pub(super) fn request_redraw() {
+        let hwnd = HWND(OVERLAY_HWND.load(Ordering::Acquire) as _);
+        if !hwnd.is_invalid() {
+            unsafe { let _ = PostMessageW(Some(hwnd), WM_APP_REDRAW, WPARAM(0), LPARAM(0)); }
+        }
+    }
+
+    pub(super) fn run(stop: Arc<AtomicBool>, running: Arc<AtomicBool>, task_kind: Arc<AtomicU8>, task_label: &'static str, accent_color: (u8, u8, u8)) {
+        let _ = task_label;
         let (red, green, blue) = accent_color;
         ACCENT_COLOR.store(
             red as u32 | ((green as u32) << 8) | ((blue as u32) << 16),
@@ -162,6 +199,9 @@ mod windows_overlay {
                 let _ = UnregisterClassW(class_name, Some(instance));
                 return;
             };
+            OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
+            OVERLAY_RUNNING.store(Arc::as_ptr(&running) as isize, Ordering::Release);
+            OVERLAY_TASK_KIND.store(Arc::as_ptr(&task_kind) as isize, Ordering::Release);
 
             let _ = SetLayeredWindowAttributes(hwnd, COLOR_KEY, 0, LWA_COLORKEY);
             let mut message = MSG::default();
@@ -199,10 +239,26 @@ mod windows_overlay {
             }
 
             let _ = DestroyWindow(hwnd);
+            OVERLAY_HWND.store(0, Ordering::Release);
+            OVERLAY_RUNNING.store(0, Ordering::Release);
+            OVERLAY_TASK_KIND.store(0, Ordering::Release);
             DestroyIcon(icon);
             ICON_HANDLE.store(0, Ordering::Release);
             let _ = UnregisterClassW(class_name, Some(instance));
         }
+    }
+
+    static OVERLAY_RUNNING: AtomicIsize = AtomicIsize::new(0);
+    static OVERLAY_TASK_KIND: AtomicIsize = AtomicIsize::new(0);
+
+    fn overlay_is_running() -> bool {
+        let ptr = OVERLAY_RUNNING.load(Ordering::Acquire) as *const AtomicBool;
+        !ptr.is_null() && unsafe { (*ptr).load(Ordering::Acquire) }
+    }
+
+    fn task_kind() -> u8 {
+        let ptr = OVERLAY_TASK_KIND.load(Ordering::Acquire) as *const AtomicU8;
+        if ptr.is_null() { 0 } else { unsafe { (*ptr).load(Ordering::Acquire) } }
     }
 
     fn browser_toolbar_position() -> Option<(i32, i32)> {
@@ -324,6 +380,10 @@ mod windows_overlay {
         unsafe {
             match message {
                 WM_ERASEBKGND => LRESULT(1),
+                WM_APP_REDRAW => {
+                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, true);
+                    LRESULT(0)
+                }
                 WM_PAINT => {
                     let mut paint = PAINTSTRUCT::default();
                     let dc = BeginPaint(hwnd, &mut paint);
@@ -356,13 +416,16 @@ mod windows_overlay {
                         FONT_CLIP_PRECISION(0), FONT_QUALITY(5), 0,
                         w!("Segoe UI"),
                     );
-                    let title: Vec<u16> = "自动化运行中".encode_utf16().collect();
-                    let task_label = match TASK_KIND.load(Ordering::Acquire) {
-                        1 => "当前任务：自动发帖",
-                        2 => "当前任务：测试发帖",
-                        _ => "当前任务：自动回复",
-                    };
-                    let task: Vec<u16> = task_label.encode_utf16().collect();
+                    let is_running = overlay_is_running();
+                    let title: Vec<u16> = if is_running { "自动化运行中" } else { "自动化已停止" }.encode_utf16().collect();
+                    let kind = task_kind();
+                    let task_label = if kind == TASK_POST {
+                        if super::WAITING_FOR_POST.load(Ordering::Acquire) { "Waiting for post" } else { "Auto posting" }
+                    } else if kind == TASK_TEST_POST {
+                        "Test post"
+                    } else {
+                        "Auto reply"
+                    };                    let task: Vec<u16> = task_label.encode_utf16().collect();
                     // 根据主题背景亮度自动选择文字颜色，确保深色/浅色主题都清晰。
                     let red = (accent.0 & 0xFF) as f64;
                     let green = ((accent.0 >> 8) & 0xFF) as f64;
@@ -382,8 +445,8 @@ mod windows_overlay {
                     let _ = DeleteObject(title_font.into());
                     let _ = DeleteObject(task_font.into());
 
-                    // 绿色状态圆点表示自动化任务正在运行。
-                    let dot = CreateSolidBrush(COLORREF(0x0000C000));
+                    // Refresh the indicator from the shared run state on every paint.
+                    let dot = CreateSolidBrush(if is_running { COLORREF(0x0000C000) } else { COLORREF(0x000000D0) });
                     let previous = SelectObject(dc, dot.into());
                     let _ = Ellipse(dc, 163, 7, 173, 17);
                     let _ = SelectObject(dc, previous);

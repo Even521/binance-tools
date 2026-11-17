@@ -17,6 +17,7 @@ use crate::ui::{
     kline::KlineCandlestickPage,
     ma_signal::{DailyMaSignalEvent, DailyMaSignalPage},
     market::{MarketProductsEvent, MarketProductsPage},
+    news_send_tasks::NewsSendTasksPage,
     palette,
     spot::SpotPage,
     spot_ai_analysis::{SpotAiAnalysisEvent, SpotAiAnalysisPage},
@@ -27,7 +28,7 @@ use crate::ui::{
         DesktopTitleBar, OpenAlphaDailyMaSignals, OpenAlphaExchangeInfo, OpenAlphaHeatmap,
         OpenAlphaTokens, OpenCalculator, OpenCryptoNews, OpenEntertainmentNews, OpenDailyMaSignals, OpenDocumentConvert,
         OpenMarketHeatmap, OpenMarketProducts, OpenSpotBacktest, OpenSpotSymbols,
-        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenSpotAiAnalysis, OpenStrategyHelp,
+        OpenSquareKeySettings, OpenSquareSendLogs, OpenSquareTasks, OpenNewsSendTasks, OpenSpotAiAnalysis, OpenStrategyHelp,
         OpenTaskBoard, OpenWalletGenerator, OpenXAssistant,
     },
     tools::DocumentConvertPage,
@@ -64,6 +65,7 @@ pub struct Dashboard {
     calculator_page: Option<Entity<CalculatorPage>>,
     crypto_news_page: Option<Entity<CryptoNewsPage>>,
     entertainment_news_page: Option<Entity<EntertainmentNewsPage>>,
+    news_send_tasks_page: Option<Entity<NewsSendTasksPage>>,
     document_convert_page: Option<Entity<DocumentConvertPage>>,
     task_board_page: Option<Entity<TaskBoardPage>>,
     strategy_help_page: Option<Entity<StrategyHelpPage>>,
@@ -101,6 +103,7 @@ enum ActivePage {
     Calculator,
     CryptoNews,
     EntertainmentNews,
+    NewsSendTasks,
     DocumentConvert,
     TaskBoard,
     StrategyHelp,
@@ -147,6 +150,7 @@ impl Dashboard {
             calculator_page: None,
             crypto_news_page: None,
             entertainment_news_page: None,
+            news_send_tasks_page: None,
             document_convert_page: None,
             task_board_page: None,
             strategy_help_page: None,
@@ -540,6 +544,21 @@ impl Dashboard {
             self.entertainment_news_page = Some(cx.new(|cx| EntertainmentNewsPage::new(window, cx)));
         }
         self.activate_page(ActivePage::EntertainmentNews, cx);
+        cx.notify();
+    }
+
+    fn on_open_news_send_tasks(
+        &mut self,
+        _: &OpenNewsSendTasks,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.news_send_tasks_page.is_none() {
+            self.news_send_tasks_page = Some(cx.new(|cx| NewsSendTasksPage::new(window, cx)));
+        } else if let Some(page) = &self.news_send_tasks_page {
+            page.update(cx, |page, cx| page.reload(cx));
+        }
+        self.activate_page(ActivePage::NewsSendTasks, cx);
         cx.notify();
     }
 
@@ -1113,6 +1132,18 @@ impl Dashboard {
                         .into_any_element()
                 })
                 .unwrap_or_else(|| div().into_any_element()),
+            ActivePage::NewsSendTasks => self
+                .news_send_tasks_page
+                .as_ref()
+                .map(|page| {
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .p_6()
+                        .child(page.clone())
+                        .into_any_element()
+                })
+                .unwrap_or_else(|| div().into_any_element()),
             ActivePage::DocumentConvert => self
                 .document_convert_page
                 .as_ref()
@@ -1227,6 +1258,7 @@ impl Render for Dashboard {
             .on_action(cx.listener(Self::on_open_calculator))
             .on_action(cx.listener(Self::on_open_crypto_news))
             .on_action(cx.listener(Self::on_open_entertainment_news))
+            .on_action(cx.listener(Self::on_open_news_send_tasks))
             .on_action(cx.listener(Self::on_open_document_convert))
             .on_action(cx.listener(Self::on_open_task_board))
             .on_action(cx.listener(Self::on_open_strategy_help))

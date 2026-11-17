@@ -40,6 +40,7 @@ impl AutoReplyRunner {
         automation::log_event("自动回复循环启动");
         let mut first_reply_completed = false;
         let mut rounds_since_post = 0usize;
+        let mut retry_post_soon = false;
         let mut post_scheduler_active = post_scheduler.is_some();
 
         loop {
@@ -74,7 +75,7 @@ impl AutoReplyRunner {
             // 轮次包括成功、跳过重复内容以及已恢复的普通失败；每轮浏览器操作已完整结束。
             if post_scheduler_active {
                 rounds_since_post += 1;
-                if first_reply_completed && rounds_since_post >= REPLY_ROUNDS_PER_POST {
+                if first_reply_completed && (rounds_since_post >= REPLY_ROUNDS_PER_POST || retry_post_soon) {
                     automation::log_event(&format!(
                         "自动回复已完成 {REPLY_ROUNDS_PER_POST} 轮，交出浏览器操作权，等待自动发帖完成 1 次调度。"
                     ));
@@ -99,6 +100,7 @@ impl AutoReplyRunner {
                     }
 
                     rounds_since_post = 0;
+                    retry_post_soon = false;
                     post_scheduler_active = scheduler_available;
                     if post_scheduler_active {
                         automation::log_event("自动发帖调度结束，浏览器操作权已交还自动回复。");
