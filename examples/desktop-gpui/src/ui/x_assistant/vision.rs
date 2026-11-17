@@ -1,7 +1,7 @@
 use std::{
+    cell::RefCell,
     fs,
     path::{Path, PathBuf},
-    cell::RefCell,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
@@ -34,20 +34,31 @@ pub(super) struct ScreenshotRoundGuard {
 
 impl Drop for ScreenshotRoundGuard {
     fn drop(&mut self) {
-        ACTIVE_SCREENSHOT_DIR.with(|slot| { slot.replace(self.previous.take()); });
+        ACTIVE_SCREENSHOT_DIR.with(|slot| {
+            slot.replace(self.previous.take());
+        });
     }
 }
 
 /// 每轮独立目录；轮数目录已存在时追加北京时间时间戳，避免覆盖旧截图。
 pub(super) fn begin_screenshot_round(round: usize) -> anyhow::Result<ScreenshotRoundGuard> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..").join("data").join("x_assistant").join("screenshots");
+        .join("../..")
+        .join("data")
+        .join("x_assistant")
+        .join("screenshots");
     fs::create_dir_all(&root)?;
     let base_name = format!("round-{round:03}");
     let base = root.join(&base_name);
     let dir = if base.exists() {
-        root.join(format!("{}-{}", base_name, app_log::beijing_now().format("%Y%m%d-%H%M%S%.3f")))
-    } else { base };
+        root.join(format!(
+            "{}-{}",
+            base_name,
+            app_log::beijing_now().format("%Y%m%d-%H%M%S%.3f")
+        ))
+    } else {
+        base
+    };
     fs::create_dir_all(&dir)?;
     let previous = ACTIVE_SCREENSHOT_DIR.with(|slot| slot.replace(Some(dir.clone())));
     automation::log_event(&format!("本轮截图目录：{}", dir.display()));
@@ -55,10 +66,15 @@ pub(super) fn begin_screenshot_round(round: usize) -> anyhow::Result<ScreenshotR
 }
 
 fn current_screenshot_dir() -> PathBuf {
-    ACTIVE_SCREENSHOT_DIR.with(|slot| slot.borrow().clone()).unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..").join("data").join("x_assistant").join("screenshots")
-    })
+    ACTIVE_SCREENSHOT_DIR
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join("data")
+                .join("x_assistant")
+                .join("screenshots")
+        })
 }
 
 const SYSTEM_PROMPT: &str = "你是屏幕视觉操作助手。禁止长篇思考，最快速度返回 JSON 对象。所有坐标和边界值必须使用 0 到 1000 的归一化整数：x=0 表示图片最左，x=1000 表示最右；y=0 表示最上，y=1000 表示最下；有多个回复气泡时候不能在正文的上方必须在正文下方相差高度32像素；x、y 分别按整张图片宽度和高度独立归一化，不要输出像素坐标。无法确认时把 ok 设为 false。";
@@ -256,10 +272,7 @@ fn refresh_timeline(cancel: &AtomicBool) -> anyhow::Result<()> {
     check_cancel(cancel)
 }
 
-pub(super) fn recover_by_error(
-    cancel: &AtomicBool,
-    error: &anyhow::Error,
-) -> anyhow::Result<()> {
+pub(super) fn recover_by_error(cancel: &AtomicBool, error: &anyhow::Error) -> anyhow::Result<()> {
     let message = format!("{error:#}");
 
     if message.contains("账号二次 OCR") || message.contains("账号不一致") {
@@ -456,9 +469,7 @@ fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Resu
     scroll_down_random_steps(cancel, reason, 5, 12)?;
 
     let count = FEED_SCROLL_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-    automation::log_event(&format!(
-        "时间线滚动计数：{count}/{SCROLLS_BEFORE_REFRESH}"
-    ));
+    automation::log_event(&format!("时间线滚动计数：{count}/{SCROLLS_BEFORE_REFRESH}"));
 
     if count >= SCROLLS_BEFORE_REFRESH {
         check_cancel(cancel)?;
@@ -544,7 +555,9 @@ pub fn run_visual_reply(
 ) -> anyhow::Result<VisionReplyResult> {
     let _fallback_round = if ACTIVE_SCREENSHOT_DIR.with(|slot| slot.borrow().is_none()) {
         Some(begin_screenshot_round(0)?)
-    } else { None };
+    } else {
+        None
+    };
     let mut current_stage = "初始化".to_string();
     run_visual_reply_inner(options, cancel, &mut current_stage).map_err(|error| {
         let detailed = error.context(format!("{current_stage}失败"));
@@ -588,12 +601,7 @@ fn run_visual_reply_inner(
 
     // 浏览器窗口存在不代表当前标签页就是 X 首页。
     // 每轮回复开始前先 OCR 当前地址；非 X 首页时主动导航到首页，并再次验证。
-    let initial_route = capture_desktop(
-        &dir,
-        &id,
-        "reply-startup-route-check",
-        &mut screenshots,
-    )?;
+    let initial_route = capture_desktop(&dir, &id, "reply-startup-route-check", &mut screenshots)?;
     let mut current_url = ocr::recognize_current_url(&initial_route.png)?;
     if !current_url.as_deref().is_some_and(ocr::is_x_home_address) {
         automation::log_event(&format!(
@@ -698,11 +706,15 @@ fn run_visual_reply_inner(
                 if !action_coordinate_failed {
                     let unavailable_check_start = Instant::now();
                     automation::log_event("[自动回复][01/03]：开始复核帖子是否已删除或不可用。");
-                    let unavailable = ocr::recognize_post_unavailable_error(&feed.png)
-                        .unwrap_or(false);
+                    let unavailable =
+                        ocr::recognize_post_unavailable_error(&feed.png).unwrap_or(false);
                     automation::log_event(&format!(
                         "[自动回复][01/03]：帖子删除状态复核结束，结果={}，耗时={} ms。",
-                        if unavailable { "已删除或不可用" } else { "未发现删除提示" },
+                        if unavailable {
+                            "已删除或不可用"
+                        } else {
+                            "未发现删除提示"
+                        },
                         unavailable_check_start.elapsed().as_millis()
                     ));
                     if cancel.load(Ordering::Acquire) {
@@ -837,6 +849,20 @@ fn run_visual_reply_inner(
         }
     }
 
+    if !reply_filter::is_supported_post_language(&post_text) {
+        return skip_post_and_scroll(
+            screenshots,
+            author_name,
+            account_handle,
+            posted_at,
+            post_text,
+            cancel,
+            false,
+            "原帖语言非中文/英文或无法可靠识别；跳过该帖",
+        );
+    }
+
+    automation::log_event("[自动回复][01/03]：原帖语言检查通过（中文/英文）；继续校验回复按钮。");
     let mut reply_button = match validate_or_refind_action_targets(&options, &feed, &post, cancel) {
         Ok(point) => point,
         Err(error) => {
@@ -1165,11 +1191,8 @@ fn run_visual_reply_inner(
             &author_name,
             compose_page["dialog_text"].as_str().unwrap_or(""),
         );
-        let account_matched = reply_target_account_matches(
-            expected_account,
-            actual_account,
-            display_name_matched,
-        );
+        let account_matched =
+            reply_target_account_matches(expected_account, actual_account, display_name_matched);
 
         // compose/post 可以继续；
         // home 必须同时确认回复输入框和回复对象账号。
@@ -1245,7 +1268,8 @@ fn run_visual_reply_inner(
             "严格遵守下面列出的每一条回复规则；规则之间不得取舍。生成一条不换行、使用原帖主要语言的回复，只返回回复正文，不要解释或加引号。输出前逐条核对，任一规则不满足就重新生成。\n帖子正文：{post_text}\n回复规则：{}",
             options.reply_rules.trim()
         );
-        let reply_text = reply_filter::generate_compliant_reply(&options, &prompt, &post_text, cancel)?;
+        let reply_text =
+            reply_filter::generate_compliant_reply(&options, &prompt, &post_text, cancel)?;
         (
             Point {
                 x: point.0,
@@ -1277,7 +1301,11 @@ fn run_visual_reply_inner(
         )?;
         validate_composer_input_point(&input_point, composer.width, composer.height, false)?;
 
-        let reply_text = match reply_filter::sanitize_reply(&composer_decision.reply_text, &options.reply_rules, &post_text) {
+        let reply_text = match reply_filter::sanitize_reply(
+            &composer_decision.reply_text,
+            &options.reply_rules,
+            &post_text,
+        ) {
             Ok(reply) => reply,
             Err(error) => {
                 automation::log_event(&format!(
@@ -1329,26 +1357,22 @@ fn run_visual_reply_inner(
 
     automation::log_event("[自动回复][02/03]：回复已输入，截图核对后识别带‘回复’文字的提交按钮。");
     let typed = capture(&dir, &id, "03-typed", &mut screenshots)?;
-    let send_button = match ocr::locate_reply_submit_button(
-        &typed.png,
-        &reply_text,
-        typed.width,
-        typed.height,
-    ) {
-        Ok(Some((x, y))) => {
-            automation::log_event(&format!(
-                "[自动回复][02/03]：本地 OCR 已核对回复正文及弹窗右下方提交按钮：({}, {})。",
-                x, y
-            ));
-            Point { x, y }
-        }
-        Ok(None) => anyhow::bail!(
-            "本地 OCR 未能在已核验回复弹窗右下方定位提交按钮；禁止使用 AI 猜测坐标，未点击发送"
-        ),
-        Err(error) => anyhow::bail!(
-            "提交按钮局部 OCR 校验失败：{error:#}；禁止使用 AI 坐标兜底，未点击发送"
-        ),
-    };
+    let send_button =
+        match ocr::locate_reply_submit_button(&typed.png, &reply_text, typed.width, typed.height) {
+            Ok(Some((x, y))) => {
+                automation::log_event(&format!(
+                    "[自动回复][02/03]：本地 OCR 已核对回复正文及弹窗右下方提交按钮：({}, {})。",
+                    x, y
+                ));
+                Point { x, y }
+            }
+            Ok(None) => anyhow::bail!(
+                "本地 OCR 未能在已核验回复弹窗右下方定位提交按钮；禁止使用 AI 猜测坐标，未点击发送"
+            ),
+            Err(error) => anyhow::bail!(
+                "提交按钮局部 OCR 校验失败：{error:#}；禁止使用 AI 坐标兜底，未点击发送"
+            ),
+        };
 
     if !options.auto_send {
         return Ok(VisionReplyResult {
@@ -1376,14 +1400,17 @@ fn run_visual_reply_inner(
         pre_submit.width,
         pre_submit.height,
     )?
-    .ok_or_else(|| anyhow::anyhow!(
-        "点击前二次 OCR 未能在回复弹窗右下方重新确认提交按钮；已停止，未点击发送"
-    ))?;
+    .ok_or_else(|| {
+        anyhow::anyhow!("点击前二次 OCR 未能在回复弹窗右下方重新确认提交按钮；已停止，未点击发送")
+    })?;
     anyhow::ensure!(
         send_button.x.abs_diff(refreshed_button.0) <= 12
             && send_button.y.abs_diff(refreshed_button.1) <= 12,
         "提交按钮位置发生变化：首次=({}, {})，二次=({}, {})；禁止点击过期坐标",
-        send_button.x, send_button.y, refreshed_button.0, refreshed_button.1
+        send_button.x,
+        send_button.y,
+        refreshed_button.0,
+        refreshed_button.1
     );
     automation::log_event(&format!(
         "[自动回复][03/03]：点击前二次 OCR 坐标复核通过，按钮位置=({}, {})。",
@@ -1394,19 +1421,25 @@ fn run_visual_reply_inner(
     automation::log_event("========== [自动回复][03/03]：点击‘回复’并判断回复是否完成 ==========");
     // 点击前先持久化提交意图；数据库失败时绝不触发真实发送。
     binance_tools::db::x_assistant::mark_reply_submitting_blocking(&run_id)?;
-    native::click_at_client_position(send_button.x, send_button.y)
-        .map_err(|error| uncertain_send_error(&run_id, format!("首次提交点击返回错误，无法确认鼠标事件是否已生效：{error:#}")))?;
+    native::click_at_client_position(send_button.x, send_button.y).map_err(|error| {
+        uncertain_send_error(
+            &run_id,
+            format!("首次提交点击返回错误，无法确认鼠标事件是否已生效：{error:#}"),
+        )
+    })?;
     automation::log_event("[自动回复][03/03]：已点击‘回复’，等待 2 秒后采集结果截图。");
     thread::sleep(Duration::from_secs(2));
 
-    let mut done = capture(&dir, &id, "04-result", &mut screenshots)
-        .map_err(|error| uncertain_send_error(&run_id, format!("提交后结果截图采集失败：{error:#}")))?;
+    let mut done = capture(&dir, &id, "04-result", &mut screenshots).map_err(|error| {
+        uncertain_send_error(&run_id, format!("提交后结果截图采集失败：{error:#}"))
+    })?;
     // 提交点击已经发生：即使此时收到停止信号，也必须先做只读路由与 OCR 核验。
     // 后续是否允许重试由取消状态决定；取消后绝不再点击、关闭弹窗或处理下一帖。
     // 结果截图可能仍显示回复弹窗，这是正常的；但必须确认仍处于 X 首页/回复路由。
     // 如果意外跳到 Grok 或其他页面，不再对该截图执行状态点击或恢复操作。
-    ensure_reply_page_route(&done, "发送结果截图")
-        .map_err(|error| uncertain_send_error(&run_id, format!("提交后页面路由核验失败：{error:#}")))?;
+    ensure_reply_page_route(&done, "发送结果截图").map_err(|error| {
+        uncertain_send_error(&run_id, format!("提交后页面路由核验失败：{error:#}"))
+    })?;
 
     // ============================================================
     // 第一次发送结果检查：同一张截图只执行一次 OCR
@@ -1449,8 +1482,11 @@ fn run_visual_reply_inner(
 
     // 首次 2 秒检查没有明确结果时，才进行两次只读补查；正常发送不增加等待。
     // 计划检查点约为提交后 2/4/7 秒；OCR 处理耗时会使后续检查点顺延。停止信号到达后不再采集截图。
-    if !status.already_sent && !status.sent && !status.rate_limited
-        && !status.retryable_error && !sent_toast
+    if !status.already_sent
+        && !status.sent
+        && !status.rate_limited
+        && !status.retryable_error
+        && !sent_toast
     {
         for (attempt, delay) in [(1, 2), (2, 3)] {
             if let Err(error) = wait_cancel(cancel, Duration::from_secs(delay)) {
@@ -1460,33 +1496,50 @@ fn run_visual_reply_inner(
                 ));
             }
 
-            let stage = if attempt == 1 { "04-result-4s" } else { "04-result-7s" };
-            done = capture(&dir, &id, stage, &mut screenshots)
-                .map_err(|error| uncertain_send_error(&run_id, format!("{stage} 截图采集失败：{error:#}")))?;
-            ensure_reply_page_route(&done, stage)
-                .map_err(|error| uncertain_send_error(&run_id, format!("{stage} 页面路由核验失败：{error:#}")))?;
+            let stage = if attempt == 1 {
+                "04-result-4s"
+            } else {
+                "04-result-7s"
+            };
+            done = capture(&dir, &id, stage, &mut screenshots).map_err(|error| {
+                uncertain_send_error(&run_id, format!("{stage} 截图采集失败：{error:#}"))
+            })?;
+            ensure_reply_page_route(&done, stage).map_err(|error| {
+                uncertain_send_error(&run_id, format!("{stage} 页面路由核验失败：{error:#}"))
+            })?;
 
             status = match recognize_send_status(&done.png) {
                 Ok(status) => status,
                 Err(error) => {
-                    automation::log_event(&format!("[OCR][发送状态] 识别失败（{stage}）：{error:#}；继续只读核验。"));
+                    automation::log_event(&format!(
+                        "[OCR][发送状态] 识别失败（{stage}）：{error:#}；继续只读核验。"
+                    ));
                     Default::default()
                 }
             };
             sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
                 Ok(found) => found,
                 Err(error) => {
-                    automation::log_event(&format!("[OCR][发送提示] 识别失败（{stage}）：{error:#}。"));
+                    automation::log_event(&format!(
+                        "[OCR][发送提示] 识别失败（{stage}）：{error:#}。"
+                    ));
                     false
                 }
             };
 
             automation::log_event(&format!(
                 "{stage} 只读补查结果：already_sent={}，sent={}，toast={}，rate_limited={}，retryable_error={}",
-                status.already_sent, status.sent, sent_toast, status.rate_limited, status.retryable_error
+                status.already_sent,
+                status.sent,
+                sent_toast,
+                status.rate_limited,
+                status.retryable_error
             ));
-            if status.already_sent || status.sent || sent_toast
-                || status.rate_limited || status.retryable_error
+            if status.already_sent
+                || status.sent
+                || sent_toast
+                || status.rate_limited
+                || status.retryable_error
             {
                 break;
             }
@@ -1495,7 +1548,9 @@ fn run_visual_reply_inner(
 
     // 已经发送过
     if status.already_sent {
-        automation::log_event("[自动回复][03/03]：X 提示该回复已经发送过；标记该账号已处理，不再重发。");
+        automation::log_event(
+            "[自动回复][03/03]：X 提示该回复已经发送过；标记该账号已处理，不再重发。",
+        );
 
         return already_sent_result(
             &dir,
@@ -1514,7 +1569,9 @@ fn run_visual_reply_inner(
     // 发送成功：整页 OCR 或底部专用 OCR 任一明确识别成功提示即可。
     // 成功提示优先于稍后出现的网络错误 toast；提交动作已发生，不再进入重试流程。
     if status.sent || sent_toast {
-        automation::log_event("[自动回复][03/03]：OCR 明确检测到 X 发送成功提示；标记完成，不再调用视觉模型推翻成功结果，也不执行关闭弹窗操作。");
+        automation::log_event(
+            "[自动回复][03/03]：OCR 明确检测到 X 发送成功提示；标记完成，不再调用视觉模型推翻成功结果，也不执行关闭弹窗操作。",
+        );
 
         mark_reply_completed_or_stop(&run_id)?;
 
@@ -1533,7 +1590,9 @@ fn run_visual_reply_inner(
 
     // 平台限流
     if status.rate_limited {
-        automation::log_event("[自动回复][03/03]：检测到平台限流提示；不重试、不刷新，停止全自动发送。");
+        automation::log_event(
+            "[自动回复][03/03]：检测到平台限流提示；不重试、不刷新，停止全自动发送。",
+        );
 
         return Err(anyhow::Error::new(RateLimitDetected));
     }
@@ -1552,11 +1611,12 @@ fn run_visual_reply_inner(
     // 此时将 composer OCR 错误按“未检测到编辑框”处理，但仍需检查草稿确认框。
     // 非 Home 路由仍严格要求 composer 状态可识别，避免把 OCR 故障误判为已关闭。
     if !status.retryable_error {
-        let current_url = ocr::recognize_current_url(&done.png)
-            .map_err(|error| uncertain_send_error(
+        let current_url = ocr::recognize_current_url(&done.png).map_err(|error| {
+            uncertain_send_error(
                 &run_id,
                 format!("7 秒补查后无法再次确认页面路由：{error:#}"),
-            ))?;
+            )
+        })?;
         let is_home = current_url.as_deref().is_some_and(ocr::is_x_home_address);
         let composer_open = match ocr::reply_composer_is_open(&done.png) {
             Ok(open) => open,
@@ -1573,11 +1633,13 @@ fn run_visual_reply_inner(
                 ));
             }
         };
-        let draft_confirmation_open = ocr::recognize_save_draft_confirmation(&done.png)
-            .map_err(|error| uncertain_send_error(
-                &run_id,
-                format!("7 秒补查后无法判断草稿确认框状态：{error:#}"),
-            ))?;
+        let draft_confirmation_open =
+            ocr::recognize_save_draft_confirmation(&done.png).map_err(|error| {
+                uncertain_send_error(
+                    &run_id,
+                    format!("7 秒补查后无法判断草稿确认框状态：{error:#}"),
+                )
+            })?;
 
         if !composer_open && !draft_confirmation_open {
             let reason = "提交后 2/4/7 秒均未识别到成功提示，且 7 秒截图确认回复弹窗已关闭；结果未知，不重试当前回复，继续下一轮";
@@ -1612,7 +1674,9 @@ fn run_visual_reply_inner(
     let retryable_error = status.retryable_error;
 
     if retryable_error {
-        automation::log_event("[自动回复][03/03]：截图识别到发送错误；等待 5 秒后重新截图并确认发送状态。");
+        automation::log_event(
+            "[自动回复][03/03]：截图识别到发送错误；等待 5 秒后重新截图并确认发送状态。",
+        );
 
         if let Err(error) = wait_cancel(cancel, Duration::from_secs(5)) {
             return Err(uncertain_send_error(
@@ -1714,7 +1778,9 @@ fn run_visual_reply_inner(
 
         match retry_visual.reply_post_state.as_deref() {
             Some("sent_confirmation") if retry_visual.ok => {
-                automation::log_event("[自动回复][03/03]：视觉模型确认 X 显示蓝色发送成功提示（包括通用“你的帖子已发送”）；按本次回复已发送处理，不再重试。");
+                automation::log_event(
+                    "[自动回复][03/03]：视觉模型确认 X 显示蓝色发送成功提示（包括通用“你的帖子已发送”）；按本次回复已发送处理，不再重试。",
+                );
                 mark_reply_completed_or_stop(&run_id)?;
                 return Ok(VisionReplyResult {
                     screenshots,
@@ -1725,27 +1791,41 @@ fn run_visual_reply_inner(
                     reply_text,
                     completed: true,
                     skipped_duplicate: false,
-                    summary: "检测到 X 的发送成功提示，已确认回复发送完成，未重复提交。".to_string(),
+                    summary: "检测到 X 的发送成功提示，已确认回复发送完成，未重复提交。"
+                        .to_string(),
                 });
             }
             Some("visible") if retry_visual.ok => {
-                automation::log_event("[自动回复][03/03]：视觉复核明确确认回复已出现在原帖下方；不再提交。");
+                automation::log_event(
+                    "[自动回复][03/03]：视觉复核明确确认回复已出现在原帖下方；不再提交。",
+                );
                 return already_sent_result(
-                    &dir, &id, screenshots, &run_id, author_name, account_handle,
-                    posted_at, post_text, reply_text, cancel,
+                    &dir,
+                    &id,
+                    screenshots,
+                    &run_id,
+                    author_name,
+                    account_handle,
+                    posted_at,
+                    post_text,
+                    reply_text,
+                    cancel,
                 );
             }
             Some("not_visible") if retry_visual.ok => {
-                automation::log_event("[自动回复][03/03]：视觉复核确认原帖下方没有该回复，继续检查重试按钮。");
+                automation::log_event(
+                    "[自动回复][03/03]：视觉复核确认原帖下方没有该回复，继续检查重试按钮。",
+                );
             }
             _ => {
-                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                    .map_err(|error| {
+                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(
+                    |error| {
                         uncertain_send_error(
                             &run_id,
                             format!("视觉核验不确定且关闭弹窗失败：{error:#}"),
                         )
-                    })?;
+                    },
+                )?;
                 let reason = "发送错误后的视觉核验无法确认是否已发布；已安全关闭回复弹窗，标记 uncertain，跳过当前帖子且不重试";
                 binance_tools::db::x_assistant::mark_reply_uncertain_blocking(&run_id, reason)
                     .map_err(|error| anyhow::anyhow!(
@@ -1781,29 +1861,35 @@ fn run_visual_reply_inner(
             Ok(Some((x, y))) => Point { x, y },
 
             Ok(None) => {
-                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                    .map_err(|error| {
+                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(
+                    |error| {
                         uncertain_send_error(
                             &run_id,
                             format!("未找到重试按钮且关闭弹窗失败：{error:#}"),
                         )
-                    })?;
-                return Err(uncertain_send_error(&run_id, 
-                    "未能同时确认回复文本和提交按钮，已放弃重试"
+                    },
+                )?;
+                return Err(uncertain_send_error(
+                    &run_id,
+                    "未能同时确认回复文本和提交按钮，已放弃重试",
                 ));
             }
 
             Err(error) => {
-                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                    .map_err(|close_error| {
+                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(
+                    |close_error| {
                         uncertain_send_error(
                             &run_id,
                             format!(
                                 "重新识别按钮失败（{error:#}），且关闭弹窗失败：{close_error:#}"
                             ),
                         )
-                    })?;
-                return Err(uncertain_send_error(&run_id, format!("重新识别提交按钮失败：{error:#}")));
+                    },
+                )?;
+                return Err(uncertain_send_error(
+                    &run_id,
+                    format!("重新识别提交按钮失败：{error:#}"),
+                ));
             }
         };
 
@@ -1816,15 +1902,12 @@ fn run_visual_reply_inner(
             &retry_button,
             "重试时的弹窗提交按钮",
         )? {
-            close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                .map_err(|error| {
-                    uncertain_send_error(
-                        &run_id,
-                        format!("按钮区域变化且关闭弹窗失败：{error:#}"),
-                    )
-                })?;
-            return Err(uncertain_send_error(&run_id, 
-                "重试前回复弹窗发生变化，已停止，未使用过期坐标"
+            close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(|error| {
+                uncertain_send_error(&run_id, format!("按钮区域变化且关闭弹窗失败：{error:#}"))
+            })?;
+            return Err(uncertain_send_error(
+                &run_id,
+                "重试前回复弹窗发生变化，已停止，未使用过期坐标",
             ));
         }
 
@@ -1843,13 +1926,21 @@ fn run_visual_reply_inner(
 
         // 第二次点击前再次持久化尝试次数与北京时间提交时间。
         binance_tools::db::x_assistant::mark_reply_submitting_blocking(&run_id)?;
-        native::click_at_client_position(retry_button.x, retry_button.y)
-            .map_err(|error| uncertain_send_error(&run_id, format!("唯一一次重试点击返回错误，无法确认鼠标事件是否已生效：{error:#}")))?;
+        native::click_at_client_position(retry_button.x, retry_button.y).map_err(|error| {
+            uncertain_send_error(
+                &run_id,
+                format!("唯一一次重试点击返回错误，无法确认鼠标事件是否已生效：{error:#}"),
+            )
+        })?;
 
         thread::sleep(Duration::from_secs(2));
 
-        done = capture(&dir, &id, "05-retry-result", &mut screenshots)
-            .map_err(|error| uncertain_send_error(&run_id, format!("唯一一次重试提交后截图采集失败：{error:#}")))?;
+        done = capture(&dir, &id, "05-retry-result", &mut screenshots).map_err(|error| {
+            uncertain_send_error(
+                &run_id,
+                format!("唯一一次重试提交后截图采集失败：{error:#}"),
+            )
+        })?;
 
         // 第二次提交后同样进入只读结果核验，不允许取消信号跳过 OCR。
 
@@ -1864,20 +1955,26 @@ fn run_visual_reply_inner(
                     "[自动回复][03/03]：唯一一次重试后 OCR 识别失败：{error:#}；无法确认发送结果。"
                 ));
 
-                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                    .map_err(|close_error| {
+                close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(
+                    |close_error| {
                         uncertain_send_error(
                             &run_id,
                             format!("重试后 OCR 失败且关闭弹窗失败：{close_error:#}"),
                         )
-                    })?;
-                return Err(uncertain_send_error(&run_id, format!("重试后 OCR 无法确认发送结果：{error:#}")));
+                    },
+                )?;
+                return Err(uncertain_send_error(
+                    &run_id,
+                    format!("重试后 OCR 无法确认发送结果：{error:#}"),
+                ));
             }
         };
 
         // 已经发送过
         if status.already_sent {
-            automation::log_event("[自动回复][03/03]：重试后 X 提示该回复已经发送过；标记完成，不再重发。");
+            automation::log_event(
+                "[自动回复][03/03]：重试后 X 提示该回复已经发送过；标记完成，不再重发。",
+            );
 
             return already_sent_result(
                 &dir,
@@ -1914,7 +2011,9 @@ fn run_visual_reply_inner(
 
         // 限流
         if status.rate_limited {
-            automation::log_event("[自动回复][03/03]：重试后检测到平台限流提示；立即停止全自动发送。");
+            automation::log_event(
+                "[自动回复][03/03]：重试后检测到平台限流提示；立即停止全自动发送。",
+            );
 
             return Err(anyhow::Error::new(RateLimitDetected));
         }
@@ -1932,18 +2031,19 @@ fn run_visual_reply_inner(
                 "[自动回复][03/03]：唯一一次重试后仍检测到发送错误；只有确认弹窗关闭后才继续下一条。",
             );
 
-            close_reply_composer_safely(&dir, &id, &mut screenshots, cancel)
-                .map_err(|error| {
-                    uncertain_send_error(
-                        &run_id,
-                        format!("重试仍失败且无法确认关闭回复弹窗：{error:#}"),
-                    )
-                })?;
+            close_reply_composer_safely(&dir, &id, &mut screenshots, cancel).map_err(|error| {
+                uncertain_send_error(
+                    &run_id,
+                    format!("重试仍失败且无法确认关闭回复弹窗：{error:#}"),
+                )
+            })?;
             binance_tools::db::x_assistant::mark_reply_failed_blocking(
                 &run_id,
                 "X 在唯一一次重试后仍显示发送错误",
             )
-            .map_err(|error| uncertain_send_error(&run_id, format!("保存发送失败状态失败：{error:#}")))?;
+            .map_err(|error| {
+                uncertain_send_error(&run_id, format!("保存发送失败状态失败：{error:#}"))
+            })?;
 
             return Ok(VisionReplyResult {
                 screenshots,
@@ -1974,12 +2074,15 @@ fn run_visual_reply_inner(
         // 提交动作已经发生，且页面可能因发送成功自动关闭弹窗。
         // 不再按 Escape 或尝试“放弃草稿”，避免误操作已发送内容；保留页面供人工核验。
         automation::log_event(
-            "[自动回复][03/03]：视觉模型未确认发送结果；保留当前页面，不执行关闭/放弃草稿操作，也绝不重复提交。"
+            "[自动回复][03/03]：视觉模型未确认发送结果；保留当前页面，不执行关闭/放弃草稿操作，也绝不重复提交。",
         );
-        return Err(uncertain_send_error(&run_id, format!(
-            "无法确认回复是否已发送（{}）；保留页面供人工核验，本轮停止，不继续处理下一条",
-            fallback_reason(&done_decision, "完成状态不明确")
-        )));
+        return Err(uncertain_send_error(
+            &run_id,
+            format!(
+                "无法确认回复是否已发送（{}）；保留页面供人工核验，本轮停止，不继续处理下一条",
+                fallback_reason(&done_decision, "完成状态不明确")
+            ),
+        ));
     }
 
     mark_reply_completed_or_stop(&run_id)?;
@@ -1995,7 +2098,6 @@ fn run_visual_reply_inner(
         summary: "截图确认回复已发送。".to_string(),
     })
 }
-
 
 fn uncertain_send_error(run_id: &str, reason: impl std::fmt::Display) -> anyhow::Error {
     let reason = reason.to_string();
@@ -2026,10 +2128,15 @@ fn mark_reply_completed_or_stop(run_id: &str) -> anyhow::Result<()> {
             }
         }
     }
-    Err(uncertain_send_error(&run_id, format!(
-        "X 已确认回复发送，但 SQLite 连续 3 次无法保存完成状态；run_id={run_id}；最后错误：{}",
-        last_error.map(|error| format!("{error:#}")).unwrap_or_else(|| "未知错误".to_string())
-    )))
+    Err(uncertain_send_error(
+        &run_id,
+        format!(
+            "X 已确认回复发送，但 SQLite 连续 3 次无法保存完成状态；run_id={run_id}；最后错误：{}",
+            last_error
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "未知错误".to_string())
+        ),
+    ))
 }
 
 fn already_sent_result(
@@ -2044,14 +2151,21 @@ fn already_sent_result(
     reply_text: String,
     cancel: &AtomicBool,
 ) -> anyhow::Result<VisionReplyResult> {
-    binance_tools::db::x_assistant::mark_reply_duplicate_blocking(run_id)
-        .map_err(|error| uncertain_send_error(run_id, format!("保存重复发送状态失败：{error:#}")))?;
+    binance_tools::db::x_assistant::mark_reply_duplicate_blocking(run_id).map_err(|error| {
+        uncertain_send_error(run_id, format!("保存重复发送状态失败：{error:#}"))
+    })?;
     let cancelled = cancel.load(Ordering::Relaxed);
     if cancelled {
-        automation::log_event("发送结果已确认，但收到停止信号；跳过关闭编辑框，不再执行任何 UI 点击。");
+        automation::log_event(
+            "发送结果已确认，但收到停止信号；跳过关闭编辑框，不再执行任何 UI 点击。",
+        );
     } else {
-        close_reply_composer_safely(dir, id, &mut screenshots, cancel)
-            .map_err(|error| uncertain_send_error(&run_id, format!("X 已确认该回复发送过，但关闭编辑框失败：{error:#}")))?;
+        close_reply_composer_safely(dir, id, &mut screenshots, cancel).map_err(|error| {
+            uncertain_send_error(
+                &run_id,
+                format!("X 已确认该回复发送过，但关闭编辑框失败：{error:#}"),
+            )
+        })?;
     }
     Ok(VisionReplyResult {
         screenshots,
@@ -2072,9 +2186,9 @@ fn already_sent_result(
 
 fn ensure_reply_page_route(shot: &Shot, phase: &str) -> anyhow::Result<()> {
     let current_url = ocr::recognize_current_url(&shot.png)?;
-    let allowed = current_url.as_deref().is_some_and(|url| {
-        ocr::is_x_home_address(url) || ocr::is_x_compose_post_address(url)
-    });
+    let allowed = current_url
+        .as_deref()
+        .is_some_and(|url| ocr::is_x_home_address(url) || ocr::is_x_compose_post_address(url));
     automation::log_event(&format!(
         "{phase}：页面路由核验，识别地址={current_url:?}，允许继续={allowed}。"
     ));
@@ -2104,7 +2218,9 @@ fn close_reply_composer_safely(
         ensure_reply_page_route(&shot, "网络错误关闭回复框")?;
         let current_url = ocr::recognize_current_url(&shot.png)?;
         if current_url.as_deref().is_some_and(ocr::is_x_home_address) {
-            automation::log_event("[自动回复][03/03]：Escape 后已通过地址栏确认回到 X 首页；关闭流程完成。");
+            automation::log_event(
+                "[自动回复][03/03]：Escape 后已通过地址栏确认回到 X 首页；关闭流程完成。",
+            );
             return Ok(());
         }
 
@@ -2134,9 +2250,7 @@ fn close_reply_composer_safely(
         }
 
         if ocr::recognize_save_draft_confirmation(&shot.png)? {
-            anyhow::bail!(
-                "识别到草稿确认框，但未能精确定位‘放弃’按钮；保留页面，不猜测点击坐标"
-            );
+            anyhow::bail!("识别到草稿确认框，但未能精确定位‘放弃’按钮；保留页面，不猜测点击坐标");
         }
 
         match ocr::reply_composer_is_open(&shot.png) {
@@ -2166,9 +2280,7 @@ fn identify_post_for_mode(
         // X 首页偶尔会在时间线位置显示网络错误提示。此时不能继续按“无完整帖子”
         // 处理，否则会不断跳过帖子；持续刷新直到页面恢复，停止信号随时可中断。
         if ocr::timeline_has_reload_error(&feed.png)? {
-            automation::log_event(
-                "时间线加载异常：识别到“出错了，请重新加载”，进入页面恢复循环。",
-            );
+            automation::log_event("时间线加载异常：识别到“出错了，请重新加载”，进入页面恢复循环。");
             loop {
                 check_cancel(cancel)?;
                 native::activate_browser()?;
@@ -3229,11 +3341,7 @@ fn reply_target_identity_matches(display_name_matched: bool, account_matched: bo
     display_name_matched || account_matched
 }
 
-fn reply_target_account_matches(
-    expected: &str,
-    actual: &str,
-    display_name_matched: bool,
-) -> bool {
+fn reply_target_account_matches(expected: &str, actual: &str, display_name_matched: bool) -> bool {
     if expected.is_empty() || actual.is_empty() {
         return false;
     }
@@ -3244,7 +3352,9 @@ fn reply_target_account_matches(
     // 仅当显示名称也在当前回复弹窗的现有 OCR 文本中匹配时，
     // 才容忍 OCR 漏掉/多识别下划线；其他账号差异仍然拒绝发送。
     display_name_matched
-        && expected.replace('_', "").eq_ignore_ascii_case(&actual.replace('_', ""))
+        && expected
+            .replace('_', "")
+            .eq_ignore_ascii_case(&actual.replace('_', ""))
 }
 
 fn fallback_reason(decision: &VisionDecision, fallback: &str) -> String {
@@ -3275,9 +3385,20 @@ mod tests {
 
     #[test]
     fn accepts_missing_underscore_only_when_display_name_matches() {
-        assert!(identity_text_matches("特立独行", "回复给 @Ai_SoloWalker\n特立独行"));
-        assert!(reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", true));
-        assert!(!reply_target_account_matches("AiSoloWalker", "Ai_SoloWalker", false));
+        assert!(identity_text_matches(
+            "特立独行",
+            "回复给 @Ai_SoloWalker\n特立独行"
+        ));
+        assert!(reply_target_account_matches(
+            "AiSoloWalker",
+            "Ai_SoloWalker",
+            true
+        ));
+        assert!(!reply_target_account_matches(
+            "AiSoloWalker",
+            "Ai_SoloWalker",
+            false
+        ));
     }
 
     #[test]
@@ -3290,7 +3411,11 @@ mod tests {
 
     #[test]
     fn rejects_other_account_mismatches_even_when_display_name_matches() {
-        assert!(!reply_target_account_matches("AiSoloWalker", "AiSoloWalkerr", true));
+        assert!(!reply_target_account_matches(
+            "AiSoloWalker",
+            "AiSoloWalkerr",
+            true
+        ));
         assert!(!reply_target_account_matches("", "Ai_SoloWalker", true));
     }
 
