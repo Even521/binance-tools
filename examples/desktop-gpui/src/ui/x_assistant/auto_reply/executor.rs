@@ -169,10 +169,15 @@ impl AutoReplyRunner {
             self.failures += 1;
         }
 
+        let scroll_reason = if result.summary.contains("模板预筛无互动按钮") {
+            "模板预筛无互动按钮，较大幅度向下查找帖子"
+        } else {
+            "本轮处理结束，向下查找下一条帖子"
+        };
         self.last_result = Some(result);
 
         // 正常轮次只滚动，不刷新页面。
-        self.scroll_or_recover(cancel, "本轮处理结束，向下查找下一条帖子")
+        self.scroll_or_recover(cancel, scroll_reason)
     }
 
     /// 滚动失败属于普通恢复错误：再尝试一次分类恢复，成功后回到主循环。

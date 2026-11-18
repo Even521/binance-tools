@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use serde::{Deserialize, Deserializer};
 
 use super::automation::{self, native};
@@ -234,6 +235,9 @@ struct Shot {
 }
 
 pub(super) fn scroll_to_next_post(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
+    if reason.contains("模板预筛无互动按钮") {
+        return scroll_down_farther(cancel, reason);
+    }
     scroll_down_in_small_steps(cancel, reason)
 }
 
@@ -465,9 +469,18 @@ pub(super) fn randomized_recovery(cancel: &AtomicBool, reason: &str) -> anyhow::
 }
 
 fn scroll_down_in_small_steps(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
-    // 每轮随机滚动 5～12 格，每段随机滚动 2～5 格。
+    // 普通跳过每轮随机滚动 5～12 格。
     scroll_down_random_steps(cancel, reason, 5, 12)?;
+    finish_feed_scroll(cancel)
+}
 
+fn scroll_down_farther(cancel: &AtomicBool, reason: &str) -> anyhow::Result<()> {
+    automation::log_event("模板未命中互动按钮：采用较大滚动距离 10～18 格，避免重复扫描当前区域。");
+    scroll_down_random_steps(cancel, reason, 10, 18)?;
+    finish_feed_scroll(cancel)
+}
+
+fn finish_feed_scroll(cancel: &AtomicBool) -> anyhow::Result<()> {
     let count = FEED_SCROLL_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
     automation::log_event(&format!("时间线滚动计数：{count}/{SCROLLS_BEFORE_REFRESH}"));
 
@@ -655,6 +668,64 @@ fn run_visual_reply_inner(
 
     // 鼠标移动完成后，采集正式用于帖子识别的截图。
     let mut feed = capture(&dir, &id, "01-feed", &mut screenshots)?;
+
+    // 先在时间线区域用低成本模板匹配筛除没有回复入口的页面；
+    // 模板匹配只作预筛，最终帖子与按钮坐标仍由 OCR/现有校验负责。
+    let template_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/vision-benchmark/templates");
+    let templates = [
+        ("reply", template_dir.join("reply.png")),
+        ("like", template_dir.join("like.png")),
+        ("repost", template_dir.join("repost.png")),
+    ];
+    let template_refs: Vec<(&str, &std::path::Path)> = templates
+        .iter()
+        .map(|(name, path)| (*name, path.as_path()))
+        .collect();
+    let timeline_region = vision_benchmark::SearchRegion {
+        x: feed.width * 24 / 100,
+        y: feed.height * 10 / 100,
+        width: feed.width * 29 / 100,
+        height: feed.height * 90 / 100,
+    };
+    let template_started = Instant::now();
+    match vision_benchmark::scan_templates(
+        &feed.png,
+        &template_refs,
+        0.70,
+        &[1.0, 0.8, 1.25],
+        Some(timeline_region),
+    ) {
+        Ok(hits) if !hits.is_empty() => automation::log_event(&format!(
+            "[自动回复][01/03]：01-feed 互动按钮模板预筛命中 [{}]，耗时={} ms；坐标仅用于预筛。",
+            hits.iter()
+                .map(|hit| format!("{}:{:.3}", hit.name, hit.score))
+                .collect::<Vec<_>>()
+                .join(", "),
+            template_started.elapsed().as_millis()
+        )),
+        Ok(_) => {
+            automation::log_event(&format!(
+                "[自动回复][01/03]：01-feed 时间线区域未发现回复/点赞/转发模板，跳过完整 OCR；匹配耗时={} ms。",
+                template_started.elapsed().as_millis()
+            ));
+            return skip_post_and_scroll(
+                screenshots,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                cancel,
+                false,
+                "01-feed 模板预筛无互动按钮",
+            );
+        }
+        Err(error) => automation::log_event(&format!(
+            "[自动回复][01/03]：互动按钮模板预筛失败，回退完整 OCR：{error:#}；耗时={} ms.",
+            template_started.elapsed().as_millis()
+        )),
+    }
+
     if options.hover_only {
         automation::log_event("[自动回复][01/03]：仅移动鼠标，不点击。");
         let prompt = action_bar_prompt(feed.width, feed.height);

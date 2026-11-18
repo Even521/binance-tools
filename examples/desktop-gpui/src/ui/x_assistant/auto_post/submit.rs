@@ -10,10 +10,10 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, ensure};
 use super::content::PreparedPost;
-use crate::ui::x_assistant::{automation, ocr};
 use crate::ui::x_assistant::ocr_status::recognize_send_status;
+use crate::ui::x_assistant::{automation, ocr};
+use anyhow::{Context, ensure};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubmitOutcome {
@@ -37,8 +37,13 @@ fn screenshot_path(post_id: i64, label: &str) -> anyhow::Result<PathBuf> {
         .join("x_assistant")
         .join("auto_post")
         .join(post_id.to_string());
-    std::fs::create_dir_all(&root)
-        .with_context(|| format!("创建发帖记录 {} 的截图目录失败：{}", post_id, root.display()))?;
+    std::fs::create_dir_all(&root).with_context(|| {
+        format!(
+            "创建发帖记录 {} 的截图目录失败：{}",
+            post_id,
+            root.display()
+        )
+    })?;
     let timestamp = app_log::beijing_now().format("%Y%m%d-%H%M%S%.3f");
     Ok(root.join(format!("post-{post_id}-{timestamp}-{label}.png")))
 }
@@ -74,8 +79,8 @@ fn capture_window(post_id: i64, label: &str) -> anyhow::Result<PathBuf> {
     );
 
     automation::native::capture_window(&path)?;
-    let image = image::open(&path)
-        .with_context(|| format!("读取自动发帖截图失败：{}", path.display()))?;
+    let image =
+        image::open(&path).with_context(|| format!("读取自动发帖截图失败：{}", path.display()))?;
     anyhow::ensure!(
         image.width() >= 800 && image.height() >= 600,
         "自动发帖截图尺寸异常（{}x{}）",
@@ -115,9 +120,7 @@ fn ensure_x_compose_route(post_id: i64, label: &str) -> anyhow::Result<()> {
         ocr::is_x_compose_post_address(&address),
         "浏览器当前地址已不是 X 发帖页面（识别到：{address}）；为避免误点，停止自动发帖"
     );
-    automation::log_post_event(&format!(
-        "[自动发帖] 二次地址校验通过：{address}"
-    ));
+    automation::log_post_event(&format!("[自动发帖] 二次地址校验通过：{address}"));
     Ok(())
 }
 
@@ -137,14 +140,17 @@ pub fn submit_prepared_post(
         check_cancel(cancel)?;
         // 优先复用自动回复正在使用的 Chrome 窗口；只有确实找不到浏览器时才启动新窗口。
         if automation::native::activate_browser().is_ok() {
-            automation::log_post_event("[自动发帖][08/12] 复用当前浏览器并导航到 https://x.com/compose/post");
+            automation::log_post_event(
+                "[自动发帖][08/12] 复用当前浏览器并导航到 https://x.com/compose/post",
+            );
             automation::native::navigate_to_x_compose()
                 .context("复用现有浏览器并导航到 X 发帖页面失败")?;
             wait_or_cancel(cancel, Duration::from_secs(4))?;
         } else {
-            automation::log_post_event("[自动发帖][08/12] 未发现浏览器，启动 Chrome 并打开 https://x.com/compose/post");
-            super::super::option::open_chrome()
-                .context("首次启动 Chrome 并打开 X 发帖页面失败")?;
+            automation::log_post_event(
+                "[自动发帖][08/12] 未发现浏览器，启动 Chrome 并打开 https://x.com/compose/post",
+            );
+            super::super::option::open_chrome().context("首次启动 Chrome 并打开 X 发帖页面失败")?;
             wait_or_cancel(cancel, Duration::from_secs(5))?;
             automation::native::activate_browser()
                 .context("Chrome 已启动，但未能切换到浏览器窗口")?;
@@ -158,10 +164,8 @@ pub fn submit_prepared_post(
         let mut confirmed_url = None;
         for attempt in 1..=20 {
             check_cancel(cancel)?;
-            let route_image = capture_desktop(
-                post.post_id,
-                &format!("compose-route-{attempt:02}"),
-            )?;
+            let route_image =
+                capture_desktop(post.post_id, &format!("compose-route-{attempt:02}"))?;
             match ocr::recognize_current_url(&route_image) {
                 Ok(Some(url)) if ocr::is_x_compose_post_address(&url) => {
                     automation::log_post_event(&format!(
@@ -196,16 +200,38 @@ pub fn submit_prepared_post(
         );
         automation::log_post_event("[自动发帖] 地址栏校验通过，确认进入 X 发帖页面");
 
-        // 地址确认后再截取浏览器客户区；该尺寸与自动回复保持一致。
-        automation::log_post_event("[自动发帖][10/12] 截图并 OCR 定位发帖输入框");
-        check_cancel(cancel)?;
-        let page_image = capture_window(post.post_id, "compose-empty")?;
-        // 地址栏在步骤 3/8 校验后可能发生跳转。必须在使用客户区截图定位前
-        // 再次确认仍处于 compose/post，不能让主页上的相似文字触发点击。
+        // URL 已进入 compose/post 后，页面组件仍可能尚未完成渲染；多次采样等待输入框出现。
+        // 每次使用新截图，避免把页面刚加载时的一次 OCR 漏识别当成最终失败。
+        automation::log_post_event("[自动发帖][10/12] 等待发帖弹窗和输入框加载，最多重试 15 次");
+        let mut input_point = None;
+        for attempt in 1..=15 {
+            check_cancel(cancel)?;
+            let image = capture_window(post.post_id, &format!("compose-empty-{attempt:02}"))?;
+            match ocr::locate_post_composer_input(&image) {
+                Ok(Some(point)) => {
+                    automation::log_post_event(&format!(
+                        "[自动发帖] 第 {attempt}/15 次截图识别到发帖输入框"
+                    ));
+                    input_point = Some(point);
+                    break;
+                }
+                Ok(None) => automation::log_post_event(&format!(
+                    "[自动发帖] 第 {attempt}/15 次截图尚未识别到发帖输入框，等待页面加载"
+                )),
+                Err(error) => automation::log_post_event(&format!(
+                    "[自动发帖] 第 {attempt}/15 次输入框 OCR 暂时失败：{error:#}；等待后重试"
+                )),
+            }
+            if attempt < 15 {
+                wait_or_cancel(cancel, Duration::from_secs(1))?;
+            }
+        }
+
+        let input_point = input_point
+            .context("等待 15 次仍未能通过 OCR 定位发帖输入框；未输入正文、未点击发布")?;
+        // 页面稳定并识别到输入框后，再核对地址，避免旧截图或主页内容触发点击。
         ensure_x_compose_route(post.post_id, "compose-route-recheck-before-input")?;
         let (width, height) = automation::native::get_window_client_size()?;
-        let input_point = ocr::locate_post_composer_input(&page_image)?
-            .context("未能通过 OCR 可靠定位发帖输入框，已停止")?;
         automation::log_post_event(&format!(
             "[自动发帖] 已识别发帖输入框，客户区坐标=({}, {})",
             input_point.0, input_point.1
@@ -275,7 +301,9 @@ pub fn submit_prepared_post(
         let cursor_x = (width as i32 - 24).max(0);
         let cursor_y = (height as i32 / 2).max(0);
         match automation::native::move_cursor_to_client_position(cursor_x, cursor_y) {
-            Ok(()) => automation::log_post_event("[自动发帖] 已将鼠标移到浏览器右侧空白区域，开始检查编辑弹窗是否真正提交"),
+            Ok(()) => automation::log_post_event(
+                "[自动发帖] 已将鼠标移到浏览器右侧空白区域，开始检查编辑弹窗是否真正提交",
+            ),
             Err(error) => automation::log_post_event(&format!(
                 "[自动发帖] 警告：点击后鼠标未能移开：{error:#}；继续执行提交状态核验"
             )),
@@ -347,8 +375,8 @@ pub fn submit_prepared_post(
             }
         }
 
-        let result_page = last_result_page
-            .context("提交后未能保存任何结果截图；发布状态保持 Unknown")?;
+        let result_page =
+            last_result_page.context("提交后未能保存任何结果截图；发布状态保持 Unknown")?;
         if published {
             binance_tools::db::x_posting::mark_post_published_blocking(post.post_id, None)?;
             let message = format!(
@@ -357,12 +385,15 @@ pub fn submit_prepared_post(
             );
             automation::log_post_event(&format!(
                 "[自动发帖][12/12] 流程结束，更新本地发布状态，记录 ID={} 状态=Published；成功提示截图={}",
-                post.post_id, result_page.display()
+                post.post_id,
+                result_page.display()
             ));
             // 已确认发布成功后回到时间线，下一轮自动回复可直接接手同一个标签页。
             match automation::native::navigate_to_x_home() {
                 Ok(()) => {
-                    automation::log_post_event("[自动发帖] 已复用当前 Chrome 标签页返回 https://x.com/home，准备交还自动回复流程");
+                    automation::log_post_event(
+                        "[自动发帖] 已复用当前 Chrome 标签页返回 https://x.com/home，准备交还自动回复流程",
+                    );
                     thread::sleep(Duration::from_secs(3));
                 }
                 Err(error) => {
@@ -384,7 +415,8 @@ pub fn submit_prepared_post(
             binance_tools::db::x_posting::mark_post_unknown_blocking(post.post_id, &reason)?;
             automation::log_post_event(&format!(
                 "[自动发帖][12/12] 流程结束，更新本地发布状态，记录 ID={} 状态=Unknown；未识别到整图发送成功状态；最后截图={}",
-                post.post_id, result_page.display()
+                post.post_id,
+                result_page.display()
             ));
             Ok(SubmitResult {
                 post_id: post.post_id,
@@ -409,10 +441,8 @@ pub fn submit_prepared_post(
                     &format!("提交动作可能已发生，但后续流程失败：{reason}"),
                 );
             } else {
-                let _ = binance_tools::db::x_posting::mark_post_failed_blocking(
-                    post.post_id,
-                    &reason,
-                );
+                let _ =
+                    binance_tools::db::x_posting::mark_post_failed_blocking(post.post_id, &reason);
             }
             Err(error)
         }

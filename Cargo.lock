@@ -1816,10 +1816,12 @@ dependencies = [
  "ocr-rs",
  "pulldown-cmark",
  "reqwest",
+ "robost-vision",
  "serde",
  "serde_json",
  "spot-ai-analysis",
  "tokio",
+ "vision-benchmark",
  "windows 0.61.3",
  "winresource",
 ]

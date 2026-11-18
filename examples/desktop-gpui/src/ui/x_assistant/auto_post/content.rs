@@ -3,7 +3,10 @@
 //! 本模块只生成并预留待发布内容，不操作浏览器、不点击发布。
 //! 浏览器提交必须由 executor/submit 在统一 browser lease 下执行。
 
-use std::{sync::atomic::{AtomicBool, Ordering}, time::Duration};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use anyhow::{Context, ensure};
 use binance_tools::{
@@ -19,7 +22,7 @@ use binance_tools::{
 
 const MAX_POST_CHARS: usize = 100;
 const NEWS_SCAN_LIMIT: i64 = 100;
-const MAX_COMPRESSION_ATTEMPTS: usize = 4;
+const MAX_COMPRESSION_ATTEMPTS: usize = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewsKind {
@@ -45,9 +48,10 @@ impl NewsFilter {
 
     fn includes(self, kind: NewsKind) -> bool {
         matches!(self, Self::All)
-            || matches!((self, kind),
-                (Self::Crypto, NewsKind::Crypto)
-                    | (Self::Entertainment, NewsKind::Entertainment))
+            || matches!(
+                (self, kind),
+                (Self::Crypto, NewsKind::Crypto) | (Self::Entertainment, NewsKind::Entertainment)
+            )
     }
 }
 
@@ -68,8 +72,12 @@ impl NewsKind {
 
     fn system_prompt(self) -> &'static str {
         match self {
-            Self::Crypto => "你是一名专业的中文加密行业 X 博主。把新闻写成自然、有信息量、适合 X 的短帖。只保留原文明确支持的事实、人物、项目、时间和数字；传闻必须保留传闻属性；不得投资建议、夸大或编造。严格按两段输出：第一段是简洁准确的标题，第二段是正文，中间必须空一行。避免新闻通稿腔、空话、标题党、强行互动和重复句式。不要使用感叹号、问号，不要添加 #话题标签。严格控制在 100 个 Unicode 字符以内。只输出标题和正文，不要解释、引号或任何网址、链接地址。",
-            Self::Entertainment => "你是一名熟悉中文社交平台表达的娱乐资讯编辑。把娱乐新闻写成自然、轻松、清楚的中文 X 短帖。准确保留人物、事件和原文细节；传闻必须明确标注为传闻，不得造谣、影射或补充未经证实的信息。严格按两段输出：第一段是简洁准确的标题，第二段是正文，中间必须空一行。避免攻击、羞辱、标题党、营销腔、空话和强行互动。不要使用感叹号、问号，不要添加 #话题标签。严格控制在 100 个 Unicode 字符以内。只输出标题和正文，不要解释或引号。",
+            Self::Crypto => {
+                "你是一名专业的中文加密行业 X 博主。把一条新闻写成自然、准确、简洁的 X 短帖。只保留原文明确支持的事实、人物、项目、时间和数字；传闻必须保留传闻属性；不得投资建议、夸大或编造。只写一个核心事件，不得罗列多条新闻、多个事件或多个无关事实。严格按三行输出：第一行是核心标题，第二行是核心内容，第三行是详情；标题后空一行，核心内容与详情之间换行。详情只补充理解核心事件所需的一项关键信息，不要扩写。不要使用感叹号、问号，不要添加 #话题标签。严格控制在 100 个 Unicode 字符以内。只输出标题和正文，不要解释、引号或任何网址、链接地址。"
+            }
+            Self::Entertainment => {
+                "你是一名熟悉中文社交平台表达的娱乐资讯编辑。把一条娱乐新闻写成自然、轻松、简洁的中文 X 短帖。准确保留人物、事件和必要细节；传闻必须明确标注为传闻，不得造谣、影射或补充未经证实的信息。只写一个核心事件，不得罗列多条新闻、多个事件或多个无关事实。严格按三行输出：第一行是核心标题，第二行是核心内容，第三行是详情；标题后空一行，核心内容与详情之间换行。详情只补充理解核心事件所需的一项关键信息，不要扩写。避免攻击、羞辱、标题党、营销腔、空话和强行互动。不要使用感叹号、问号，不要添加 #话题标签。严格控制在 100 个 Unicode 字符以内。只输出标题和正文，不要解释或引号。"
+            }
         }
     }
 }
@@ -96,25 +104,80 @@ fn hot_score(kind: NewsKind, title: &str, summary: &str, timestamp: &str) -> i64
     let text = format!("{title} {summary}").to_lowercase();
     let terms: &[(&str, i64)] = match kind {
         NewsKind::Crypto => &[
-            ("比特币", 5), ("btc", 5), ("以太坊", 5), ("ethereum", 5), ("eth", 4),
-            ("美联储", 5), ("降息", 5), ("加息", 4), ("etf", 5), ("sec", 4),
-            ("监管", 4), ("黑客", 5), ("被盗", 5), ("漏洞", 4), ("清算", 5),
-            ("暴涨", 4), ("暴跌", 4), ("大涨", 3), ("大跌", 3), ("突破", 3),
-            ("历史新高", 5), ("创纪录", 4), ("资金流入", 4), ("资金流出", 4),
-            ("交易所", 3), ("币安", 4), ("上币", 3), ("下架", 3), ("稳定币", 3),
-            ("空投", 2), ("主网", 2), ("融资", 3), ("收购", 3), ("诉讼", 4),
-            ("破产", 5), ("暂停提现", 5), ("清退", 3), ("政策", 3),
+            ("比特币", 5),
+            ("btc", 5),
+            ("以太坊", 5),
+            ("ethereum", 5),
+            ("eth", 4),
+            ("美联储", 5),
+            ("降息", 5),
+            ("加息", 4),
+            ("etf", 5),
+            ("sec", 4),
+            ("监管", 4),
+            ("黑客", 5),
+            ("被盗", 5),
+            ("漏洞", 4),
+            ("清算", 5),
+            ("暴涨", 4),
+            ("暴跌", 4),
+            ("大涨", 3),
+            ("大跌", 3),
+            ("突破", 3),
+            ("历史新高", 5),
+            ("创纪录", 4),
+            ("资金流入", 4),
+            ("资金流出", 4),
+            ("交易所", 3),
+            ("币安", 4),
+            ("上币", 3),
+            ("下架", 3),
+            ("稳定币", 3),
+            ("空投", 2),
+            ("主网", 2),
+            ("融资", 3),
+            ("收购", 3),
+            ("诉讼", 4),
+            ("破产", 5),
+            ("暂停提现", 5),
+            ("清退", 3),
+            ("政策", 3),
         ],
         NewsKind::Entertainment => &[
-            ("官宣", 5), ("恋情", 5), ("分手", 5), ("结婚", 4), ("离婚", 5),
-            ("出轨", 5), ("回应", 4), ("声明", 5), ("道歉", 4), ("塌房", 5),
-            ("争议", 4), ("爆料", 4), ("辟谣", 5), ("工作室", 3), ("经纪人", 2),
-            ("演员", 2), ("明星", 2), ("艺人", 2), ("综艺", 2), ("电视剧", 2),
-            ("电影", 2), ("票房", 3), ("定档", 3), ("杀青", 2), ("开机", 2),
-            ("红毯", 3), ("演唱会", 2), ("粉丝", 2), ("网红", 2), ("直播", 2),
+            ("官宣", 5),
+            ("恋情", 5),
+            ("分手", 5),
+            ("结婚", 4),
+            ("离婚", 5),
+            ("出轨", 5),
+            ("回应", 4),
+            ("声明", 5),
+            ("道歉", 4),
+            ("塌房", 5),
+            ("争议", 4),
+            ("爆料", 4),
+            ("辟谣", 5),
+            ("工作室", 3),
+            ("经纪人", 2),
+            ("演员", 2),
+            ("明星", 2),
+            ("艺人", 2),
+            ("综艺", 2),
+            ("电视剧", 2),
+            ("电影", 2),
+            ("票房", 3),
+            ("定档", 3),
+            ("杀青", 2),
+            ("开机", 2),
+            ("红毯", 3),
+            ("演唱会", 2),
+            ("粉丝", 2),
+            ("网红", 2),
+            ("直播", 2),
         ],
     };
-    let mut score = terms.iter()
+    let mut score = terms
+        .iter()
         .filter(|(term, _)| text.contains(term))
         .map(|(_, weight)| *weight)
         .sum::<i64>();
@@ -122,14 +185,35 @@ fn hot_score(kind: NewsKind, title: &str, summary: &str, timestamp: &str) -> i64
     let title = title.to_lowercase();
     let title_terms: &[(&str, i64)] = match kind {
         NewsKind::Crypto => &[
-            ("突发", 5), ("重磅", 4), ("紧急", 5), ("首次", 2), ("正式", 2),
-            ("宣布", 2), ("巨鲸", 4), ("大额", 3), ("清算", 3),
+            ("突发", 5),
+            ("重磅", 4),
+            ("紧急", 5),
+            ("首次", 2),
+            ("正式", 2),
+            ("宣布", 2),
+            ("巨鲸", 4),
+            ("大额", 3),
+            ("清算", 3),
         ],
         NewsKind::Entertainment => &[
-            ("突发", 5), ("重磅", 4), ("紧急", 5), ("官宣", 5), ("回应", 3),
-            ("吃瓜", 5), ("瓜", 2), ("爆料", 5), ("热搜", 4), ("离谱", 3),
-            ("反转", 4), ("笑死", 3), ("搞笑", 3), ("段子", 3), ("声明", 4),
-            ("首次", 2), ("正式", 2), ("曝光", 4),
+            ("突发", 5),
+            ("重磅", 4),
+            ("紧急", 5),
+            ("官宣", 5),
+            ("回应", 3),
+            ("吃瓜", 5),
+            ("瓜", 2),
+            ("爆料", 5),
+            ("热搜", 4),
+            ("离谱", 3),
+            ("反转", 4),
+            ("笑死", 3),
+            ("搞笑", 3),
+            ("段子", 3),
+            ("声明", 4),
+            ("首次", 2),
+            ("正式", 2),
+            ("曝光", 4),
         ],
     };
     for (term, weight) in title_terms {
@@ -139,8 +223,10 @@ fn hot_score(kind: NewsKind, title: &str, summary: &str, timestamp: &str) -> i64
     }
 
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-        let age_hours = (app_log::beijing_now() - parsed.with_timezone(&app_log::beijing_timezone()))
-            .num_hours().max(0);
+        let age_hours = (app_log::beijing_now()
+            - parsed.with_timezone(&app_log::beijing_timezone()))
+        .num_hours()
+        .max(0);
         score += match age_hours {
             0..=2 => 8,
             3..=6 => 6,
@@ -155,7 +241,10 @@ fn hot_score(kind: NewsKind, title: &str, summary: &str, timestamp: &str) -> i64
 
 /// 复用新闻页面的币圈/娱乐关键词与新鲜度权重，跨来源统一按热点分排序。
 fn load_candidates(filter: NewsFilter) -> anyhow::Result<Vec<NewsCandidate>> {
-    app_log::post_info!("X 自动发帖内容准备：开始从 SQLite 读取新闻，filter={:?}", filter);
+    app_log::post_info!(
+        "X 自动发帖内容准备：开始从 SQLite 读取新闻，filter={:?}",
+        filter
+    );
     let connection = open_default_connection()?;
     let mut candidates = Vec::new();
 
@@ -196,13 +285,16 @@ fn load_candidates(filter: NewsFilter) -> anyhow::Result<Vec<NewsCandidate>> {
         let mut accepted = 0usize;
         for mut candidate in source_candidates {
             // 发布时间优先；为空或格式异常时回退到采集时间。
-            let timestamp = candidate.published_at.as_deref()
+            let timestamp = candidate
+                .published_at
+                .as_deref()
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                 .or_else(|| chrono::DateTime::parse_from_rfc3339(&candidate.collected_at).ok());
             let Some(timestamp) = timestamp else {
                 app_log::post_warn!(
                     "X 自动发帖：排除时间无法解析的{}新闻，id={}",
-                    candidate.kind.label(), candidate.id
+                    candidate.kind.label(),
+                    candidate.id
                 );
                 continue;
             };
@@ -222,15 +314,22 @@ fn load_candidates(filter: NewsFilter) -> anyhow::Result<Vec<NewsCandidate>> {
         }
         app_log::post_info!(
             "X 自动发帖：{}新闻最近 24 小时筛选后保留 {} 条 / 原始 {} 条",
-            kind.label(), accepted, raw_count
+            kind.label(),
+            accepted,
+            raw_count
         );
     }
 
-    app_log::post_info!("X 自动发帖内容准备：数据库读取到 {} 条候选新闻", candidates.len());
+    app_log::post_info!(
+        "X 自动发帖内容准备：数据库读取到 {} 条候选新闻",
+        candidates.len()
+    );
     candidates.sort_by(|left, right| {
         let left_time = left.published_at.as_deref().unwrap_or(&left.collected_at);
         let right_time = right.published_at.as_deref().unwrap_or(&right.collected_at);
-        right.hot_score.cmp(&left.hot_score)
+        right
+            .hot_score
+            .cmp(&left.hot_score)
             .then_with(|| right_time.cmp(left_time))
     });
     Ok(candidates)
@@ -244,11 +343,17 @@ fn strip_urls(value: &str) -> String {
     while index < value.len() {
         let rest = &value[index..];
         let lower = rest.to_ascii_lowercase();
-        if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("www.") {
+        if lower.starts_with("https://")
+            || lower.starts_with("http://")
+            || lower.starts_with("www.")
+        {
             while index < value.len() {
                 let ch = value[index..].chars().next().expect("valid UTF-8 boundary");
                 if ch.is_whitespace()
-                    || matches!(ch, '，' | '。' | '；' | '、' | '！' | '？' | '）' | '】' | '>' | '"' | '\'')
+                    || matches!(
+                        ch,
+                        '，' | '。' | '；' | '、' | '！' | '？' | '）' | '】' | '>' | '"' | '\''
+                    )
                 {
                     break;
                 }
@@ -262,7 +367,22 @@ fn strip_urls(value: &str) -> String {
             let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             let token = &rest[..token_end];
             let host = token.trim_matches(|c: char| {
-                matches!(c, '(' | '[' | '{' | '"' | '\'' | '，' | '。' | '；' | '、' | '！' | '？' | ')' | ']' | '}')
+                matches!(
+                    c,
+                    '(' | '['
+                        | '{'
+                        | '"'
+                        | '\''
+                        | '，'
+                        | '。'
+                        | '；'
+                        | '、'
+                        | '！'
+                        | '？'
+                        | ')'
+                        | ']'
+                        | '}'
+                )
             });
             let domain = host.split('/').next().unwrap_or_default();
             let looks_like_domain = domain.rsplit_once('.').is_some_and(|(name, suffix)| {
@@ -292,9 +412,29 @@ fn strip_hashtags(value: &str) -> String {
         if ch == '#' {
             while let Some(&next) = chars.peek() {
                 if next.is_whitespace()
-                    || matches!(next, '，' | '。' | '；' | '、' | '！' | '？' | '：' | ','
-                        | '.' | ';' | '!' | '?' | ':' | '）' | ')' | '】' | ']'
-                        | '}' | '>' | '"' | '\'')
+                    || matches!(
+                        next,
+                        '，' | '。'
+                            | '；'
+                            | '、'
+                            | '！'
+                            | '？'
+                            | '：'
+                            | ','
+                            | '.'
+                            | ';'
+                            | '!'
+                            | '?'
+                            | ':'
+                            | '）'
+                            | ')'
+                            | '】'
+                            | ']'
+                            | '}'
+                            | '>'
+                            | '"'
+                            | '\''
+                    )
                 {
                     break;
                 }
@@ -331,18 +471,57 @@ fn clean_ai_text(value: &str) -> String {
 
     match paragraphs.split_first() {
         Some((title, body)) if !body.is_empty() => {
-            format!("{}\n\n{}", title, body.join(" "))
+            format!("{}\n\n{}", title, body.join("\n"))
         }
         Some((only, _)) => (*only).to_string(),
         None => String::new(),
     }
 }
 
+fn contains_multiple_items(content: &str) -> bool {
+    let list_items = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.chars()
+                .next()
+                .is_some_and(|ch| matches!(ch, '•' | '●' | '-' | '*'))
+                || line.split_once('.').is_some_and(|(number, rest)| {
+                    !rest.trim().is_empty()
+                        && !number.is_empty()
+                        && number.chars().all(|ch| ch.is_ascii_digit())
+                })
+                || line.split_once('、').is_some_and(|(number, rest)| {
+                    !rest.trim().is_empty()
+                        && !number.is_empty()
+                        && number.chars().all(|ch| ch.is_ascii_digit())
+                })
+        })
+        .count();
+    list_items > 1
+        || content.lines().any(|line| {
+            line.trim_start()
+                .chars()
+                .next()
+                .is_some_and(|ch| matches!(ch, '•' | '●' | '-' | '*'))
+        })
+}
+
 fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Result<String> {
-    ensure!(!cancel.load(Ordering::Acquire), "收到停止信号，取消 AI 文案生成");
-    app_log::post_info!("X 自动发帖内容准备：开始调用 AI 改写新闻，类型={:?}，标题={}", candidate.kind, candidate.title);
+    ensure!(
+        !cancel.load(Ordering::Acquire),
+        "收到停止信号，取消 AI 文案生成"
+    );
+    app_log::post_info!(
+        "X 自动发帖内容准备：开始调用 AI 改写新闻，类型={:?}，标题={}",
+        candidate.kind,
+        candidate.title
+    );
     let settings = AiSettings::load_default().context("加载 AI 配置失败")?;
-    ensure!(settings.agent.enabled, "AI agent 未启用，不能生成自动发帖内容");
+    ensure!(
+        settings.agent.enabled,
+        "AI agent 未启用，不能生成自动发帖内容"
+    );
     let selection = settings.selected_model().clone();
 
     let source_title = strip_urls(&candidate.title);
@@ -393,6 +572,10 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
     };
     let mut content = clean_ai_text(&response.content);
     ensure!(!content.is_empty(), "AI 返回的发帖文案为空");
+    ensure!(
+        !contains_multiple_items(&content),
+        "AI 文案包含多条内容或多个事件，直接放弃该新闻，不进行压缩"
+    );
 
     for attempt in 1..=MAX_COMPRESSION_ATTEMPTS {
         if content.chars().count() <= MAX_POST_CHARS {
@@ -401,8 +584,10 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
         let retry_messages = [
             ChatMessage::system(candidate.kind.system_prompt()),
             ChatMessage::user(format!(
-                "把下面文案重新压缩到 100 个 Unicode 字符以内，保留事实与关键数字，语句必须完整。当前字符数={}，本次是第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩。严格保持“标题 + 空一行 + 正文”的两段格式；删除感叹号、问号和 #话题标签。只输出标题和正文。\n\n新闻：{}\n当前文案：{}",
-                content.chars().count(), candidate.title, content
+                "把下面这条单一新闻压缩到 100 个 Unicode 字符以内，只保留一个核心事件；核心标题后空一行，正文先写核心内容，再换行写一项必要详情。不得罗列多个事件或扩写描述；若无法简洁表达就只输出最核心事实。当前字符数={}，本次是第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩。删除感叹号、问号和 #话题标签。只输出标题与正文。\n\n新闻：{}\n当前文案：{}",
+                content.chars().count(),
+                candidate.title,
+                content
             )),
         ];
         app_log::post_warn!(
@@ -435,6 +620,10 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
             }
         };
         let compressed = clean_ai_text(&retry.content);
+        ensure!(
+            !contains_multiple_items(&compressed),
+            "AI 压缩结果仍包含多条内容或多个事件，直接放弃该新闻"
+        );
         app_log::post_info!(
             "X 自动发帖 AI：第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩后字符数={}",
             compressed.chars().count()
@@ -458,12 +647,18 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
         !content.contains("作为人工智能") && !content.contains("以下是改写"),
         "AI 返回了说明性文字，不是可发布正文"
     );
-    app_log::post_info!("X 自动发帖内容准备：AI 文案生成完成，字符数={}", content.chars().count());
+    app_log::post_info!(
+        "X 自动发帖内容准备：AI 文案生成完成，字符数={}",
+        content.chars().count()
+    );
     Ok(content)
 }
 
 /// 按所选新闻类型准备一条候选，先按热点分排序，再去重、AI 改写并持久化。
-pub fn prepare_next_post_blocking(filter: NewsFilter, cancel: &AtomicBool) -> anyhow::Result<Option<PreparedPost>> {
+pub fn prepare_next_post_blocking(
+    filter: NewsFilter,
+    cancel: &AtomicBool,
+) -> anyhow::Result<Option<PreparedPost>> {
     app_log::post_info!("X 自动发帖内容准备：进入候选准备流程");
     let selection_started = std::time::Instant::now();
     let candidates = load_candidates(filter)?;
@@ -474,7 +669,10 @@ pub fn prepare_next_post_blocking(filter: NewsFilter, cancel: &AtomicBool) -> an
     );
 
     for candidate in candidates {
-        ensure!(!cancel.load(Ordering::Acquire), "收到停止信号，取消候选新闻处理");
+        ensure!(
+            !cancel.load(Ordering::Acquire),
+            "收到停止信号，取消候选新闻处理"
+        );
         let news_id = format!("{}:{}", candidate.kind.table(), candidate.id);
         let original_material = format!(
             "{}\n{}\n{}",
@@ -524,10 +722,7 @@ pub fn prepare_next_post_blocking(filter: NewsFilter, cancel: &AtomicBool) -> an
         .with_context(|| format!("预留{}新闻发帖记录失败", candidate.kind.label()))?;
 
         app_log::post_info!("X 自动发帖内容准备：已预留发帖记录，post_id={}", post_id);
-        return Ok(Some(PreparedPost {
-            post_id,
-            content,
-        }));
+        return Ok(Some(PreparedPost { post_id, content }));
     }
 
     app_log::post_warn!("X 自动发帖内容准备：遍历完所有候选，未找到可发布新闻");
@@ -559,18 +754,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn keeps_core_content_and_detail_on_separate_lines() {
+        assert_eq!(
+            clean_ai_text("标题\n核心内容\n详情内容"),
+            "标题\n\n核心内容\n详情内容"
+        );
+    }
+
+    #[test]
+    fn rejects_list_style_multi_item_posts() {
+        assert!(contains_multiple_items("标题\n\n• 第一件事\n• 第二件事"));
+        assert!(contains_multiple_items("标题\n\n1. 第一件事\n2. 第二件事"));
+        assert!(!contains_multiple_items("标题\n\n核心内容\n一项必要详情"));
+    }
 
     #[test]
     fn formats_title_and_body_and_removes_forbidden_punctuation() {
         assert_eq!(
-            clean_ai_text("《藏不住的好去处》新期打卡呼伦贝尔！\n主持人周雪梅携韩东霖手持“初始宝藏地图”，在辽阔天地间解锁草原城市魅力与人文温度?? #综艺日常#"),
+            clean_ai_text(
+                "《藏不住的好去处》新期打卡呼伦贝尔！\n主持人周雪梅携韩东霖手持“初始宝藏地图”，在辽阔天地间解锁草原城市魅力与人文温度?? #综艺日常#"
+            ),
             "《藏不住的好去处》新期打卡呼伦贝尔\n\n主持人周雪梅携韩东霖手持“初始宝藏地图”，在辽阔天地间解锁草原城市魅力与人文温度"
         );
     }
 
     #[test]
     fn prompts_are_distinct_by_news_category() {
-        assert_ne!(NewsKind::Crypto.system_prompt(), NewsKind::Entertainment.system_prompt());
+        assert_ne!(
+            NewsKind::Crypto.system_prompt(),
+            NewsKind::Entertainment.system_prompt()
+        );
     }
 
     #[test]
@@ -582,7 +796,10 @@ mod tests {
         assert!(NewsFilter::All.includes(NewsKind::Crypto));
         assert!(NewsFilter::All.includes(NewsKind::Entertainment));
         assert_eq!(NewsFilter::from_setting("crypto"), NewsFilter::Crypto);
-        assert_eq!(NewsFilter::from_setting("entertainment"), NewsFilter::Entertainment);
+        assert_eq!(
+            NewsFilter::from_setting("entertainment"),
+            NewsFilter::Entertainment
+        );
         assert_eq!(NewsFilter::from_setting("invalid"), NewsFilter::All);
     }
 

@@ -32,6 +32,8 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", tag = "
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", tag = "v0.5.1" }
 pulldown-cmark = "0.11"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
+vision-benchmark = { path = "../../crates/vision-benchmark" }
+robost-vision = "0.1.2"
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

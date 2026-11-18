@@ -1,18 +1,18 @@
-mod automation;
 mod auto_comment;
 mod auto_post;
 mod auto_reply;
-mod core;
+mod automation;
+pub(crate) mod core;
 mod crop;
-mod full_auto;
 mod floating_status;
+mod full_auto;
 mod ocr;
 mod ocr_status;
 mod option;
-mod post_history;
-mod reply_list;
-mod reply_filter;
 mod own_post_reply;
+mod post_history;
+mod reply_filter;
+mod reply_list;
 mod run_log;
 mod vision;
 use crate::ui::palette;
@@ -28,13 +28,12 @@ use gpui_component::{
 };
 use std::{
     path::PathBuf,
-    time::Duration,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
+    time::Duration,
 };
-
 
 #[derive(Clone, Copy)]
 enum TaskSetting {
@@ -83,7 +82,9 @@ impl Drop for XAssistantPage {
     fn drop(&mut self) {
         // 页面关闭/销毁时通知后台阻塞任务尽快退出，避免工作线程继续运行。
         let was_running = self.replying;
-        self.cancel_reason.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire).ok();
+        self.cancel_reason
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         self.cancel_reply.store(true, Ordering::Release);
         if let Some(status) = self.floating_status.as_ref() {
             status.mark_stopped();
@@ -105,8 +106,8 @@ impl XAssistantPage {
         });
         let reply_rules_subscription =
             cx.subscribe_in(&reply_rules, window, Self::on_reply_rules_input);
-        let task_settings = binance_tools::db::x_posting::load_task_settings_blocking()
-            .unwrap_or_default();
+        let task_settings =
+            binance_tools::db::x_posting::load_task_settings_blocking().unwrap_or_default();
 
         Self {
             window_handle: window.window_handle(),
@@ -158,7 +159,9 @@ impl XAssistantPage {
             // 自动回复与自动发帖同时启用时，必须先完成自动回复首轮。
             // 若自动发送被关闭，不允许静默退化为“启动后立即发帖”。
             if self.task_settings.auto_reply_enabled && !self.auto_send {
-                app_log::x_warn!("[全局开始] 启动条件不满足：自动回复和自动发帖同时开启，但自动发送关闭");
+                app_log::x_warn!(
+                    "[全局开始] 启动条件不满足：自动回复和自动发帖同时开启，但自动发送关闭"
+                );
                 self.error = None;
                 self.status = Some(
                     "启动条件未满足：自动回复与自动发帖同时启用时，请先在自动回复页面开启「自动发送」，再启动自动化。".to_string(),
@@ -172,7 +175,9 @@ impl XAssistantPage {
         if !self.task_settings.auto_reply_enabled {
             app_log::x_warn!("[全局开始] 未启动：自动回复和自动发帖均未开启");
             self.error = None;
-            self.status = Some("尚未配置自动化任务：请先在「任务设置」中开启自动回复或自动发帖。".to_string());
+            self.status = Some(
+                "尚未配置自动化任务：请先在「任务设置」中开启自动回复或自动发帖。".to_string(),
+            );
             cx.notify();
             return;
         }
@@ -196,7 +201,8 @@ impl XAssistantPage {
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
         self.status = Some(if self.task_settings.auto_reply_enabled && self.auto_send {
-            "自动发帖与自动回复已启动；两类任务通过同一浏览器锁串行操作。点击停止可结束。".to_string()
+            "自动发帖与自动回复已启动；两类任务通过同一浏览器锁串行操作。点击停止可结束。"
+                .to_string()
         } else if self.task_settings.auto_reply_enabled {
             "自动发帖已启动；自动回复开关虽已开启，但自动发送关闭，本轮只执行发帖。".to_string()
         } else {
@@ -205,9 +211,8 @@ impl XAssistantPage {
         cx.notify();
 
         let cancel = Arc::clone(&self.cancel_reply);
-        let news_filter = auto_post::content::NewsFilter::from_setting(
-            &self.task_settings.auto_post_news_type,
-        );
+        let news_filter =
+            auto_post::content::NewsFilter::from_setting(&self.task_settings.auto_post_news_type);
         let reply_options = if self.task_settings.auto_reply_enabled && self.auto_send {
             Some(vision::VisionReplyOptions {
                 api_url: vision::DEFAULT_OLLAMA_URL.to_string(),
@@ -225,9 +230,7 @@ impl XAssistantPage {
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let browser_ready = cx
-                .background_spawn(async {
-                    automation::native::activate_chrome_browser()
-                })
+                .background_spawn(async { automation::native::activate_chrome_browser() })
                 .await;
             if let Err(error) = browser_ready {
                 task_finished_for_ui.store(true, Ordering::Release);
@@ -247,7 +250,8 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("auto_post", accent));
+                this.floating_status =
+                    Some(floating_status::FloatingStatus::show("auto_post", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -256,7 +260,11 @@ impl XAssistantPage {
             let result = cx
                 .background_spawn(async move {
                     if let Some(options) = reply_options {
-                        auto_post::executor::run_with_auto_reply(Arc::clone(&cancel), options, news_filter)
+                        auto_post::executor::run_with_auto_reply(
+                            Arc::clone(&cancel),
+                            options,
+                            news_filter,
+                        )
                     } else {
                         auto_post::executor::run_loop(Arc::clone(&cancel), news_filter)
                     }
@@ -288,15 +296,17 @@ impl XAssistantPage {
         self._log_task = cx.spawn(async move |this, cx| {
             loop {
                 Timer::after(Duration::from_millis(800)).await;
-                let keep_running = this.update(cx, |this, cx| {
-                    if !this.replying {
-                        return false;
-                    }
-                    if this.log_tail.as_mut().is_some_and(run_log::LogTail::poll) {
-                        cx.notify();
-                    }
-                    true
-                }).unwrap_or(false);
+                let keep_running = this
+                    .update(cx, |this, cx| {
+                        if !this.replying {
+                            return false;
+                        }
+                        if this.log_tail.as_mut().is_some_and(run_log::LogTail::poll) {
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
                 if !keep_running {
                     break;
                 }
@@ -314,7 +324,10 @@ impl XAssistantPage {
     }
 
     fn start_test_auto_post(&mut self, cx: &mut Context<Self>) {
-        app_log::x_info!("X 自动发帖测试：收到测试按钮点击，当前 replying={}", self.replying);
+        app_log::x_info!(
+            "X 自动发帖测试：收到测试按钮点击，当前 replying={}",
+            self.replying
+        );
         if self.replying {
             app_log::x_warn!("X 自动发帖测试：已有自动化任务运行，忽略本次点击");
             return;
@@ -325,23 +338,21 @@ impl XAssistantPage {
         self.cancel_reply = Arc::new(AtomicBool::new(false));
         self.cancel_reason = Arc::new(AtomicU8::new(0));
         self.status = Some(
-            "测试发帖已启动：只选取一条所选类型新闻，完成真实发布与结果核验；不会启动连续发布。".to_string(),
+            "测试发帖已启动：只选取一条所选类型新闻，完成真实发布与结果核验；不会启动连续发布。"
+                .to_string(),
         );
         cx.notify();
 
         let cancel = Arc::clone(&self.cancel_reply);
-        let filter = auto_post::content::NewsFilter::from_setting(
-            &self.task_settings.auto_post_news_type,
-        );
+        let filter =
+            auto_post::content::NewsFilter::from_setting(&self.task_settings.auto_post_news_type);
         app_log::x_info!("X 自动发帖测试：任务已提交后台，新闻类型={:?}", filter);
         let task_finished = Arc::new(AtomicBool::new(false));
         self.task_finished = Arc::clone(&task_finished);
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let browser_ready = cx
-                .background_spawn(async {
-                    automation::native::activate_chrome_browser()
-                })
+                .background_spawn(async { automation::native::activate_chrome_browser() })
                 .await;
             if let Err(error) = browser_ready {
                 task_finished_for_ui.store(true, Ordering::Release);
@@ -361,7 +372,8 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("test_post", accent));
+                this.floating_status =
+                    Some(floating_status::FloatingStatus::show("test_post", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -369,7 +381,9 @@ impl XAssistantPage {
 
             let result = cx
                 .background_spawn(async move {
-                    app_log::x_info!("X 自动发帖测试：后台执行开始；Chrome 已确认可用，先读取新闻并生成文案");
+                    app_log::x_info!(
+                        "X 自动发帖测试：后台执行开始；Chrome 已确认可用，先读取新闻并生成文案"
+                    );
                     auto_post::executor::run_test_once(&cancel, filter)
                 })
                 .await;
@@ -432,7 +446,9 @@ impl XAssistantPage {
                     return;
                 }
                 Err(error) => {
-                    self.error = Some(format!("读取今日回复数量失败，为避免超额发送已阻止启动：{error:#}"));
+                    self.error = Some(format!(
+                        "读取今日回复数量失败，为避免超额发送已阻止启动：{error:#}"
+                    ));
                     cx.notify();
                     return;
                 }
@@ -446,7 +462,13 @@ impl XAssistantPage {
         self.cancel_reason = Arc::new(AtomicU8::new(0));
         app_log::x_info!(
             "自动回复启动：模式={}，本地 OCR={}",
-            if full_auto { "全自动" } else if hover_only { "仅悬停识别" } else { "单次回复" },
+            if full_auto {
+                "全自动"
+            } else if hover_only {
+                "仅悬停识别"
+            } else {
+                "单次回复"
+            },
             stage2_ocr
         );
         self.status = Some(if full_auto {
@@ -470,9 +492,7 @@ impl XAssistantPage {
         let task_finished_for_ui = Arc::clone(&task_finished);
         self._reply_task = cx.spawn(async move |this, cx| {
             let browser_ready = cx
-                .background_spawn(async {
-                    automation::native::activate_chrome_browser()
-                })
+                .background_spawn(async { automation::native::activate_chrome_browser() })
                 .await;
             if let Err(error) = browser_ready {
                 task_finished_for_ui.store(true, Ordering::Release);
@@ -492,7 +512,8 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("auto_reply", accent));
+                this.floating_status =
+                    Some(floating_status::FloatingStatus::show("auto_reply", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -523,7 +544,14 @@ impl XAssistantPage {
 
             let was_cancelled = cancel_for_ui.load(Ordering::Acquire);
             let _cancel_reason = cancel_reason_for_ui.load(Ordering::Acquire);
-            app_log::x_info!("{}", if was_cancelled { "自动回复后台任务已停止" } else { "自动回复后台任务已结束" });
+            app_log::x_info!(
+                "{}",
+                if was_cancelled {
+                    "自动回复后台任务已停止"
+                } else {
+                    "自动回复后台任务已结束"
+                }
+            );
 
             if let Err(update_error) = this.update(cx, |this, cx| {
                 // 无论成功、失败还是手动取消，任务结束后都必须解除运行态。
@@ -533,8 +561,7 @@ impl XAssistantPage {
                 let _ = window_handle.update(cx, |_, window, _| window.activate_window());
                 match result {
                     Err(err)
-                        if was_cancelled
-                            && format!("{err:#}").contains("视觉回复流程已停止") =>
+                        if was_cancelled && format!("{err:#}").contains("视觉回复流程已停止") =>
                     {
                         this.status = Some("任务已中断，后台任务已结束。".to_string());
                         this.error = None;
@@ -552,34 +579,34 @@ impl XAssistantPage {
                         this.error = None;
                     }
                     Ok(reply) => {
-                            this.screenshots = reply.screenshots;
-                            this.selected_screenshot = this.screenshots.len().saturating_sub(1);
-                            this.extracted_fields = format!(
-                                "发送者：{}\n账号：{}\n时间：{}\n\n帖子：\n{}\n\n回复：\n{}\n\n{}",
-                                if reply.author_name.is_empty() {
-                                    "未识别"
-                                } else {
-                                    &reply.author_name
-                                },
-                                if reply.account_handle.is_empty() {
-                                    "未识别"
-                                } else {
-                                    &reply.account_handle
-                                },
-                                if reply.posted_at.is_empty() {
-                                    "未识别"
-                                } else {
-                                    &reply.posted_at
-                                },
-                                reply.post_text,
-                                reply.reply_text,
-                                reply.summary
-                            );
-                            this.status = Some(if reply.completed {
-                                format!("已完成。{}", reply.summary)
+                        this.screenshots = reply.screenshots;
+                        this.selected_screenshot = this.screenshots.len().saturating_sub(1);
+                        this.extracted_fields = format!(
+                            "发送者：{}\n账号：{}\n时间：{}\n\n帖子：\n{}\n\n回复：\n{}\n\n{}",
+                            if reply.author_name.is_empty() {
+                                "未识别"
                             } else {
-                                reply.summary
-                            });
+                                &reply.author_name
+                            },
+                            if reply.account_handle.is_empty() {
+                                "未识别"
+                            } else {
+                                &reply.account_handle
+                            },
+                            if reply.posted_at.is_empty() {
+                                "未识别"
+                            } else {
+                                &reply.posted_at
+                            },
+                            reply.post_text,
+                            reply.reply_text,
+                            reply.summary
+                        );
+                        this.status = Some(if reply.completed {
+                            format!("已完成。{}", reply.summary)
+                        } else {
+                            reply.summary
+                        });
                         this.error = None;
                     }
                 }
@@ -596,10 +623,19 @@ impl XAssistantPage {
 
     fn toggle_task_setting(&mut self, setting: TaskSetting, cx: &mut Context<Self>) {
         match setting {
-            TaskSetting::AutoReply => self.task_settings.auto_reply_enabled = !self.task_settings.auto_reply_enabled,
-            TaskSetting::AutoPost => self.task_settings.auto_post_enabled = !self.task_settings.auto_post_enabled,
-            TaskSetting::AutoComment => self.task_settings.auto_comment_enabled = !self.task_settings.auto_comment_enabled,
-            TaskSetting::OwnPostReply => self.task_settings.own_post_reply_enabled = !self.task_settings.own_post_reply_enabled,
+            TaskSetting::AutoReply => {
+                self.task_settings.auto_reply_enabled = !self.task_settings.auto_reply_enabled
+            }
+            TaskSetting::AutoPost => {
+                self.task_settings.auto_post_enabled = !self.task_settings.auto_post_enabled
+            }
+            TaskSetting::AutoComment => {
+                self.task_settings.auto_comment_enabled = !self.task_settings.auto_comment_enabled
+            }
+            TaskSetting::OwnPostReply => {
+                self.task_settings.own_post_reply_enabled =
+                    !self.task_settings.own_post_reply_enabled
+            }
         }
         self.persist_task_settings(cx);
     }
@@ -980,7 +1016,9 @@ impl XAssistantPage {
     }
 
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
-        self.cancel_reason.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
+        self.cancel_reason
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         let was_running = !self.cancel_reply.swap(true, Ordering::AcqRel);
         if let Some(status) = self.floating_status.as_ref() {
             status.mark_stopped();
@@ -1053,7 +1091,11 @@ impl XAssistantPage {
     }
 
     fn render_reply_flow_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let selected = !self.show_run_status && !self.show_reply_list && !self.show_post_history && !self.show_task_settings && !self.show_auto_post;
+        let selected = !self.show_run_status
+            && !self.show_reply_list
+            && !self.show_post_history
+            && !self.show_task_settings
+            && !self.show_auto_post;
         v_flex()
             .w(px(112.))
             .gap_1()
@@ -1211,30 +1253,62 @@ impl XAssistantPage {
     }
 
     fn render_page_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建运行状态按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建运行状态按钮");
+        }
         let status_button = self.render_status_tab_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 运行状态按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建自动回复按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 运行状态按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建自动回复按钮");
+        }
         let reply_flow_button = self.render_reply_flow_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 自动回复按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建自动发帖按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 自动回复按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建自动发帖按钮");
+        }
         let auto_post_button = self.render_auto_post_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 自动发帖按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建全局开始按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 自动发帖按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建全局开始按钮");
+        }
         let start_all_button = self.render_start_all_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 全局开始按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建全局停止按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 全局开始按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建全局停止按钮");
+        }
         let stop_all_button = self.render_stop_all_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 全局停止按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建回复列表按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 全局停止按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建回复列表按钮");
+        }
         let reply_list_button = self.render_reply_list_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 回复列表按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建发帖历史按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 回复列表按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建发帖历史按钮");
+        }
         let post_history_button = self.render_post_history_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 发帖历史按钮构建完成"); }
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 开始构建任务设置按钮"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 发帖历史按钮构建完成");
+        }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 开始构建任务设置按钮");
+        }
         let task_settings_button = self.render_task_settings_button(cx);
-        if !self.render_diagnostic_logged { app_log::x_info!("[X助手首次渲染] 任务设置按钮构建完成"); }
+        if !self.render_diagnostic_logged {
+            app_log::x_info!("[X助手首次渲染] 任务设置按钮构建完成");
+        }
 
         let theme = cx.theme();
         // 六个页面统一使用下划线 Tabs；运行状态和全局控制按钮位于同一行。
@@ -1311,63 +1385,185 @@ impl Render for XAssistantPage {
             let menu = self.render_page_menu(cx);
             if !self.render_diagnostic_logged {
                 self.render_diagnostic_logged = true;
-                app_log::x_info!("[X助手首次渲染] 页面菜单构建完成，开始读取统计数据和构建运行状态面板");
+                app_log::x_info!(
+                    "[X助手首次渲染] 页面菜单构建完成，开始读取统计数据和构建运行状态面板"
+                );
             }
             let theme = cx.theme();
-            let logs = self.log_tail.as_ref().map(run_log::LogTail::lines).unwrap_or(&[]);
+            let logs = self
+                .log_tail
+                .as_ref()
+                .map(run_log::LogTail::lines)
+                .unwrap_or(&[]);
             let reply_stats = binance_tools::db::x_assistant::reply_stats_blocking().ok();
             let published_posts = binance_tools::db::x_posting::list_published_posts_blocking(500)
                 .unwrap_or_default();
             let today = app_log::beijing_now().format("%Y-%m-%d").to_string();
-            let today_posts = published_posts.iter().filter(|post| {
-                let timestamp = post.published_at.as_deref().unwrap_or(&post.created_at);
-                app_log::format_beijing_timestamp(timestamp).starts_with(&today)
-            }).collect::<Vec<_>>();
+            let today_posts = published_posts
+                .iter()
+                .filter(|post| {
+                    let timestamp = post.published_at.as_deref().unwrap_or(&post.created_at);
+                    app_log::format_beijing_timestamp(timestamp).starts_with(&today)
+                })
+                .collect::<Vec<_>>();
             let post_total = today_posts.len() as u64;
-            let post_success = today_posts.iter().filter(|post| post.status == "published").count() as u64;
-            let post_failed = today_posts.iter().filter(|post| post.status == "failed").count() as u64;
-            let stat = |label: &'static str, value: u64, color: gpui::Hsla, label_color: gpui::Hsla, background: gpui::Hsla| {
-                div().flex_1().min_w_0().rounded(px(7.)).border_1()
-                    .border_color(background).bg(background)
-                    .px_3().py_2()
-                    .child(div().text_size(px(10.)).text_color(label_color).child(label))
-                    .child(div().text_size(px(18.)).font_semibold().text_color(color).child(value.to_string()))
+            let post_success = today_posts
+                .iter()
+                .filter(|post| post.status == "published")
+                .count() as u64;
+            let post_failed = today_posts
+                .iter()
+                .filter(|post| post.status == "failed")
+                .count() as u64;
+            let stat = |label: &'static str,
+                        value: u64,
+                        color: gpui::Hsla,
+                        label_color: gpui::Hsla,
+                        background: gpui::Hsla| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(background)
+                    .bg(background)
+                    .px_3()
+                    .py_2()
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(label_color)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_semibold()
+                            .text_color(color)
+                            .child(value.to_string()),
+                    )
             };
             let log_content = if self.log_tail.is_none() {
-                div().flex_1().min_h_0().text_size(px(12.)).text_color(palette::muted(theme))
-                    .child("X 助手未启动，日志读取已停止。启动任务后才会读取 logs 目录中的日志。").into_any_element()
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .text_size(px(12.))
+                    .text_color(palette::muted(theme))
+                    .child("X 助手未启动，日志读取已停止。启动任务后才会读取 logs 目录中的日志。")
+                    .into_any_element()
             } else if logs.is_empty() {
-                div().flex_1().min_h_0().text_size(px(12.)).text_color(palette::muted(theme))
-                    .child("等待日志输出…").into_any_element()
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .text_size(px(12.))
+                    .text_color(palette::muted(theme))
+                    .child("等待日志输出…")
+                    .into_any_element()
             } else {
-                v_flex().flex_1().min_h_0().gap_1().overflow_y_scrollbar()
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_1()
+                    .overflow_y_scrollbar()
                     .children(logs.iter().map(|line| {
-                        let color = if line.contains("[ERROR]") { palette::error_text() }
-                            else if line.contains("[WARN]") { gpui::hsla(0.12, 0.82, 0.48, 1.0) }
-                            else { palette::text(theme) };
-                        div().text_size(px(11.)).text_color(color).child(line.clone())
-                    })).into_any_element()
+                        let color = if line.contains("[ERROR]") {
+                            palette::error_text()
+                        } else if line.contains("[WARN]") {
+                            gpui::hsla(0.12, 0.82, 0.48, 1.0)
+                        } else {
+                            palette::text(theme)
+                        };
+                        div()
+                            .text_size(px(11.))
+                            .text_color(color)
+                            .child(line.clone())
+                    }))
+                    .into_any_element()
             };
-            let reply_stats_panel = v_flex().flex_1().min_w_0().gap_2()
-                .child(div().text_size(px(13.)).font_semibold().child("自动回复统计"))
-                .child(h_flex().gap_2()
-                    .child(stat("今日总数", reply_stats.as_ref().map_or(0, |v| v.today_total), gpui::hsla(0.59, 0.75, 0.34, 1.0), gpui::hsla(0.59, 0.48, 0.43, 1.0), gpui::hsla(0.59, 0.72, 0.95, 1.0)))
-                    .child(stat("成功", reply_stats.as_ref().map_or(0, |v| v.today_success), gpui::hsla(0.39, 0.52, 0.34, 1.0), gpui::hsla(0.39, 0.38, 0.42, 1.0), gpui::hsla(0.39, 0.42, 0.94, 1.0)))
-                    .child(stat("失败", reply_stats.as_ref().map_or(0, |v| v.today_failed), gpui::hsla(0.00, 0.62, 0.42, 1.0), gpui::hsla(0.00, 0.45, 0.48, 1.0), gpui::hsla(0.00, 0.72, 0.95, 1.0))));
-            let post_stats_panel = v_flex().flex_1().min_w_0().gap_2()
-                .child(div().text_size(px(13.)).font_semibold().child("自动发帖统计"))
-                .child(h_flex().gap_2()
-                    .child(stat("今日总数", post_total, gpui::hsla(0.59, 0.75, 0.34, 1.0), gpui::hsla(0.59, 0.48, 0.43, 1.0), gpui::hsla(0.59, 0.72, 0.95, 1.0)))
-                    .child(stat("成功", post_success, gpui::hsla(0.39, 0.52, 0.34, 1.0), gpui::hsla(0.39, 0.38, 0.42, 1.0), gpui::hsla(0.39, 0.42, 0.94, 1.0)))
-                    .child(stat("失败", post_failed, gpui::hsla(0.00, 0.62, 0.42, 1.0), gpui::hsla(0.00, 0.45, 0.48, 1.0), gpui::hsla(0.00, 0.72, 0.95, 1.0))));
-            let stats_row = h_flex().gap_3()
+            let reply_stats_panel = v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_semibold()
+                        .child("自动回复统计"),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(stat(
+                            "今日总数",
+                            reply_stats.as_ref().map_or(0, |v| v.today_total),
+                            gpui::hsla(0.59, 0.75, 0.34, 1.0),
+                            gpui::hsla(0.59, 0.48, 0.43, 1.0),
+                            gpui::hsla(0.59, 0.72, 0.95, 1.0),
+                        ))
+                        .child(stat(
+                            "成功",
+                            reply_stats.as_ref().map_or(0, |v| v.today_success),
+                            gpui::hsla(0.39, 0.52, 0.34, 1.0),
+                            gpui::hsla(0.39, 0.38, 0.42, 1.0),
+                            gpui::hsla(0.39, 0.42, 0.94, 1.0),
+                        ))
+                        .child(stat(
+                            "失败",
+                            reply_stats.as_ref().map_or(0, |v| v.today_failed),
+                            gpui::hsla(0.00, 0.62, 0.42, 1.0),
+                            gpui::hsla(0.00, 0.45, 0.48, 1.0),
+                            gpui::hsla(0.00, 0.72, 0.95, 1.0),
+                        )),
+                );
+            let post_stats_panel = v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_semibold()
+                        .child("自动发帖统计"),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(stat(
+                            "今日总数",
+                            post_total,
+                            gpui::hsla(0.59, 0.75, 0.34, 1.0),
+                            gpui::hsla(0.59, 0.48, 0.43, 1.0),
+                            gpui::hsla(0.59, 0.72, 0.95, 1.0),
+                        ))
+                        .child(stat(
+                            "成功",
+                            post_success,
+                            gpui::hsla(0.39, 0.52, 0.34, 1.0),
+                            gpui::hsla(0.39, 0.38, 0.42, 1.0),
+                            gpui::hsla(0.39, 0.42, 0.94, 1.0),
+                        ))
+                        .child(stat(
+                            "失败",
+                            post_failed,
+                            gpui::hsla(0.00, 0.62, 0.42, 1.0),
+                            gpui::hsla(0.00, 0.45, 0.48, 1.0),
+                            gpui::hsla(0.00, 0.72, 0.95, 1.0),
+                        )),
+                );
+            let stats_row = h_flex()
+                .gap_3()
                 .child(reply_stats_panel)
                 .child(post_stats_panel);
             // 将启动拦截、运行进度和任务结果直接显示在「运行状态」页面，
             // 避免用户只能通过日志文件发现任务未启动的原因。
             let runtime_notice = self.error.clone().or_else(|| self.status.clone());
             let runtime_notice_is_error = self.error.is_some();
-            return v_flex().size_full().min_w_0().min_h_0().gap_3().p_4()
+            return v_flex()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .gap_3()
+                .p_4()
                 .child(menu)
                 .when_some(runtime_notice, |panel, message| {
                     panel.child(
@@ -1396,7 +1592,11 @@ impl Render for XAssistantPage {
                                     } else {
                                         gpui::hsla(0.12, 0.62, 0.34, 1.0)
                                     })
-                                    .child(if runtime_notice_is_error { "运行异常" } else { "运行提示" }),
+                                    .child(if runtime_notice_is_error {
+                                        "运行异常"
+                                    } else {
+                                        "运行提示"
+                                    }),
                             )
                             .child(
                                 div()
@@ -1411,14 +1611,43 @@ impl Render for XAssistantPage {
                     )
                 })
                 .child(stats_row)
-                .child(v_flex().flex_1().min_h_0().gap_2()
-                    .rounded(px(8.)).border_1().border_color(palette::border(theme))
-                    .bg(gpui::hsla(0.61, 0.08, 0.95, 1.0)).p_3()
-                    .child(h_flex().items_center().justify_between()
-                        .child(div().text_size(px(14.)).font_semibold().child("实时运行日志"))
-                        .child(div().text_size(px(11.)).text_color(if self.replying { theme.success } else { palette::muted(theme) })
-                            .child(if self.replying { "● 实时读取中" } else { "● 已停止读取" })))
-                    .child(log_content))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .gap_2()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(palette::border(theme))
+                        .bg(gpui::hsla(0.61, 0.08, 0.95, 1.0))
+                        .p_3()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_semibold()
+                                        .child("实时运行日志"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(if self.replying {
+                                            theme.success
+                                        } else {
+                                            palette::muted(theme)
+                                        })
+                                        .child(if self.replying {
+                                            "● 实时读取中"
+                                        } else {
+                                            "● 已停止读取"
+                                        }),
+                                ),
+                        )
+                        .child(log_content),
+                )
                 .into_any_element();
         }
 
@@ -1565,10 +1794,18 @@ impl Render for XAssistantPage {
                 .p_4()
                 .child(menu)
                 .when_some(self.reply_list.clone(), |page, reply_list| {
-                    if self.show_reply_list { page.child(reply_list) } else { page }
+                    if self.show_reply_list {
+                        page.child(reply_list)
+                    } else {
+                        page
+                    }
                 })
                 .when_some(self.post_history.clone(), |page, post_history| {
-                    if self.show_post_history { page.child(post_history) } else { page }
+                    if self.show_post_history {
+                        page.child(post_history)
+                    } else {
+                        page
+                    }
                 })
                 .into_any_element();
         }
