@@ -6,7 +6,7 @@
 
 截图可能包含账号和个人信息，测试素材默认放在仓库根目录 `data/vision-benchmark/`（该目录已被根 `.gitignore` 忽略，不会误提交）。
 
-建议目录：
+目录结构：
 
 ```text
 data/vision-benchmark/
@@ -19,11 +19,17 @@ data/vision-benchmark/
     repost.png
 ```
 
-模板图片尽量只裁剪按钮图标本身，保留少量边缘背景；不要把整条互动栏作为模板。
+仓库自带的三个 PNG 是用于先跑通流程的近似风格演示模板，并非从 X 官网提取的官方 SVG。实际测试时，建议再从你使用的 X 页面截图中裁剪真实按钮图标，替换这三个 PNG；模板只保留图标本身和少量边缘背景，不要包含整条互动栏。
 
 ## 2. 标注截图
 
-将 `benchmark.example.json` 复制为仓库根目录 `data/vision-benchmark/benchmark.json`。路径相对于 JSON 文件所在目录。
+将示例清单和内置模板复制到测试目录：
+
+```powershell
+New-Item -ItemType Directory -Force data/vision-benchmark/templates
+Copy-Item crates/vision-benchmark/benchmark.example.json data/vision-benchmark/benchmark.json
+Copy-Item crates/vision-benchmark/templates/*.png data/vision-benchmark/templates/
+```
 
 每个正样本填写按钮中心点 `expected_center`，坐标使用完整截图的像素坐标；截图左上角不是屏幕 (0,0) 时设置 `origin`。负样本省略 `expected_center`，用于测量误报。
 
@@ -45,7 +51,6 @@ data/vision-benchmark/
 在仓库根目录执行：
 
 ```powershell
-Copy-Item crates/vision-benchmark/benchmark.example.json data/vision-benchmark/benchmark.json
 cargo run -p vision-benchmark --release -- --manifest data/vision-benchmark/benchmark.json --csv data/vision-benchmark/report.csv
 ```
 
