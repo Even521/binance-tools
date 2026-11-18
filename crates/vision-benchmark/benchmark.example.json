@@ -9,9 +9,9 @@
     "origin_y": 0
   },
   "templates": {
-    "reply": "../../data/vision-benchmark/templates/reply.png",
-    "like": "../../data/vision-benchmark/templates/like.png",
-    "repost": "../../data/vision-benchmark/templates/repost.png"
+    "reply": "templates/reply.png",
+    "like": "templates/like.png",
+    "repost": "templates/repost.png"
   },
   "cases": []
 }
