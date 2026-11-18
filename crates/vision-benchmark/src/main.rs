@@ -212,7 +212,8 @@ fn draw_box(image: &mut image::RgbaImage, cx: i32, cy: i32, tw: u32, th: u32) {
     for x in left..=right { image.put_pixel(x,top,color); image.put_pixel(x,bottom,color); }
     for y in top..=bottom { image.put_pixel(left,y,color); image.put_pixel(right,y,color); }
 }
-\nfn resolve(base: &Path, relative: &str) -> PathBuf {
+
+fn resolve(base: &Path, relative: &str) -> PathBuf {
     let path = PathBuf::from(relative);
     if path.is_absolute() { path } else { base.join(path) }
 }
