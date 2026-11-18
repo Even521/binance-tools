@@ -70,7 +70,7 @@ fn main() -> Result<()> {
         let screenshot = image::open(&scan_path)
             .with_context(|| format!("加载扫描截图失败：{}", scan_path.display()))?
             .into_rgba8();
-        println!("\\n========== 单张截图按钮扫描 ==========");
+        println!("\n========== 单张截图按钮扫描 ==========");
         println!("截图：{}", scan_path.display());
         println!("尺寸：{} x {}", screenshot.width(), screenshot.height());
         println!("阈值：{:.2} | 迭代：{}", manifest.settings.threshold, manifest.settings.iterations);
