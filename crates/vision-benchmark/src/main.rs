@@ -64,44 +64,52 @@ fn main() -> Result<()> {
         templates.insert(name.clone(), template);
     }
 
-    // 单张截图快速扫描：对清单中的每个按钮模板各执行一次最佳匹配。
+    // 多目标扫描：每次取当前最高分，屏蔽该按钮邻域后继续寻找下一个。
     if let Some(scan_path) = &args.scan_image {
         let scan_path = if scan_path.is_absolute() { scan_path.clone() } else { base.join(scan_path) };
         let screenshot = image::open(&scan_path)
             .with_context(|| format!("加载扫描截图失败：{}", scan_path.display()))?
             .into_rgba8();
-        println!("\n========== 单张截图按钮扫描 ==========");
-        println!("截图：{}", scan_path.display());
-        println!("尺寸：{} x {}", screenshot.width(), screenshot.height());
-        println!("阈值：{:.2} | 迭代：{}", manifest.settings.threshold, manifest.settings.iterations);
-        println!("{:<12} {:<10} {:<14} {:<12}", "模板", "匹配结果", "中心坐标", "平均耗时");
+        let mut annotated = screenshot.clone();
+        let mut csv = String::from("template,index,center_x,center_y,score,elapsed_ms\\n");
+        println!("\\n========== X 页面多目标按钮扫描 ==========");
+        println!("截图：{} | 尺寸：{} x {}", scan_path.display(), screenshot.width(), screenshot.height());
+        println!("阈值：{:.2} | 每种模板最多：{}", manifest.settings.threshold, args.max_results);
         for (name, template) in &templates {
-            let origin = ScreenPoint { x: manifest.settings.origin_x, y: manifest.settings.origin_y };
-            let _ = matcher.find_prepared(&screenshot, template, origin)
-                .with_context(|| format!("模板 {name} 预热匹配失败"))?;
-            let mut timings = Vec::with_capacity(manifest.settings.iterations);
-            let mut last_match = None;
-            for _ in 0..manifest.settings.iterations {
-                let start = Instant::now();
-                last_match = Some(matcher.find_prepared(&screenshot, template, origin)
-                    .with_context(|| format!("模板 {name} 匹配失败"))?);
-                timings.push(start.elapsed().as_secs_f64() * 1000.0);
+            let relative = manifest.templates.get(name).context("模板路径缺失")?;
+            let template_image = image::open(resolve(base, relative))?.into_rgba8();
+            let (tw, th) = template_image.dimensions();
+            let mut working = screenshot.clone();
+            let mut hits = Vec::new();
+            let started = Instant::now();
+            for _ in 0..args.max_results {
+                let found = matcher.find_prepared(&working, template,
+                    ScreenPoint { x: manifest.settings.origin_x, y: manifest.settings.origin_y })
+                    .with_context(|| format!("模板 {name} 多目标匹配失败"))?;
+                if found.score < manifest.settings.threshold { break; }
+                let cx = found.center.x;
+                let cy = found.center.y;
+                if hits.iter().any(|(x, y, _): &(i32, i32, f32)|
+                    (x - cx).abs() < (tw as i32 / 2).max(8) &&
+                    (y - cy).abs() < (th as i32 / 2).max(8)) { break; }
+                hits.push((cx, cy, found.score));
+                // 用邻域背景均值覆盖已命中区域，避免下一轮重复命中同一按钮。
+                suppress_match(&mut working, cx, cy, tw, th);
             }
-            let avg = timings.iter().sum::<f64>() / timings.len().max(1) as f64;
-            let p95 = percentile(&timings, 0.95);
-            match last_match {
-                Some(found) if found.score >= manifest.settings.threshold => println!(
-                    "{:<12} {:<10} ({:>4},{:>4})  {:.3} ms (P95 {:.3} ms, score {:.3})",
-                    name, "已找到", found.center.x, found.center.y, avg, p95, found.score
-                ),
-                Some(found) => println!(
-                    "{:<12} {:<10} {:<14} {:.3} ms (P95 {:.3} ms, score {:.3})",
-                    name, "未达到阈值", "-", avg, p95, found.score
-                ),
-                None => println!("{:<12} {:<10} {:<14} {:.3} ms (P95 {:.3} ms)",
-                    name, "未找到", "-", avg, p95),
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            println!("{name}: {} 个 | 总耗时 {:.3} ms", hits.len(), elapsed);
+            for (index, (cx, cy, score)) in hits.iter().enumerate() {
+                println!("  #{:02} center=({}, {}) score={:.3}", index + 1, cx, cy, score);
+                csv.push_str(&format!("{},{},{},{},{:.4},{:.3}\\n", name, index + 1, cx, cy, score, elapsed));
+                draw_box(&mut annotated, *cx, *cy, tw, th);
             }
         }
+        let output = scan_path.with_file_name(format!("{}-multi-detect.png",
+            scan_path.file_stem().and_then(|s| s.to_str()).unwrap_or("scan")));
+        annotated.save(&output).with_context(|| format!("保存标注图失败：{}", output.display()))?;
+        let csv_path = output.with_extension("csv");
+        fs::write(&csv_path, csv)?;
+        println!("标注截图：{}\\nCSV：{}", output.display(), csv_path.display());
         return Ok(());
     }
 
@@ -151,27 +159,57 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-struct Args { manifest: PathBuf, csv: Option<PathBuf>, scan_image: Option<PathBuf> }
+struct Args { manifest: PathBuf, csv: Option<PathBuf>, scan_image: Option<PathBuf>, max_results: usize }
 fn parse_args() -> Result<Args> {
     let mut manifest = PathBuf::from("crates/vision-benchmark/benchmark.example.json");
     let mut csv = None;
-    let mut scan_image = None;
+    let mut scan_image = None;\n    let mut max_results = 30usize;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--manifest" => manifest = args.next().context("--manifest 缺少路径")?.into(),
             "--csv" => csv = Some(args.next().context("--csv 缺少输出路径")?.into()),
-            "--scan-image" => scan_image = Some(args.next().context("--scan-image 缺少截图路径")?.into()),
+            "--scan-image" => scan_image = Some(args.next().context("--scan-image 缺少截图路径")?.into()),\n            "--max-results" => max_results = args.next().context("--max-results 缺少数量")?.parse().context("--max-results 必须是正整数")?,
             "--help" | "-h" => {
-                println!("vision-benchmark [--manifest benchmark.json] [--scan-image screenshot.png] [--csv report.csv]");
+                println!("vision-benchmark [--manifest benchmark.json] [--scan-image screenshot.png] [--max-results 30] [--csv report.csv]");
                 std::process::exit(0);
             }
             other => bail!("未知参数：{other}。使用 --help 查看用法。"),
         }
     }
-    Ok(Args { manifest, csv, scan_image })
+    if max_results == 0 { bail!("--max-results 必须大于 0"); }\n    Ok(Args { manifest, csv, scan_image, max_results })
 }
-fn resolve(base: &Path, relative: &str) -> PathBuf {
+
+fn suppress_match(image: &mut image::RgbaImage, cx: i32, cy: i32, tw: u32, th: u32) {
+    let rx = (tw as i32).max(12);
+    let ry = (th as i32).max(12);
+    let left = (cx - rx).max(0) as u32;
+    let top = (cy - ry).max(0) as u32;
+    let right = (cx + rx).min(image.width() as i32 - 1) as u32;
+    let bottom = (cy + ry).min(image.height() as i32 - 1) as u32;
+    let mut sum = [0u64; 3]; let mut count = 0u64;
+    for x in left..=right {
+        for y in [top.saturating_sub(1), (bottom + 1).min(image.height()-1)] {
+            let p = image.get_pixel(x, y); for c in 0..3 { sum[c] += p[c] as u64; } count += 1;
+        }
+    }
+    for y in top..=bottom {
+        for x in [left.saturating_sub(1), (right + 1).min(image.width()-1)] {
+            let p = image.get_pixel(x, y); for c in 0..3 { sum[c] += p[c] as u64; } count += 1;
+        }
+    }
+    let color = image::Rgba([(sum[0]/count.max(1)) as u8,(sum[1]/count.max(1)) as u8,(sum[2]/count.max(1)) as u8,255]);
+    for x in left..=right { for y in top..=bottom { image.put_pixel(x,y,color); } }
+}
+fn draw_box(image: &mut image::RgbaImage, cx: i32, cy: i32, tw: u32, th: u32) {
+    let left=(cx-tw as i32/2).max(0) as u32; let top=(cy-th as i32/2).max(0) as u32;
+    let right=(cx+tw as i32/2).min(image.width() as i32-1) as u32;
+    let bottom=(cy+th as i32/2).min(image.height() as i32-1) as u32;
+    let color=image::Rgba([255,40,40,255]);
+    for x in left..=right { image.put_pixel(x,top,color); image.put_pixel(x,bottom,color); }
+    for y in top..=bottom { image.put_pixel(left,y,color); image.put_pixel(right,y,color); }
+}
+\nfn resolve(base: &Path, relative: &str) -> PathBuf {
     let path = PathBuf::from(relative);
     if path.is_absolute() { path } else { base.join(path) }
 }
