@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use image::RgbaImage;
 use robost_vision::{PreparedTemplate, ScreenPoint, TemplateMatcher};
 use serde::Deserialize;
 use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, time::{Duration, Instant}};
@@ -89,7 +88,7 @@ fn main() -> Result<()> {
             last_match = Some(found);
         }
 
-        let found = last_match.flatten();
+        let found = last_match;
         let expected = case.expected_center.as_ref().map(|p| (p.x, p.y));
         let center = found.as_ref().map(|m| (m.center.x, m.center.y));
         let error_px = match (expected, center) {
