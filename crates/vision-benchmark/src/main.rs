@@ -163,13 +163,15 @@ struct Args { manifest: PathBuf, csv: Option<PathBuf>, scan_image: Option<PathBu
 fn parse_args() -> Result<Args> {
     let mut manifest = PathBuf::from("crates/vision-benchmark/benchmark.example.json");
     let mut csv = None;
-    let mut scan_image = None;\n    let mut max_results = 30usize;
+    let mut scan_image = None;
+    let mut max_results = 30usize;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--manifest" => manifest = args.next().context("--manifest 缺少路径")?.into(),
             "--csv" => csv = Some(args.next().context("--csv 缺少输出路径")?.into()),
-            "--scan-image" => scan_image = Some(args.next().context("--scan-image 缺少截图路径")?.into()),\n            "--max-results" => max_results = args.next().context("--max-results 缺少数量")?.parse().context("--max-results 必须是正整数")?,
+            "--scan-image" => scan_image = Some(args.next().context("--scan-image 缺少截图路径")?.into()),
+            "--max-results" => max_results = args.next().context("--max-results 缺少数量")?.parse().context("--max-results 必须是正整数")?,
             "--help" | "-h" => {
                 println!("vision-benchmark [--manifest benchmark.json] [--scan-image screenshot.png] [--max-results 30] [--csv report.csv]");
                 std::process::exit(0);
@@ -177,7 +179,8 @@ fn parse_args() -> Result<Args> {
             other => bail!("未知参数：{other}。使用 --help 查看用法。"),
         }
     }
-    if max_results == 0 { bail!("--max-results 必须大于 0"); }\n    Ok(Args { manifest, csv, scan_image, max_results })
+    if max_results == 0 { bail!("--max-results 必须大于 0"); }
+    Ok(Args { manifest, csv, scan_image, max_results })
 }
 
 fn suppress_match(image: &mut image::RgbaImage, cx: i32, cy: i32, tw: u32, th: u32) {
