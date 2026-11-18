@@ -6762,6 +6762,9 @@ dependencies = [
 [[package]]
 name = "spot-ai-analysis"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+]
 
 [[package]]
 name = "stable_deref_trait"
