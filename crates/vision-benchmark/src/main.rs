@@ -44,8 +44,8 @@ fn main() -> Result<()> {
     let manifest: Manifest = serde_json::from_slice(
         &fs::read(&manifest_path).context("读取 benchmark.json 失败")?
     ).context("解析 benchmark.json 失败")?;
-    if manifest.cases.is_empty() {
-        bail!("测试清单 cases 为空。请先添加截图样本和人工标注坐标，格式见 README.md。");
+    if manifest.cases.is_empty() && args.scan_image.is_none() {
+        bail!("测试清单 cases 为空。请使用 --scan-image <截图路径> 直接扫描截图，或添加人工标注样本。");
     }
     if manifest.settings.iterations == 0 { bail!("iterations 必须大于 0"); }
 
@@ -62,6 +62,43 @@ fn main() -> Result<()> {
         let template = PreparedTemplate::from_file(&path)
             .with_context(|| format!("加载模板 {name} 失败：{}", path.display()))?;
         templates.insert(name.clone(), template);
+    }
+
+    // 单张截图快速扫描：对清单中的每个按钮模板各执行一次最佳匹配。
+    if let Some(scan_path) = &args.scan_image {
+        let scan_path = if scan_path.is_absolute() { scan_path.clone() } else { base.join(scan_path) };
+        let screenshot = image::open(&scan_path)
+            .with_context(|| format!("加载扫描截图失败：{}", scan_path.display()))?
+            .into_rgba8();
+        println!("\\n========== 单张截图按钮扫描 ==========");
+        println!("截图：{}", scan_path.display());
+        println!("尺寸：{} x {}", screenshot.width(), screenshot.height());
+        println!("阈值：{:.2} | 迭代：{}", manifest.settings.threshold, manifest.settings.iterations);
+        println!("{:<12} {:<10} {:<14} {:<12}", "模板", "匹配结果", "中心坐标", "平均耗时");
+        for (name, template) in &templates {
+            let origin = ScreenPoint { x: manifest.settings.origin_x, y: manifest.settings.origin_y };
+            let _ = matcher.find_prepared(&screenshot, template, origin)
+                .with_context(|| format!("模板 {name} 预热匹配失败"))?;
+            let mut timings = Vec::with_capacity(manifest.settings.iterations);
+            let mut last_match = None;
+            for _ in 0..manifest.settings.iterations {
+                let start = Instant::now();
+                last_match = matcher.find_prepared(&screenshot, template, origin)
+                    .with_context(|| format!("模板 {name} 匹配失败"))?;
+                timings.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            let avg = timings.iter().sum::<f64>() / timings.len().max(1) as f64;
+            let p95 = percentile(&timings, 0.95);
+            match last_match {
+                Some(found) => println!(
+                    "{:<12} {:<10} ({:>4},{:>4})  {:.3} ms (P95 {:.3} ms, score {:.3})",
+                    name, "已找到", found.center.x, found.center.y, avg, p95, found.score
+                ),
+                None => println!("{:<12} {:<10} {:<14} {:.3} ms (P95 {:.3} ms)",
+                    name, "未找到", "-", avg, p95),
+            }
+        }
+        return Ok(());
     }
 
     let mut results = Vec::new();
@@ -110,23 +147,25 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-struct Args { manifest: PathBuf, csv: Option<PathBuf> }
+struct Args { manifest: PathBuf, csv: Option<PathBuf>, scan_image: Option<PathBuf> }
 fn parse_args() -> Result<Args> {
     let mut manifest = PathBuf::from("crates/vision-benchmark/benchmark.example.json");
     let mut csv = None;
+    let mut scan_image = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--manifest" => manifest = args.next().context("--manifest 缺少路径")?.into(),
             "--csv" => csv = Some(args.next().context("--csv 缺少输出路径")?.into()),
+            "--scan-image" => scan_image = Some(args.next().context("--scan-image 缺少截图路径")?.into()),
             "--help" | "-h" => {
-                println!("vision-benchmark [--manifest benchmark.json] [--csv report.csv]");
+                println!("vision-benchmark [--manifest benchmark.json] [--scan-image screenshot.png] [--csv report.csv]");
                 std::process::exit(0);
             }
             other => bail!("未知参数：{other}。使用 --help 查看用法。"),
         }
     }
-    Ok(Args { manifest, csv })
+    Ok(Args { manifest, csv, scan_image })
 }
 fn resolve(base: &Path, relative: &str) -> PathBuf {
     let path = PathBuf::from(relative);
