@@ -83,16 +83,20 @@ fn main() -> Result<()> {
             let mut last_match = None;
             for _ in 0..manifest.settings.iterations {
                 let start = Instant::now();
-                last_match = matcher.find_prepared(&screenshot, template, origin)
-                    .with_context(|| format!("模板 {name} 匹配失败"))?;
+                last_match = Some(matcher.find_prepared(&screenshot, template, origin)
+                    .with_context(|| format!("模板 {name} 匹配失败"))?);
                 timings.push(start.elapsed().as_secs_f64() * 1000.0);
             }
             let avg = timings.iter().sum::<f64>() / timings.len().max(1) as f64;
             let p95 = percentile(&timings, 0.95);
             match last_match {
-                Some(found) => println!(
+                Some(found) if found.score >= manifest.settings.threshold => println!(
                     "{:<12} {:<10} ({:>4},{:>4})  {:.3} ms (P95 {:.3} ms, score {:.3})",
                     name, "已找到", found.center.x, found.center.y, avg, p95, found.score
+                ),
+                Some(found) => println!(
+                    "{:<12} {:<10} {:<14} {:.3} ms (P95 {:.3} ms, score {:.3})",
+                    name, "未达到阈值", "-", avg, p95, found.score
                 ),
                 None => println!("{:<12} {:<10} {:<14} {:.3} ms (P95 {:.3} ms)",
                     name, "未找到", "-", avg, p95),
