@@ -75,7 +75,9 @@ impl AutoReplyRunner {
             // 轮次包括成功、跳过重复内容以及已恢复的普通失败；每轮浏览器操作已完整结束。
             if post_scheduler_active {
                 rounds_since_post += 1;
-                if first_reply_completed && (rounds_since_post >= REPLY_ROUNDS_PER_POST || retry_post_soon) {
+                if first_reply_completed
+                    && (rounds_since_post >= REPLY_ROUNDS_PER_POST || retry_post_soon)
+                {
                     automation::log_event(&format!(
                         "自动回复已完成 {REPLY_ROUNDS_PER_POST} 轮，交出浏览器操作权，等待自动发帖完成 1 次调度。"
                     ));
@@ -152,16 +154,12 @@ impl AutoReplyRunner {
             self.failures = 0;
             self.last_result = Some(result);
 
-            return self.scroll_or_recover(
-                cancel,
-                "跳过已回复账号，向下查找下一条帖子",
-            );
+            return self.scroll_or_recover(cancel, "跳过已回复账号，向下查找下一条帖子");
         }
 
         if result.completed {
             self.completed += 1;
             self.failures = 0;
-
         } else if result.summary.starts_with("提交结果未知") {
             // 仅当视觉流程已确认回复弹窗和草稿确认框都关闭、且 uncertain 已成功写入数据库时，
             // vision 才会以正常结果返回到这里。此时当前帖子已被持久化去重保护，可以安全跳过。
@@ -211,7 +209,10 @@ impl AutoReplyRunner {
         }
 
         // 点击提交后状态不明时不能滚动到下一帖；停止整个自动回复，等待人工核验。
-        if error.downcast_ref::<vision::SendOutcomeUncertain>().is_some() {
+        if error
+            .downcast_ref::<vision::SendOutcomeUncertain>()
+            .is_some()
+        {
             automation::log_event(&format!(
                 "全自动：发送结果或数据库状态无法确认，立即停止，不再处理下一条：{error:#}"
             ));
@@ -254,28 +255,19 @@ impl AutoReplyRunner {
     }
 }
 
-
 /// 输出每轮唯一的最终结果日志；详细 OCR、截图和点击诊断仍由原流程保留。
 fn log_round_result(round: usize, result: &VisionReplyResult, elapsed: std::time::Duration) {
     let duration = format!("{:.1}s", elapsed.as_secs_f64());
     let reason = compact_log_value(&result.summary);
 
     if result.completed {
-        app_log::x_info!(
-            "[X助手][第{round}轮] 回复成功 | 耗时={duration}"
-        );
+        app_log::x_info!("[X助手][第{round}轮] 回复成功 | 耗时={duration}");
     } else if result.summary.starts_with("提交结果未知") {
-        app_log::x_warn!(
-            "[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}"
-        );
+        app_log::x_warn!("[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}");
     } else if result.skipped_duplicate || result.summary.starts_with("继续扫描下一帖") {
-        app_log::x_info!(
-            "[X助手][第{round}轮] 跳过 | 原因={reason} | 耗时={duration}"
-        );
+        app_log::x_info!("[X助手][第{round}轮] 跳过 | 原因={reason} | 耗时={duration}");
     } else {
-        app_log::x_error!(
-            "[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}"
-        );
+        app_log::x_error!("[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}");
     }
 }
 
@@ -290,17 +282,14 @@ fn log_round_error(
     let duration = format!("{:.1}s", elapsed.as_secs_f64());
 
     if cancel.load(Ordering::Acquire) {
-        app_log::x_info!(
-            "[X助手][第{round}轮] 已停止 | 原因={reason} | 耗时={duration}"
-        );
-    } else if error.downcast_ref::<vision::SendOutcomeUncertain>().is_some() {
-        app_log::x_warn!(
-            "[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}"
-        );
+        app_log::x_info!("[X助手][第{round}轮] 已停止 | 原因={reason} | 耗时={duration}");
+    } else if error
+        .downcast_ref::<vision::SendOutcomeUncertain>()
+        .is_some()
+    {
+        app_log::x_warn!("[X助手][第{round}轮] 发送状态不确定 | 原因={reason} | 耗时={duration}");
     } else {
-        app_log::x_error!(
-            "[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}"
-        );
+        app_log::x_error!("[X助手][第{round}轮] 回复失败 | 原因={reason} | 耗时={duration}");
     }
 }
 
@@ -310,8 +299,39 @@ fn compact_log_value(value: &str) -> String {
 }
 
 fn ensure_daily_reply_capacity() -> Result<()> {
-    let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
-    let completed = binance_tools::db::x_assistant::today_sent_reply_count_blocking()?;
+    let started = Instant::now();
+    automation::log_event("[诊断][数据库] 开始读取自动回复任务设置。");
+    let settings = match binance_tools::db::x_posting::load_task_settings_blocking() {
+        Ok(settings) => settings,
+        Err(error) => {
+            automation::log_event(&format!(
+                "[诊断][数据库] 读取任务设置失败，耗时={} ms：{error:#}",
+                started.elapsed().as_millis()
+            ));
+            return Err(error).context("读取自动回复任务设置时失败");
+        }
+    };
+    automation::log_event(&format!(
+        "[诊断][数据库] 任务设置读取完成，耗时={} ms；开始查询今日已发送回复数。",
+        started.elapsed().as_millis()
+    ));
+
+    let count_started = Instant::now();
+    let completed = match binance_tools::db::x_assistant::today_sent_reply_count_blocking() {
+        Ok(completed) => completed,
+        Err(error) => {
+            automation::log_event(&format!(
+                "[诊断][数据库] 查询今日已发送回复数失败，查询耗时={} ms：{error:#}",
+                count_started.elapsed().as_millis()
+            ));
+            return Err(error).context("查询今日已发送回复数时失败");
+        }
+    };
+    automation::log_event(&format!(
+        "[诊断][数据库] 今日已发送回复数查询完成，耗时={} ms；总检查耗时={} ms。",
+        count_started.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    ));
     let limit = u64::from(settings.daily_reply_limit);
     if completed >= limit {
         let message = format!(

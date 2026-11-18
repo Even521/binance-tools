@@ -1,6 +1,11 @@
 use anyhow::{Context, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 /// Persisted switches for the X assistant task scheduler.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,7 +66,6 @@ pub struct XAssistantTaskRecord {
     pub updated_at: String,
 }
 
-
 /// Stable FNV-1a 64-bit fingerprint for local deduplication.
 /// This is a duplicate-detection key, not a cryptographic integrity hash.
 pub fn content_fingerprint(value: &str) -> String {
@@ -75,6 +79,30 @@ pub fn content_fingerprint(value: &str) -> String {
 }
 
 fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
+    static INITIALIZED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+    let database_path: String =
+        connection.query_row("PRAGMA database_list", [], |row| row.get(2))?;
+    if database_path.is_empty() {
+        return ensure_schema_inner(connection);
+    }
+
+    let path =
+        std::fs::canonicalize(&database_path).unwrap_or_else(|_| PathBuf::from(&database_path));
+    let initialized = INITIALIZED_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut initialized = initialized
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if initialized.contains(&path) {
+        return Ok(());
+    }
+
+    ensure_schema_inner(connection)?;
+    initialized.insert(path);
+    Ok(())
+}
+
+fn ensure_schema_inner(connection: &Connection) -> anyhow::Result<()> {
     connection.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS x_assistant_task_settings (
@@ -144,7 +172,8 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
     let has_news_type = {
         let mut statement = connection.prepare("PRAGMA table_info(x_assistant_task_settings)")?;
         let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-        columns.collect::<Result<Vec<_>, _>>()?
+        columns
+            .collect::<Result<Vec<_>, _>>()?
             .iter()
             .any(|name| name == "auto_post_news_type")
     };
@@ -158,7 +187,8 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
     let has_daily_reply_limit = {
         let mut statement = connection.prepare("PRAGMA table_info(x_assistant_task_settings)")?;
         let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-        columns.collect::<Result<Vec<_>, _>>()?
+        columns
+            .collect::<Result<Vec<_>, _>>()?
             .iter()
             .any(|name| name == "daily_reply_limit")
     };
@@ -176,7 +206,7 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
         );
-        "#
+        "#,
     )?;
 
     // The previous application default was 50. Upgrade untouched defaults to 1000.
@@ -224,7 +254,7 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
 
             INSERT INTO app_schema_migrations (version)
             VALUES ('x_posting_timestamps_beijing_v1');
-            "#
+            "#,
         )?;
     }
 
@@ -258,7 +288,7 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
 
             INSERT INTO app_schema_migrations (version)
             VALUES ('x_posting_timestamps_beijing_v2');
-            "#
+            "#,
         )?;
     }
     Ok(())
@@ -329,10 +359,7 @@ pub fn save_task_settings_blocking(settings: &XAssistantTaskSettings) -> anyhow:
 /// Checks both the source-news fingerprint and the final post-body fingerprint.
 /// Unknown/submitting/published records are treated as duplicates; a failed
 /// record may be safely prepared again after the caller verifies no post exists.
-pub fn is_post_duplicate_blocking(
-    original_hash: &str,
-    content_hash: &str,
-) -> anyhow::Result<bool> {
+pub fn is_post_duplicate_blocking(original_hash: &str, content_hash: &str) -> anyhow::Result<bool> {
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
     Ok(connection.query_row(
@@ -412,7 +439,11 @@ pub fn is_post_similar_blocking(content: &str) -> anyhow::Result<bool> {
         let previous_bigrams = bigrams(&previous);
         let shared = candidate_bigrams.intersection(&previous_bigrams).count();
         let union = candidate_bigrams.union(&previous_bigrams).count();
-        let jaccard = if union == 0 { 0.0 } else { shared as f64 / union as f64 };
+        let jaccard = if union == 0 {
+            0.0
+        } else {
+            shared as f64 / union as f64
+        };
         let prefix_len = candidate_prefix.len().min(previous.len().min(12));
         let matching_prefix = candidate_prefix
             .iter()
@@ -453,7 +484,10 @@ pub fn reserve_post_blocking(
         params![original_hash, content_hash],
         |row| row.get(0),
     )?;
-    ensure!(!active_duplicate, "该新闻或正文已有待处理、发布中或已发布记录，为避免重复发布已拦截");
+    ensure!(
+        !active_duplicate,
+        "该新闻或正文已有待处理、发布中或已发布记录，为避免重复发布已拦截"
+    );
 
     let existing: Option<(i64, String)> = tx
         .query_row(
@@ -478,7 +512,14 @@ pub fn reserve_post_blocking(
                  comment_status = 'pending', comment_text = NULL, commented_at = NULL,
                  updated_at = datetime('now', '+8 hours')
              WHERE id = ?1",
-            params![id, news_id, source_url, original_hash, content_hash, content],
+            params![
+                id,
+                news_id,
+                source_url,
+                original_hash,
+                content_hash,
+                content
+            ],
         )?;
         id
     } else {
@@ -560,10 +601,8 @@ fn update_post_status(
              updated_at = datetime('now', '+8 hours')
          WHERE id = ?1 AND status IN {allowed_previous}"
     );
-    let changed = connection.execute(
-        &sql,
-        params![id, status, x_post_url, published, last_error],
-    )?;
+    let changed =
+        connection.execute(&sql, params![id, status, x_post_url, published, last_error])?;
     ensure!(changed == 1, "未找到本地 X 发帖记录：{id}");
     Ok(())
 }
@@ -610,7 +649,10 @@ pub fn mark_post_commenting_blocking(id: i64, comment_text: &str) -> anyhow::Res
            AND comment_status IN ('pending', 'failed')",
         params![id, comment_text],
     )?;
-    ensure!(changed == 1, "发帖记录 {id} 尚未确认发布，或评论任务不能启动");
+    ensure!(
+        changed == 1,
+        "发帖记录 {id} 尚未确认发布，或评论任务不能启动"
+    );
     Ok(())
 }
 
@@ -742,7 +784,14 @@ pub fn save_task_checkpoint_blocking(
             retry_count = excluded.retry_count,
             last_error = excluded.last_error,
             updated_at = datetime('now', '+8 hours')",
-        params![task_id, task_type, stage, payload_json, retry_count, last_error],
+        params![
+            task_id,
+            task_type,
+            stage,
+            payload_json,
+            retry_count,
+            last_error
+        ],
     )?;
     Ok(())
 }
@@ -774,19 +823,26 @@ pub fn list_incomplete_tasks_blocking() -> anyhow::Result<Vec<XAssistantTaskReco
 mod tests {
     use rusqlite::Connection;
 
-    use super::{ensure_schema, XAssistantTaskSettings};
+    use super::{XAssistantTaskSettings, ensure_schema};
 
     #[test]
     fn fingerprints_are_stable_and_whitespace_normalized() {
-        assert_eq!(super::content_fingerprint("a  b"), super::content_fingerprint("a b"));
-        assert_ne!(super::content_fingerprint("a b"), super::content_fingerprint("a c"));
+        assert_eq!(
+            super::content_fingerprint("a  b"),
+            super::content_fingerprint("a b")
+        );
+        assert_ne!(
+            super::content_fingerprint("a b"),
+            super::content_fingerprint("a c")
+        );
     }
 
     #[test]
     fn migrates_existing_settings_table_with_news_type_default() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE x_assistant_task_settings (
+        connection
+            .execute_batch(
+                "CREATE TABLE x_assistant_task_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 auto_reply_enabled INTEGER NOT NULL DEFAULT 0,
                 auto_post_enabled INTEGER NOT NULL DEFAULT 0,
@@ -796,15 +852,18 @@ mod tests {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
             );
             INSERT INTO x_assistant_task_settings (id) VALUES (1);",
-        ).unwrap();
+            )
+            .unwrap();
 
         ensure_schema(&connection).unwrap();
 
-        let news_type: String = connection.query_row(
-            "SELECT auto_post_news_type FROM x_assistant_task_settings WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let news_type: String = connection
+            .query_row(
+                "SELECT auto_post_news_type FROM x_assistant_task_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(news_type, "all");
     }
 
@@ -833,22 +892,26 @@ mod tests {
     fn stores_post_before_submit_and_prevents_duplicate_reservation() {
         let connection = Connection::open_in_memory().unwrap();
         ensure_schema(&connection).unwrap();
-        connection.execute(
-            "INSERT INTO x_published_posts (
+        connection
+            .execute(
+                "INSERT INTO x_published_posts (
                 original_hash, content_hash, content, status
              ) VALUES ('source-1', 'body-1', '测试正文', 'pending')",
-            [],
-        ).unwrap();
+                [],
+            )
+            .unwrap();
 
-        let duplicate: bool = connection.query_row(
-            "SELECT EXISTS(
+        let duplicate: bool = connection
+            .query_row(
+                "SELECT EXISTS(
                 SELECT 1 FROM x_published_posts
                 WHERE (original_hash = 'source-1' OR content_hash = 'body-1')
                   AND status IN ('pending', 'submitting', 'published', 'unknown')
              )",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(duplicate);
     }
 }

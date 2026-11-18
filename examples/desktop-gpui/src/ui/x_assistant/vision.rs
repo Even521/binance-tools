@@ -2267,7 +2267,57 @@ fn close_reply_composer_safely(
         }
     }
 
-    anyhow::bail!("连续 4 次安全关闭后仍未确认回到 X 首页；保留页面，不继续点击或滚动")
+    automation::log_event(
+        "[自动回复][03/03]：4 次 Escape 未能关闭回复弹窗；尝试导航回 X 首页，确认当前回复标记 uncertain 后继续处理其他帖子。",
+    );
+    native::navigate_to_x_home().context("Escape 关闭失败后导航回 X 首页失败")?;
+
+    for attempt in 1..=8 {
+        check_cancel(cancel)?;
+        wait_cancel(cancel, Duration::from_secs(1))?;
+        let shot = capture(
+            dir,
+            id,
+            &format!("05-network-error-home-recovery-{attempt}"),
+            screenshots,
+        )?;
+        let current_url = ocr::recognize_current_url(&shot.png)?;
+        if ocr::recognize_save_draft_confirmation(&shot.png)? {
+            let Some((discard_x, discard_y)) = ocr::locate_discard_draft_button(&shot.png)? else {
+                anyhow::bail!("导航恢复时出现草稿确认框，但无法精确定位‘放弃’按钮")
+            };
+            automation::log_event(&format!(
+                "[自动回复][03/03]：导航恢复时出现草稿确认框，点击 OCR 精确定位的‘放弃’按钮 ({discard_x}, {discard_y})。"
+            ));
+            ensure_reply_page_route(&shot, "导航恢复后放弃草稿前")?;
+            native::click_at_client_position(discard_x, discard_y)?;
+            continue;
+        }
+
+        if !current_url.as_deref().is_some_and(ocr::is_x_home_address) {
+            automation::log_event(&format!(
+                "[自动回复][03/03]：导航恢复第 {attempt}/8 次尚未确认首页（地址={current_url:?}）。"
+            ));
+            continue;
+        }
+
+        match ocr::reply_composer_is_open(&shot.png) {
+            Ok(false) => {
+                automation::log_event(
+                    "[自动回复][03/03]：已通过固定地址导航确认回到 X 首页，且回复弹窗关闭；允许标记 uncertain 并继续。",
+                );
+                return Ok(());
+            }
+            Ok(true) => automation::log_event(&format!(
+                "[自动回复][03/03]：导航恢复第 {attempt}/8 次虽已到首页，但回复弹窗仍打开。"
+            )),
+            Err(error) => automation::log_event(&format!(
+                "[自动回复][03/03]：导航恢复第 {attempt}/8 次无法识别弹窗状态：{error:#}。"
+            )),
+        }
+    }
+
+    anyhow::bail!("Escape 与首页导航恢复均未能确认回复弹窗已关闭；保留页面，不继续点击或滚动")
 }
 
 fn identify_post_for_mode(
