@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "threshold": 0.87,
+    "iterations": 30,
+    "tolerance_px": 8.0,
+    "multi_scale": true,
+    "scales": [1.0, 0.8, 1.25],
+    "origin_x": 0,
+    "origin_y": 0
+  },
+  "templates": {
+    "reply": "templates/reply.png",
+    "like": "templates/like.png",
+    "repost": "templates/repost.png"
+  },
+  "cases": []
+}

@@ -14,6 +14,16 @@ pub struct MarketSnapshot {
     pub high_price: Option<f64>,
     pub low_price: Option<f64>,
     pub volume: Option<f64>,
+    /// 本地 SQLite 中已收盘的日线，按时间升序；最多 121 根。
+    pub daily_klines: Vec<DailyKlineSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DailyKlineSnapshot {
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub quote_turnover: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +38,7 @@ pub struct AnalysisResult {
     pub symbol: String,
     pub trend_score: f64,
     pub volume_score: f64,
+    /// V2 入场位置得分（保留字段名以兼容现有 UI/API）。
     pub technical_score: f64,
     pub risk_score: f64,
     pub sentiment_score: f64,
@@ -36,15 +47,14 @@ pub struct AnalysisResult {
     pub sentiment_update_time: String,
     pub liquidity_score: f64,
     pub total_score: f64,
+    pub data_completeness: f64,
     pub trend_label: String,
     pub basis: String,
 }
 
-
 /// CoinMarketCap 全市场恐惧与贪婪指数。
 #[derive(Clone, Debug)]
 pub struct MarketSentiment {
-    /// 指数原始值，范围 0..=100。
     pub value: f64,
     pub classification: String,
     pub update_time: String,

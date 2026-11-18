@@ -14,8 +14,11 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use spot_ai_analysis::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt};
+use spot_ai_analysis::{AnalysisResult, BacktestCandle, BacktestResult, DailyKlineSnapshot, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt, run_backtest};
 use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpotAiView { QuantSelection, Backtest }
 
 #[derive(Clone, Copy, Debug)]
 enum SpotLoadMode { Cache, Sync, Refresh }
@@ -38,6 +41,7 @@ struct SpotAiAnalysisRow {
     sentiment_update_time: String,
     liquidity_score: f64,
     total_score: f64,
+    data_completeness: f64,
     trend_label: String,
     basis: String,
     ma120_average_price: Option<f64>,
@@ -49,6 +53,7 @@ impl SpotAiAnalysisRow {
 }
 
 pub struct SpotAiAnalysisPage {
+    view: SpotAiView,
     table: Entity<TableState<SpotAiAnalysisTableDelegate>>,
     search_input: Entity<InputState>,
     rows: Vec<SpotAiAnalysisRow>,
@@ -58,6 +63,9 @@ pub struct SpotAiAnalysisPage {
     error: Option<String>,
     loading: bool,
     scanned_count: usize,
+    backtest_result: Option<BacktestResult>,
+    backtest_loading: bool,
+    _backtest_task: Task<()>,
     _load_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -79,6 +87,7 @@ impl SpotAiAnalysisPage {
             vec![cx.subscribe_in(&search_input, window, Self::on_search_input_event)];
 
         let mut this = Self {
+            view: SpotAiView::QuantSelection,
             table,
             search_input,
             rows: Vec::new(),
@@ -88,6 +97,9 @@ impl SpotAiAnalysisPage {
             error: None,
             loading: false,
             scanned_count: 0,
+            backtest_result: None,
+            backtest_loading: false,
+            _backtest_task: Task::ready(()),
             _load_task: Task::ready(()),
             _subscriptions,
         };
@@ -133,8 +145,9 @@ impl SpotAiAnalysisPage {
                         }
                     }
                 } else { binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120).unwrap_or_default() };
+                let cached_daily = binance_tools::db::spot::load_cached_usdt_daily_klines_blocking().unwrap_or_default();
                 let sentiment = if matches!(mode, SpotLoadMode::Cache) { None } else { fetch_cmc_sentiment().ok() };
-                let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, sentiment.as_ref());
+                let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, &cached_daily, sentiment.as_ref());
                 Ok::<_, anyhow::Error>((rows, sentiment))
             }).await;
             _ = this.update(cx, |this, cx| {
@@ -235,40 +248,40 @@ impl SpotAiAnalysisPage {
         let theme = cx.theme();
         let dimensions = [
             (
-                "趋势结构",
+                "趋势与动量",
                 row.trend_score,
-                "权重 25%。依据 24 小时涨跌幅计算：50 + 涨跌幅(%) × 5，结果限制在 0～100 分。涨幅为 0 时得 50 分；涨跌幅每变化 1 个百分点，分数变化 5 分。它反映短期价格方向，不代表趋势一定持续。",
+                "权重 30%。使用已收盘日线的 1/3/7 日收益率，并结合价格相对 MA30、MA30 相对 MA120 的结构。历史不足时该因子不计入总分。",
             ),
             (
                 "成交活跃度",
                 row.volume_score,
-                "权重 20%。取该币种 24 小时 USDT 成交额，在本次符合条件的 USDT 现货候选币种中计算百分位排名。排名越靠前得分越高；这是相对排名，不代表资金净流入。",
+                "权重 20%。结合 24 小时成交额在候选币中的百分位，以及缓存日线近 20 日平均成交额。无 20 日历史时只使用可用的相对成交额排名。",
             ),
             (
-                "日线均价偏离",
+                "入场位置",
                 row.technical_score,
-                "权重 20%。依据本地缓存的近 30 日日线收盘均价偏离：55 + 偏离幅度(%) × 4，结果限制在 0～100 分。偏离为正表示价格高于均价，偏离为负表示低于均价。缺少完整均线缓存时暂按 50 分。",
+                "权重 15%。评估价格相对 MA30 的偏离，以及相对近 20 日高点的位置；偏离过大或追高会降低分数。缺少足够日线历史时不参与总分。",
             ),
             (
-                "波动风险",
+                "风险控制",
                 row.risk_score,
-                "权重 15%。先计算 24 小时振幅：(24h 最高价 - 24h 最低价) ÷ 24h 最低价 × 100%；再按 100 - 振幅(%) × 4 计分，并限制在 0～100 分。振幅越大，风险参考分越低。",
+                "权重 20%。根据 ATR14 相对价格的比例和近 7 日最大回撤评估波动风险。历史数据不足时不参与总分。",
             ),
             (
                 "市场情绪",
                 row.sentiment_score,
-                "权重 10%。使用 CoinMarketCap 全市场恐惧与贪婪指数原始值（0～100）作为情绪分。该指标反映整个加密市场，不代表当前交易对的独立情绪。若请求失败则使用 50 分中性占位。",
+                "权重 5%。使用 CoinMarketCap 恐惧与贪婪指数；请求失败时该因子不计入总分，不使用中性占位冒充有效数据。",
             ),
             (
                 "流动性参考",
                 row.liquidity_score,
-                "权重 10%。由成交活跃度百分位排名 × 70% + 振幅参考分 × 30% 组成；振幅参考分为 100 - 振幅(%) × 2，并限制在 0～100 分。当前没有盘口深度、买卖价差数据，因此不能等同于真实盘口流动性。",
+                "权重 10%。当前使用 24 小时 USDT 成交额的相对排名作为流动性代理；尚未接入盘口深度与买卖价差，不能视为真实盘口流动性。",
             ),
         ];
 
         v_flex()
             .flex_1()
-            .min_w(px(340.))
+            .w_full()
             .h_full()
             .overflow_y_scrollbar()
             .gap_4()
@@ -289,11 +302,16 @@ impl SpotAiAnalysisPage {
                             .child(div().text_size(px(10.)).text_color(palette::muted_soft(theme)).child("现货研究 · USDT")),
                     )
                     .child(
-                        Button::new("spot-ai-deep-analysis")
-                            .primary()
-                            .xsmall()
-                            .label("AI 深度分析")
-                            .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("spot-ai-deep-analysis")
+                                    .primary()
+                                    .xsmall()
+                                    .label("AI 深度分析")
+                                    .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
+                            ),
                     ),
             )
             .child(div().h(px(1.)).bg(palette::border(theme)))
@@ -301,7 +319,8 @@ impl SpotAiAnalysisPage {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(detail_stat_colored("综合评分", format!("{:.0} / 100", row.total_score), score_color(row.total_score, theme), theme))
+                    .child(detail_stat_colored("V2 综合评分", format!("{:.0} / 100", row.total_score), score_color(row.total_score, theme), theme))
+                    .child(detail_stat("数据完整度", format!("{:.0}%", row.data_completeness), theme))
                     .child(detail_stat_colored("恐惧与贪婪", format!("{:.0} · {}", row.sentiment_value, row.sentiment_classification), score_color(row.sentiment_value, theme), theme))
             )
             .child(div().text_size(px(10.)).text_color(palette::muted(theme)).child(format!("CoinMarketCap · 北京时间 {}", format_beijing_time(&row.sentiment_update_time))))
@@ -367,6 +386,211 @@ impl SpotAiAnalysisPage {
             )
             .into_any_element()
     }
+
+    fn set_view(&mut self, view: SpotAiView, cx: &mut Context<Self>) {
+        self.view = view;
+        cx.notify();
+    }
+
+    fn render_quant_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let visible_count = self.table.read(cx).delegate().visible_rows_count();
+        let selected_count = self.rows.len();
+
+        v_flex()
+            .flex_1()
+            .min_h(px(420.))
+            .w_full()
+            .gap_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child(format!("当前显示 {} 个 / 共 {} 个候选币种", visible_count, selected_count)))
+                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("1–7 天波段 · 按综合评分排序")),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                v_flex()
+                                    .relative()
+                                    .child(
+                                        Button::new("spot-ai-ma120-filter")
+                                            .outline()
+                                            .xsmall()
+                                            .label(format!("120日线：{} ▾", self.ma120_filter))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.ma120_filter_open = !this.ma120_filter_open;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .when(self.ma120_filter_open, |this| {
+                                        this.child(
+                                            v_flex()
+                                                .absolute()
+                                                .top(px(28.))
+                                                .right_0()
+                                                .w(px(116.))
+                                                .p_1()
+                                                .gap_1()
+                                                .rounded(px(6.))
+                                                .bg(palette::surface_strong(theme))
+                                                .border_1()
+                                                .border_color(palette::border(theme))
+                                                .shadow_lg()
+                                                .children(["全部", "线上", "趋近", "线下"].into_iter().map(|filter| {
+                                                    let selected = self.ma120_filter == filter;
+                                                    Button::new(SharedString::from(format!("spot-ai-ma120-option-{filter}")))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .w_full()
+                                                        .label(filter)
+                                                        .when(selected, |button| button.bg(theme.primary.opacity(0.14)).text_color(palette::text_strong(theme)))
+                                                        .on_click(cx.listener(move |this, _, _, cx| this.set_ma120_filter(filter.to_string(), cx)))
+                                                })),
+                                        )
+                                    }),
+                            )
+                            .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true))),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h(px(360.))
+                    .w_full()
+                    .gap_3()
+                    .overflow_hidden()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(500.))
+                            .h_full()
+                            .overflow_hidden()
+                            .child(
+                                DataTable::new(&self.table)
+                                    .stripe(true)
+                                    .bordered(true)
+                                    .scrollbar_visible(true, true),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(410.))
+                            .min_w(px(340.))
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_detail(cx)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn run_backtest(&mut self, cx: &mut Context<Self>) {
+        if self.backtest_loading { return; }
+        self.backtest_loading = true;
+        self.error = None;
+        cx.notify();
+        self._backtest_task = cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let cached = binance_tools::db::spot::load_cached_usdt_daily_klines_for_backtest_blocking()?;
+                let mut candles = Vec::new();
+                for (symbol, rows) in cached {
+                    if !symbol.ends_with("USDT") { continue; }
+                    let base_asset = symbol.trim_end_matches("USDT").to_string();
+                    for row in rows {
+                        candles.push(BacktestCandle {
+                            symbol: symbol.clone(), base_asset: base_asset.clone(),
+                            asset_name: base_asset.clone(), open_time: row.open_time,
+                            high: row.high_price, low: row.low_price, close: row.close_price,
+                            quote_turnover: row.close_price * row.volume,
+                        });
+                    }
+                }
+                if candles.is_empty() {
+                    anyhow::bail!("本地 SQLite 没有已收盘的 USDT 日线数据，请先在量化选币页点击“同步”。");
+                }
+                Ok::<_, anyhow::Error>(run_backtest(&candles, 180))
+            }).await;
+            _ = this.update(cx, |this, cx| {
+                this.backtest_loading = false;
+                match result {
+                    Ok(result) if result.points.is_empty() => {
+                        this.backtest_result = Some(result);
+                        this.error = Some("可用历史不足：回测需要至少 30 根预热日线，并且至少 2 个连续评估交易日。请先同步更长时间的日线历史。".to_string());
+                    }
+                    Ok(result) => {
+                        app_log::info!("[现货回测] 完成 symbols={} points={} return={:.2}% max_drawdown={:.2}%",
+                            result.data_symbols, result.points.len(), result.total_return_percent, result.max_drawdown_percent);
+                        this.backtest_result = Some(result);
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("回测失败：{:#}", error));
+                        app_log::error!("[现货回测] 执行失败 error={:#}", error);
+                    }
+                }
+                cx.notify();
+            });
+        });
+    }
+
+    fn render_backtest_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let result = self.backtest_result.as_ref();
+        let mut view = v_flex()
+            .flex_1()
+            .w_full()
+            .min_h(px(420.))
+            .gap_3()
+            .p_4()
+            .rounded(px(8.))
+            .bg(palette::surface_strong(theme))
+            .border_1()
+            .border_color(palette::border(theme))
+            .child(h_flex().items_center().justify_between()
+                .child(div().text_size(px(16.)).font_semibold().text_color(palette::text_strong(theme)).child("波段策略回测中心"))
+                .child(Button::new("spot-ai-run-backtest").primary().xsmall()
+                    .label(if self.backtest_loading { "回测计算中…" } else { "运行回测（最多 180 天）" })
+                    .loading(self.backtest_loading).disabled(self.backtest_loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.run_backtest(cx)))))
+            .child(div().text_size(px(11.)).text_color(palette::muted(theme))
+                .child("V2 六因子横截面排名 · 每 3 日调仓 · 下一日执行并持有 3 根日线 · 前 5 名等权 · 往返成本估算 0.30% · BTC 买入持有基准"));
+        if let Some(result) = result {
+            view = view
+                .child(h_flex().gap_2()
+                    .child(detail_stat_colored("策略净收益", format!("{:+.2}%", result.total_return_percent), change_color(Some(result.total_return_percent), theme), theme))
+                    .child(detail_stat_colored("BTC 基准", format!("{:+.2}%", result.benchmark_return_percent), change_color(Some(result.benchmark_return_percent), theme), theme))
+                    .child(detail_stat_colored("最大回撤", format!("{:.2}%", result.max_drawdown_percent), theme.danger, theme))
+                    .child(detail_stat("胜率", format!("{:.1}%", result.win_rate_percent), theme))
+                    .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme))
+                    .child(detail_stat("Sharpe Ratio", format!("{:.2}", result.sharpe_ratio), theme))
+                )
+                .child(div().text_size(px(11.)).text_color(palette::muted(theme))
+                    .child(format!("区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
+                        result.start_date, result.end_date, result.data_symbols, result.points.len(), result.selected_days)))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("账户资金曲线（柱形趋势）"))
+                .child(render_backtest_bars(&result.points, false, theme))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("BTC 基准曲线"))
+                .child(render_backtest_bars(&result.points, true, theme))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("策略回撤"))
+                .child(render_drawdown_bars(&result.points, theme));
+        } else {
+            view = view
+                .child(div().h(px(1.)).bg(palette::border(theme)))
+                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("回测规则"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("回测读取 SQLite 中最多 320 根已收盘日线；前 30 根用于指标预热，最多回测最近 180 天；若本地缓存不足则自动缩短区间，结果会显示实际起止日期。每次调仓只使用当日及之前的数据计算 V2 分数，完整度低于 70% 的标的不参与排名。"))
+                .child(div().text_size(px(12.)).text_color(palette::muted(theme)).line_height(px(21.)).child("每 3 个交易日选取综合评分前 5 名，下一交易日买入并等权持有 3 根日线；未选出标的时持有现金。成本按买卖手续费与滑点合计 0.30%/次往返估算。"));
+        }
+        view.into_any_element()
+    }
+
 }
 
 impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
@@ -374,7 +598,6 @@ impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
 impl Render for SpotAiAnalysisPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let visible_count = self.table.read(cx).delegate().visible_rows_count();
         let selected_count = self.rows.len();
         let loading = self.loading;
 
@@ -398,8 +621,8 @@ impl Render for SpotAiAnalysisPage {
                                 v_flex()
                                     .flex_1()
                                     .gap_1()
-                                    .child(div().text_size(px(16.)).font_semibold().child("AI 分析"))
-                                    .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child(format!("现货市场研究 · USDT 交易对 · 已载入 {} 个候选币种", selected_count))),
+                                    .child(div().text_size(px(16.)).font_semibold().child("现货量化分析"))
+                                    .child(div().text_size(px(12.)).text_color(palette::muted(theme)).child(format!("USDT 现货市场 · 已载入 {} 个候选币种 · 波段周期 1–7 天", selected_count))),
                             )
                             .child(
                                 h_flex()
@@ -420,76 +643,34 @@ impl Render for SpotAiAnalysisPage {
                                             .label("刷新")
                                             .disabled(loading)
                                             .on_click(cx.listener(|this, _, _, cx| this.refresh_data(cx))),
-                                    )
-                                    .child(
-                                        Button::new("spot-ai-run")
-                                            .primary()
-                                            .xsmall()
-                                            .label("分析所选币种")
-                                            .disabled(loading || selected_count == 0)
-                                            .on_click(cx.listener(|this, _, _, cx| this.analyze_selected(cx))),
                                     ),
                             ),
                     )
                     .child(
                         h_flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
+                            .gap_2()
                             .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child(format!("当前显示 {} 个", visible_count)))
-                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("评分由本地行情规则计算")),
+                                Button::new("spot-ai-tab-quant")
+                                    .outline()
+                                    .xsmall()
+                                    .label("量化选币")
+                                    .when(self.view == SpotAiView::QuantSelection, |button| button.primary())
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::QuantSelection, cx))),
                             )
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        v_flex()
-                                            .relative()
-                                            .child(
-                                                Button::new("spot-ai-ma120-filter")
-                                                    .outline()
-                                                    .xsmall()
-                                                    .label(format!("120日线：{} ▾", self.ma120_filter))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.ma120_filter_open = !this.ma120_filter_open;
-                                                        cx.notify();
-                                                    })),
-                                            )
-                                            .when(self.ma120_filter_open, |this| {
-                                                this.child(
-                                                    v_flex()
-                                                        .absolute()
-                                                        .top(px(28.))
-                                                        .right_0()
-                                                        .w(px(116.))
-                                                        .p_1()
-                                                        .gap_1()
-                                                        .rounded(px(6.))
-                                                        .bg(palette::surface_strong(theme))
-                                                        .border_1()
-                                                        .border_color(palette::border(theme))
-                                                        .shadow_lg()
-                                                        .children(["全部", "线上", "趋近", "线下"].into_iter().map(|filter| {
-                                                            let selected = self.ma120_filter == filter;
-                                                            Button::new(SharedString::from(format!("spot-ai-ma120-option-{filter}")))
-                                                                .ghost()
-                                                                .xsmall()
-                                                                .w_full()
-                                                                .label(filter)
-                                                                .when(selected, |button| button.bg(theme.primary.opacity(0.14)).text_color(palette::text_strong(theme)))
-                                                                .on_click(cx.listener(move |this, _, _, cx| this.set_ma120_filter(filter.to_string(), cx)))
-                                                        })),
-                                                )
-                                            }),
-                                    )
-                                    .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true))),
+                                Button::new("spot-ai-tab-backtest")
+                                    .outline()
+                                    .xsmall()
+                                    .label("回测中心")
+                                    .when(self.view == SpotAiView::Backtest, |button| button.primary())
+                                    .on_click(cx.listener(|this, _, _, cx| this.set_view(SpotAiView::Backtest, cx))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("左侧筛选排名 · 右侧实时查看所选币种研究")),
                             ),
-                    ),
+                    )
             )
             .when_some(self.error.clone(), |parent, error| {
                 parent.child(
@@ -503,33 +684,40 @@ impl Render for SpotAiAnalysisPage {
                         .child(error),
                 )
             })
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h(px(420.))
-                    .gap_3()
-                    .child(
-                        v_flex()
-                            .w(px(780.))
-                            .min_w(px(780.))
-                            .h_full()
-                            .overflow_hidden()
-                            .child(
-                                DataTable::new(&self.table)
-                                    .stripe(true)
-                                    .bordered(true)
-                                    .scrollbar_visible(true, true),
-                            ),
-                    )
-                    .child(self.render_detail(cx)),
-            )
+            .child(match self.view {
+                SpotAiView::QuantSelection => self.render_quant_view(cx),
+                SpotAiView::Backtest => self.render_backtest_view(cx),
+            })
     }
+}
+
+fn render_backtest_bars(points: &[spot_ai_analysis::BacktestPoint], benchmark: bool, theme: &gpui_component::Theme) -> AnyElement {
+    if points.is_empty() { return div().child("暂无回测数据").into_any_element(); }
+    let stride = (points.len() / 60).max(1);
+    let values = points.iter().step_by(stride).map(|p| if benchmark { p.benchmark } else { p.equity }).collect::<Vec<_>>();
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = (max - min).max(1.0);
+    h_flex().w_full().h(px(150.)).items_end().gap(px(2.)).children(values.into_iter().map(|value| {
+        let height = (18.0 + (value - min) / range * 112.0) as f32;
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.))
+            .bg((if benchmark { theme.primary } else { theme.success }).opacity(0.78))
+    })).into_any_element()
+}
+
+fn render_drawdown_bars(points: &[spot_ai_analysis::BacktestPoint], theme: &gpui_component::Theme) -> AnyElement {
+    let stride = (points.len() / 60).max(1);
+    h_flex().w_full().h(px(90.)).items_end().gap(px(2.)).children(points.iter().step_by(stride).map(|point| {
+        let height = (point.drawdown_percent.abs().min(100.0) / 100.0 * 78.0).max(2.0) as f32;
+        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.)).bg(theme.danger.opacity(0.78))
+    })).into_any_element()
 }
 
 fn build_analysis_rows(
     products: Vec<MarketProduct>,
     cached_ma: &[binance_tools::binance::spot::DailyMaSignal],
     cached_ma120: &[binance_tools::binance::spot::DailyMaSignal],
+    cached_daily: &HashMap<String, Vec<binance_tools::binance::spot::SpotDailyKline>>,
     sentiment: Option<&MarketSentiment>,
 ) -> Vec<SpotAiAnalysisRow> {
     let inputs = products.iter().map(|p| MarketSnapshot {
@@ -537,6 +725,9 @@ fn build_analysis_rows(
         quote_asset:p.quote_asset.clone(), is_trading:p.is_trading, is_etf:p.is_etf,
         price_change_percent:p.price_change_percent, quote_volume:p.quote_volume,
         last_price:p.last_price, high_price:p.high_price, low_price:p.low_price, volume:p.volume,
+        daily_klines: cached_daily.get(&p.symbol).into_iter().flatten().map(|k| DailyKlineSnapshot {
+            high:k.high_price, low:k.low_price, close:k.close_price, quote_turnover:k.close_price*k.volume,
+        }).collect(),
     }).collect::<Vec<_>>();
     let ma = cached_ma.iter().map(|s| DailyMaSnapshot {
         symbol:s.symbol.clone(), difference_percent:s.difference_percent, samples:s.samples,
@@ -567,7 +758,7 @@ fn build_analysis_rows(
             sentiment_score:s.sentiment_score, sentiment_value:s.sentiment_value,
             sentiment_classification:s.sentiment_classification.clone(), sentiment_update_time:s.sentiment_update_time.clone(),
             liquidity_score:s.liquidity_score,
-            total_score:s.total_score, trend_label:s.trend_label.clone(),
+            total_score:s.total_score, data_completeness:s.data_completeness, trend_label:s.trend_label.clone(),
             basis:format!("{} {}", s.basis, ma120_basis),
             ma120_average_price, ma120_difference_percent, ma120_samples,
         })
@@ -583,7 +774,7 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
         is_trading:row.product.is_trading, is_etf:row.product.is_etf,
         price_change_percent:row.product.price_change_percent, quote_volume:row.product.quote_volume,
         last_price:row.product.last_price, high_price:row.product.high_price,
-        low_price:row.product.low_price, volume:row.product.volume,
+        low_price:row.product.low_price, volume:row.product.volume, daily_klines: Vec::new(),
     };
     let analysis=AnalysisResult {
         symbol:row.product.symbol.clone(), trend_score:row.trend_score, volume_score:row.volume_score,
@@ -591,7 +782,7 @@ fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
         sentiment_score:row.sentiment_score, sentiment_value:row.sentiment_value,
         sentiment_classification:row.sentiment_classification.clone(), sentiment_update_time:row.sentiment_update_time.clone(),
         liquidity_score:row.liquidity_score,
-        total_score:row.total_score, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
+        total_score:row.total_score, data_completeness:row.data_completeness, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
     };
     build_report_prompt(&market,&analysis)
 }

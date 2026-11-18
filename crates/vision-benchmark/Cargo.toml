@@ -1,0 +1,12 @@
+[package]
+name = "vision-benchmark"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+robost-vision = { version = "0.1.2", default-features = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
