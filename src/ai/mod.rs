@@ -1146,6 +1146,34 @@ pub fn send_news_rewrite_chat_blocking(
     })
 }
 
+pub fn send_news_rewrite_chat_cancellable_blocking(
+    settings: &AiSettings,
+    selection: ModelSelection,
+    messages: &[ChatMessage],
+    request_timeout: Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<ChatResponse> {
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let request_cancelled = std::sync::Arc::clone(&cancelled);
+    let request_settings = settings.clone();
+    let request_messages = messages.to_vec();
+    let worker = std::thread::spawn(move || {
+        let result = send_news_rewrite_chat_blocking(
+            &request_settings, selection, &request_messages, request_timeout,
+        );
+        request_cancelled.store(true, std::sync::atomic::Ordering::Release);
+        result
+    });
+
+    while !cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(anyhow!("AI 请求期间收到停止信号；请求线程将在超时后退出"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    worker.join().map_err(|_| anyhow!("AI 改写请求线程异常退出"))?
+}
+
 pub fn send_chat_with_model_timeout_blocking(
     settings: &AiSettings,
     selection: ModelSelection,

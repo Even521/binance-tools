@@ -31,6 +31,40 @@ impl OcrEngine {
         Ok((models.det_onnx, models.rec_onnx, models.dict_txt))
     }
 
+    #[cfg(target_os = "windows")]
+    fn directml_model_paths() -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>
+    {
+        let (detector, recognizer, dictionary) = Self::model_paths()?;
+        let directml_detector = Self::cache_directml_model(
+            &detector,
+            "det_directml.onnx",
+            include_bytes!("../models/pp_ocrv6_tiny_det_directml.onnx"),
+        )?;
+        let directml_recognizer = Self::cache_directml_model(
+            &recognizer,
+            "rec_directml.onnx",
+            include_bytes!("../models/pp_ocrv6_tiny_rec_directml.onnx"),
+        )?;
+        Ok((directml_detector, directml_recognizer, dictionary))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn cache_directml_model(
+        source: &Path,
+        filename: &str,
+        model_bytes: &[u8],
+    ) -> Result<std::path::PathBuf> {
+        let path = source.with_file_name(filename);
+        let cached_model_is_current = std::fs::read(&path)
+            .map(|cached| cached.as_slice() == model_bytes)
+            .unwrap_or(false);
+        if !cached_model_is_current {
+            std::fs::write(&path, model_bytes)
+                .with_context(|| format!("failed to cache DirectML model at {}", path.display()))?;
+        }
+        Ok(path)
+    }
+
     fn build_cpu_engine(
         detection_model: &Path,
         recognition_model: &Path,
@@ -97,7 +131,7 @@ impl OcrEngine {
     /// Loads PP-OCRv6 Tiny with Windows DirectML. Initialization errors are returned.
     #[cfg(target_os = "windows")]
     pub fn new_directml() -> Result<Self> {
-        Self::from_paths(Self::model_paths()?, true)
+        Self::from_paths(Self::directml_model_paths()?, true)
     }
 
     /// Prefers DirectML on Windows and falls back to CPU if GPU initialization fails.
@@ -114,7 +148,11 @@ impl OcrEngine {
 
     /// Returns the currently active inference backend.
     pub fn backend_name(&self) -> &'static str {
-        if self.using_directml { "DirectML" } else { "CPU" }
+        if self.using_directml {
+            "DirectML"
+        } else {
+            "CPU"
+        }
     }
 
     /// Recognizes a full page and returns its OCR details plus timeline/action coordinates as JSON.
@@ -439,23 +477,10 @@ impl OcrEngine {
 
     /// Recognizes text in an image and returns the detailed result.
     pub fn recognize_image_detailed(&mut self, image: &image::RgbImage) -> Result<OcrResult> {
-        let result = self.engine.detect_with_options(
-            image,
-            10,
-            1280,
-            0.6,
-            0.3,
-            1.6,
-            false,
-            false,
-            OcrOptions::default(),
-        );
-
-        match result {
+        match self.recognize_image_detailed_strict(image) {
             Ok(result) => Ok(result),
             Err(gpu_error) if self.using_directml => {
                 eprintln!("[OCR] DirectML 推理失败，切换 CPU 并重试：{gpu_error}");
-
                 self.engine = Self::build_cpu_engine(
                     &self.detection_model,
                     &self.recognition_model,
@@ -463,23 +488,30 @@ impl OcrEngine {
                 )
                 .context("DirectML 推理失败，且 CPU 引擎初始化失败")?;
                 self.using_directml = false;
-
-                self.engine
-                    .detect_with_options(
-                        image,
-                        10,
-                        1280,
-                        0.6,
-                        0.3,
-                        1.6,
-                        false,
-                        false,
-                        OcrOptions::default(),
-                    )
-                    .map_err(Into::into)
+                self.recognize_image_detailed_strict(image)
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
+    }
+
+    /// Runs one inference on the initialized backend, without provider fallback or retry.
+    pub fn recognize_image_detailed_strict(
+        &mut self,
+        image: &image::RgbImage,
+    ) -> Result<OcrResult> {
+        self.engine
+            .detect_with_options(
+                image,
+                10,
+                1280,
+                0.6,
+                0.3,
+                1.6,
+                false,
+                false,
+                OcrOptions::default(),
+            )
+            .map_err(Into::into)
     }
 
     /// Recognizes text in an image file and joins the detected lines with newlines.
@@ -508,6 +540,7 @@ fn directml_session_builder(
 ) -> std::result::Result<ort::session::builder::SessionBuilder, ort::Error> {
     let builder = builder
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Disable)?
+        .with_parallel_execution(false)?
         .with_memory_pattern(false)?;
     Ok(builder.with_execution_providers([ort::ep::DirectML::default().build()])?)
 }

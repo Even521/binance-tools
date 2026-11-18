@@ -85,6 +85,9 @@ impl Drop for XAssistantPage {
         let was_running = self.replying;
         self.cancel_reason.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire).ok();
         self.cancel_reply.store(true, Ordering::Release);
+        if let Some(status) = self.floating_status.as_ref() {
+            status.mark_stopped();
+        }
         if was_running {
             app_log::x_info!("自动化页面关闭：已通知后台任务安全退出");
         }
@@ -244,7 +247,7 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("自动发帖", accent));
+                this.floating_status = Some(floating_status::FloatingStatus::show("auto_post", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -255,7 +258,7 @@ impl XAssistantPage {
                     if let Some(options) = reply_options {
                         auto_post::executor::run_with_auto_reply(Arc::clone(&cancel), options, news_filter)
                     } else {
-                        auto_post::executor::run_loop(&cancel, news_filter)
+                        auto_post::executor::run_loop(Arc::clone(&cancel), news_filter)
                     }
                 })
                 .await;
@@ -358,7 +361,7 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("测试发帖", accent));
+                this.floating_status = Some(floating_status::FloatingStatus::show("test_post", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -489,7 +492,7 @@ impl XAssistantPage {
                     (accent.g * 255.0).round() as u8,
                     (accent.b * 255.0).round() as u8,
                 );
-                this.floating_status = Some(floating_status::FloatingStatus::show("自动回复", accent));
+                this.floating_status = Some(floating_status::FloatingStatus::show("auto_reply", accent));
                 let window_handle = this.window_handle;
                 let _ = window_handle.update(cx, |_, window, _| window.minimize_window());
                 cx.notify();
@@ -979,6 +982,9 @@ impl XAssistantPage {
     fn stop_visual_reply(&mut self, cx: &mut Context<Self>) {
         self.cancel_reason.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
         let was_running = !self.cancel_reply.swap(true, Ordering::AcqRel);
+        if let Some(status) = self.floating_status.as_ref() {
+            status.mark_stopped();
+        }
         if was_running {
             app_log::x_info!("自动化停止：已发送停止信号，等待当前步骤安全结束");
         } else {

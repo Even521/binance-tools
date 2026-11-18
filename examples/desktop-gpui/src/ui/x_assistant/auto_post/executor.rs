@@ -132,80 +132,98 @@ fn wait_or_cancel(cancel: &AtomicBool, duration: Duration) -> anyhow::Result<()>
 }
 
 /// 生成并提交一条新闻帖子。该函数自行取得浏览器租约，调用方不要再次加锁。
-fn run_once_with_mode(
-    cancel: &AtomicBool,
-    filter: NewsFilter,
-    require_enabled: bool,
-) -> anyhow::Result<Option<SubmitResult>> {
-    app_log::post_info!("[01/12] 单次任务启动，filter={:?}，require_enabled={}", filter, require_enabled);
-    ensure!(!cancel.load(Ordering::Acquire), "自动发帖已停止");
-    app_log::post_info!("[02/12] 读取任务设置");
-    let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
-    app_log::post_info!("[02/12] 配置读取完成，auto_post_enabled={}，posts_per_hour={}", settings.auto_post_enabled, settings.posts_per_hour);
-    if require_enabled && !settings.auto_post_enabled {
-        return Ok(None);
-    }
-    app_log::post_info!("[03/12] 检查每小时发布上限");
-    let hourly_count = binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
-    app_log::post_info!("[03/12] 最近一小时发布数量 {} 条", hourly_count);
-    ensure!(
-        hourly_count < u64::from(settings.posts_per_hour.clamp(1, 10)),
-        "已达到每小时发布上限，暂不能执行发帖（测试发帖同样计入限额）"
-    );
-    app_log::post_info!("[04/12] 发帖前同步最新 RSS 新闻");
-    ensure!(!cancel.load(Ordering::Acquire), "RSS 同步前收到停止指令");
-    let (inserted_news, failed_feeds) = sync_latest_news(filter)?;
-    app_log::post_info!(
-        "[05/12] RSS 同步完成，筛选最近 24 小时新闻并排除重复内容，新增 {} 条，失败订阅源 {} 个；开始筛选最近 24 小时新闻",
-        inserted_news, failed_feeds
-    );
-    ensure!(!cancel.load(Ordering::Acquire), "RSS 同步后收到停止指令");
-    let Some(post) = prepare_next_post_blocking(filter)? else {
-        app_log::post_warn!("X 自动发帖执行器：没有可用于测试的未发布新闻候选，浏览器不会启动");
-        return Ok(None);
-    };
-    app_log::post_info!("[06/12] 新闻筛选与 AI 文案准备完成，post_id={}，接下来获取浏览器任务锁", post.post_id);
+const PREFETCH_TARGET: usize = 3;
+const RSS_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const PREFETCH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
-    if cancel.load(Ordering::Acquire) {
-        binance_tools::db::x_posting::mark_post_failed_blocking(
-            post.post_id,
-            "内容准备完成后、触碰浏览器前收到停止指令",
-        )?;
-        return Ok(None);
-    }
-    if require_enabled {
-        let latest = binance_tools::db::x_posting::load_task_settings_blocking()?;
-        if !latest.auto_post_enabled {
-            binance_tools::db::x_posting::mark_post_failed_blocking(
-                post.post_id,
-                "自动发帖开关已关闭，未提交到 X",
-            )?;
-            return Ok(None);
-        }
-    }
-    app_log::post_info!("[07/12] 等待浏览器锁并准备提交");
-    let result = match run_browser_task(|| submit_prepared_post(&post, cancel)) {
-        Ok(result) => result,
-        Err(error) => {
-            let error_chain = format!("{error:#}");
-            // 浏览器租约获取失败时，提交函数尚未运行，预留记录仍可能停留在 pending。
-            // 仅对明确的锁获取错误回滚；提交函数内部的错误状态由 submit 模块负责，
-            // 尤其不能覆盖其可能已经写入的 unknown 状态。
-            if error_chain.contains("等待 X 浏览器操作锁")
-                || error_chain.contains("X 浏览器操作锁已中毒")
-            {
-                let _ = binance_tools::db::x_posting::mark_post_failed_blocking(
-                    post.post_id,
-                    &format!("尚未取得浏览器操作权，未提交到 X：{error_chain}"),
-                );
-            }
-            return Err(error).with_context(|| format!("执行 X 发帖任务 {} 失败", post.post_id));
-        }
-    };
-    app_log::post_info!("[自动发帖][12/12] 浏览器提交流程结束，post_id={}，outcome={:?}", result.post_id, result.outcome);
-    Ok(Some(result))
+fn binance_key_configured() -> bool {
+    binance_tools::db::square::load_square_api_key_blocking()
+        .ok().flatten().map(|key| !key.api_key.trim().is_empty()).unwrap_or(false)
 }
 
+fn send_binance_news_task(post_id: i64, content: &str) -> anyhow::Result<binance_tools::square::SquareSendStatus> {
+    let result = binance_tools::square::send_square_message_now_blocking(content.to_string())?;
+    let (status, error) = match &result.status {
+        binance_tools::square::SquareSendStatus::Success => ("sent", None),
+        binance_tools::square::SquareSendStatus::Skipped => ("skipped", result.error_message.as_deref()),
+        _ => ("failed", result.error_message.as_deref()),
+    };
+    binance_tools::db::news_send_tasks::update_task_status_blocking(post_id, binance_tools::db::news_send_tasks::PLATFORM_BINANCE, status, error)?;
+    Ok(result.status)
+}
+fn prefetch_loop(cancel: Arc<AtomicBool>, stop: Arc<AtomicBool>, filter: NewsFilter) {
+    let mut last_sync: Option<std::time::Instant> = None;
+    loop {
+        if cancel.load(Ordering::Acquire) || stop.load(Ordering::Acquire) { break; }
+        let target_mode = binance_tools::db::news_send_tasks::load_target_mode_blocking().unwrap_or_else(|_| "all".to_string());
+        let key_configured = binance_key_configured();
+        if last_sync.map(|instant| instant.elapsed() >= RSS_REFRESH_INTERVAL).unwrap_or(true) {
+            match sync_latest_news(filter) {
+                Ok((inserted, failed)) => { app_log::post_info!("后台预热：RSS 同步新增 {} 条，失败订阅源 {} 个", inserted, failed); },
+                Err(error) => { app_log::post_warn!("后台预热：RSS 同步失败：{error:#}"); },
+            }
+            last_sync = Some(std::time::Instant::now());
+        }
+        if let Err(error) = binance_tools::db::news_send_tasks::ensure_tasks_for_pending_posts_blocking(&target_mode, key_configured) {
+            app_log::post_warn!("后台预热：补充平台发送任务失败：{error:#}");
+        }
+        let ready = binance_tools::db::news_send_tasks::count_ready_posts_blocking(&target_mode).unwrap_or(0);
+        if ready < PREFETCH_TARGET {
+            match prepare_next_post_blocking(filter, &cancel) {
+                Ok(Some(post)) => {
+                    if let Err(error) = binance_tools::db::news_send_tasks::ensure_tasks_for_post_blocking(post.post_id, &target_mode, key_configured) {
+                        app_log::post_warn!("后台预热：创建平台任务失败 post_id={}：{error:#}", post.post_id);
+                    } else { app_log::post_info!("后台预热：文案已准备 post_id={}，队列约 {} 条", post.post_id, ready + 1); }
+                }
+                Ok(None) => { let _ = wait_or_cancel(&cancel, PREFETCH_RETRY_INTERVAL); },
+                Err(error) => { app_log::post_warn!("后台预热：准备文案失败：{error:#}"); let _ = wait_or_cancel(&cancel, PREFETCH_RETRY_INTERVAL); }
+            }
+        } else {
+            for _ in 0..10 { if cancel.load(Ordering::Acquire) || stop.load(Ordering::Acquire) { break; } thread::sleep(Duration::from_secs(1)); }
+        }
+    }
+}
+
+fn run_once_with_mode(cancel: &AtomicBool, filter: NewsFilter, require_enabled: bool) -> anyhow::Result<Option<SubmitResult>> {
+    ensure!(!cancel.load(Ordering::Acquire), "自动发帖已停止");
+    let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
+    if require_enabled && !settings.auto_post_enabled { return Ok(None); }
+    let target_mode = binance_tools::db::news_send_tasks::load_target_mode_blocking()?;
+    let hourly_count = binance_tools::db::news_send_tasks::count_sent_posts_last_hour_blocking(&target_mode)?;
+    ensure!(hourly_count < u64::from(settings.posts_per_hour.clamp(1, 10)), "已达到每小时发帖上限");
+    let filter_name = match filter { NewsFilter::Crypto => "crypto", NewsFilter::Entertainment => "entertainment", NewsFilter::All => "all" };
+    let Some((post_id, content)) = binance_tools::db::news_send_tasks::load_next_pending_by_filter_blocking(&target_mode, filter_name)? else {
+        app_log::post_info!("自动发帖：预热队列为空，等待后台准备数据"); return Ok(None);
+    };
+    let post = super::content::PreparedPost { post_id, content };
+    let key_configured = binance_key_configured();
+    binance_tools::db::news_send_tasks::ensure_tasks_for_post_blocking(post_id, &target_mode, key_configured)?;
+    if cancel.load(Ordering::Acquire) { return Ok(None); }
+    if require_enabled && !binance_tools::db::x_posting::load_task_settings_blocking()?.auto_post_enabled { return Ok(None); }
+    let x_enabled = binance_tools::db::news_send_tasks::target_mode_includes(&target_mode, binance_tools::db::news_send_tasks::PLATFORM_X);
+    let binance_enabled = binance_tools::db::news_send_tasks::target_mode_includes(&target_mode, binance_tools::db::news_send_tasks::PLATFORM_BINANCE) && key_configured;
+    let x_claimed = x_enabled && binance_tools::db::news_send_tasks::claim_task_blocking(post_id, binance_tools::db::news_send_tasks::PLATFORM_X)?;
+    let binance_claimed = binance_enabled && binance_tools::db::news_send_tasks::claim_task_blocking(post_id, binance_tools::db::news_send_tasks::PLATFORM_BINANCE)?;
+    if !x_claimed && !binance_claimed { return Ok(None); }
+    let binance_content = post.content.clone();
+    let (x_result, binance_result) = std::thread::scope(|scope| {
+        let binance = binance_claimed.then(|| scope.spawn(|| send_binance_news_task(post_id, &binance_content)));
+        let x = x_claimed.then(|| run_browser_task(|| submit_prepared_post(&post, cancel)));
+        let binance = binance.map(|handle| handle.join().unwrap_or_else(|_| Err(anyhow::anyhow!("币安发送线程异常退出"))));
+        (x, binance)
+    });
+    if let Some(Err(error)) = &binance_result { let _ = binance_tools::db::news_send_tasks::update_task_status_blocking(post_id, binance_tools::db::news_send_tasks::PLATFORM_BINANCE, "failed", Some(&format!("{error:#}"))); }
+    if let Some(Ok(result)) = x_result {
+        let (status, error) = match result.outcome { SubmitOutcome::Published => ("sent", None), SubmitOutcome::Unknown => ("unknown", Some(result.message.as_str())) };
+        binance_tools::db::news_send_tasks::update_task_status_blocking(post_id, binance_tools::db::news_send_tasks::PLATFORM_X, status, error)?;
+        return Ok(Some(result));
+    }
+    if let Some(Err(error)) = x_result { return Err(error).with_context(|| format!("X 发布失败 post_id={post_id}")); }
+    match binance_result {
+        Some(Ok(status)) if status == binance_tools::square::SquareSendStatus::Success || status == binance_tools::square::SquareSendStatus::Skipped => Ok(Some(SubmitResult { post_id, outcome: SubmitOutcome::Published, message: format!("币安发送状态：{}", status.as_str()) })),
+        Some(Ok(status)) => anyhow::bail!("币安发送失败：{}", status.as_str()), Some(Err(error)) => Err(error), None => Ok(None),
+    }
+}
 pub fn run_once(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<Option<SubmitResult>> {
     run_once_with_mode(cancel, filter, true)
 }
@@ -219,7 +237,20 @@ pub fn run_test_once(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<
 
 /// 按数据库中的每小时上限持续发布。未知结果、AI/浏览器错误都会终止本轮，
 /// 不会自动重试可能已提交的内容。
-pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> {
+pub fn run_loop(cancel: Arc<AtomicBool>, filter: NewsFilter) -> anyhow::Result<u64> {
+    let prefetch_stop = Arc::new(AtomicBool::new(false));
+    let cancel_for_prefetch = Arc::clone(&cancel);
+    let stop_for_prefetch = Arc::clone(&prefetch_stop);
+    let prefetch_worker = thread::spawn(move || prefetch_loop(cancel_for_prefetch, stop_for_prefetch, filter));
+    app_log::post_info!("自动发帖：后台预热线程已启动");
+    let result = run_loop_inner(&cancel, filter);
+    prefetch_stop.store(true, Ordering::Release);
+    if prefetch_worker.join().is_err() {
+        app_log::post_warn!("自动发帖：后台预热线程异常退出");
+    }
+    result
+}
+fn run_loop_inner(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> {
     let mut published_this_run = 0_u64;
 
     loop {
@@ -236,18 +267,21 @@ pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> 
         let published_last_hour =
             binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
         if published_last_hour >= hourly_limit {
+            crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
             crate::ui::x_assistant::automation::log_post_event(&format!(
                 "自动发帖达到每小时上限 {hourly_limit}，等待 60 秒后重新检查。"
             ));
             if wait_or_cancel(cancel, Duration::from_secs(60)).is_err() {
                 return Ok(published_this_run);
             }
+            crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
             continue;
         }
 
         let age = binance_tools::db::x_posting::seconds_since_last_post_blocking()?;
         let delay = next_post_delay(settings.posts_per_hour, age);
         if !delay.is_zero() {
+            crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
             crate::ui::x_assistant::automation::log_post_event(&format!(
                 "自动发帖频率控制：还需等待 {} 秒。",
                 delay.as_secs()
@@ -255,6 +289,7 @@ pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> 
             if wait_or_cancel(cancel, delay).is_err() {
                 return Ok(published_this_run);
             }
+            crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
             continue;
         }
 
@@ -289,7 +324,7 @@ pub fn run_loop(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64> 
             }
             None => {
                 crate::ui::x_assistant::automation::log_post_event(
-                    "当前两类新闻均无可发布候选，60 秒后重新检查。"
+                    "待发队列为空，后台继续预热，60 秒后重新检查。"
                 );
                 if wait_or_cancel(cancel, Duration::from_secs(60)).is_err() {
                     return Ok(published_this_run);
@@ -367,7 +402,7 @@ fn run_scheduled_post_turn(
         Some(result) => anyhow::bail!("未预期的发帖结果：{}", result.message),
         None => {
             crate::ui::x_assistant::automation::log_post_event(
-                "当前没有可发布候选，本次交还浏览器，10 轮自动回复后再检查。",
+                "待发队列为空，本轮交还浏览器；回复任务继续，下一轮再检查。",
             );
             Ok(true)
         }
@@ -383,6 +418,10 @@ pub fn run_with_auto_reply(
 ) -> anyhow::Result<u64> {
     // 双向同步通道保证：回复线程发出一次请求后等待发帖完成；
     // 发帖线程每次只执行一次发帖调度，不再启动独立无限循环争抢浏览器锁。
+    let prefetch_stop = Arc::new(AtomicBool::new(false));
+    let prefetch_cancel = Arc::clone(&cancel);
+    let prefetch_stop_worker = Arc::clone(&prefetch_stop);
+    let prefetch_worker = thread::spawn(move || prefetch_loop(prefetch_cancel, prefetch_stop_worker, filter));
     let (post_turn_sender, post_turn_receiver) = std::sync::mpsc::sync_channel::<()>(0);
     let (post_done_sender, post_done_receiver) = std::sync::mpsc::sync_channel::<bool>(0);
 
@@ -432,6 +471,8 @@ pub fn run_with_auto_reply(
     }
 
     // reply_worker 退出后请求通道关闭，发帖线程会从 recv() 正常退出。
+    prefetch_stop.store(true, Ordering::Release);
+    let _ = prefetch_worker.join();
     let post_result = post_worker
         .join()
         .map_err(|_| anyhow::anyhow!("自动发帖工作线程异常退出"))?;

@@ -3,19 +3,23 @@
 //! 本模块只生成并预留待发布内容，不操作浏览器、不点击发布。
 //! 浏览器提交必须由 executor/submit 在统一 browser lease 下执行。
 
-use std::time::Duration;
+use std::{sync::atomic::{AtomicBool, Ordering}, time::Duration};
 
 use anyhow::{Context, ensure};
 use binance_tools::{
-    ai::{AiSettings, ChatMessage, send_news_rewrite_chat_blocking},
+    ai::{AiSettings, ChatMessage, send_news_rewrite_chat_cancellable_blocking},
     db::{
         open_default_connection,
-        x_posting::{content_fingerprint, is_post_duplicate_blocking, reserve_post_blocking},
+        x_posting::{
+            content_fingerprint, is_post_duplicate_blocking, is_post_similar_blocking,
+            reserve_post_blocking,
+        },
     },
 };
 
 const MAX_POST_CHARS: usize = 100;
 const NEWS_SCAN_LIMIT: i64 = 100;
+const MAX_COMPRESSION_ATTEMPTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewsKind {
@@ -334,7 +338,8 @@ fn clean_ai_text(value: &str) -> String {
     }
 }
 
-fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
+fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Result<String> {
+    ensure!(!cancel.load(Ordering::Acquire), "收到停止信号，取消 AI 文案生成");
     app_log::post_info!("X 自动发帖内容准备：开始调用 AI 改写新闻，类型={:?}，标题={}", candidate.kind, candidate.title);
     let settings = AiSettings::load_default().context("加载 AI 配置失败")?;
     ensure!(settings.agent.enabled, "AI agent 未启用，不能生成自动发帖内容");
@@ -348,6 +353,9 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
     };
     let messages = [
         ChatMessage::system(candidate.kind.system_prompt()),
+        ChatMessage::system(
+            "每条文案都要从本条新闻最具体的事实切入，避免重复使用泛化开头、固定句式或相同的标题结构；不要用‘一个令人关注的消息’等空泛引子。",
+        ),
         ChatMessage::user(format!(
             "请将以下{}新闻改写成一条中文 X 短帖。严格输出两段：第一段为标题，第二段为正文，中间空一行。删除所有感叹号、问号和 #话题标签。不得添加来源材料之外的信息。严禁出现网址、域名、URL 或任何链接地址。\n\n标题：{}\n内容：{}",
             candidate.kind.label(),
@@ -360,11 +368,12 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
         "X 自动发帖 AI：主改写请求开始，超时=180 秒，新闻标题={}",
         candidate.title
     );
-    let response = match send_news_rewrite_chat_blocking(
+    let response = match send_news_rewrite_chat_cancellable_blocking(
         &settings,
         selection.clone(),
         &messages,
         Duration::from_secs(180),
+        cancel,
     ) {
         Ok(response) => {
             app_log::post_info!(
@@ -385,25 +394,29 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
     let mut content = clean_ai_text(&response.content);
     ensure!(!content.is_empty(), "AI 返回的发帖文案为空");
 
-    if content.chars().count() > MAX_POST_CHARS {
+    for attempt in 1..=MAX_COMPRESSION_ATTEMPTS {
+        if content.chars().count() <= MAX_POST_CHARS {
+            break;
+        }
         let retry_messages = [
             ChatMessage::system(candidate.kind.system_prompt()),
             ChatMessage::user(format!(
-                "把下面文案重新压缩到 100 个 Unicode 字符以内，保留事实与关键数字，语句必须完整。严格保持“标题 + 空一行 + 正文”的两段格式；删除感叹号、问号和 #话题标签。只输出标题和正文。\n\n新闻：{}\n当前文案：{}",
-                candidate.title, content
+                "把下面文案重新压缩到 100 个 Unicode 字符以内，保留事实与关键数字，语句必须完整。当前字符数={}，本次是第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩。严格保持“标题 + 空一行 + 正文”的两段格式；删除感叹号、问号和 #话题标签。只输出标题和正文。\n\n新闻：{}\n当前文案：{}",
+                content.chars().count(), candidate.title, content
             )),
         ];
         app_log::post_warn!(
-            "X 自动发帖 AI：初稿超过 {} 字，启动二次压缩，当前字符数={}",
+            "X 自动发帖 AI：文案超过 {} 字，启动第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩，当前字符数={}",
             MAX_POST_CHARS,
             content.chars().count()
         );
         let retry_started = std::time::Instant::now();
-        let retry = match send_news_rewrite_chat_blocking(
+        let retry = match send_news_rewrite_chat_cancellable_blocking(
             &settings,
-            selection,
+            selection.clone(),
             &retry_messages,
             Duration::from_secs(180),
+            cancel,
         ) {
             Ok(response) => {
                 app_log::post_info!(
@@ -421,7 +434,20 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
                 return Err(error).context("AI 二次压缩发帖文案失败");
             }
         };
-        content = clean_ai_text(&retry.content);
+        let compressed = clean_ai_text(&retry.content);
+        app_log::post_info!(
+            "X 自动发帖 AI：第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩后字符数={}",
+            compressed.chars().count()
+        );
+        // 如果模型没有缩短文案，不再重复请求；交给候选遍历逻辑跳过这条新闻。
+        if compressed.chars().count() >= content.chars().count() {
+            break;
+        }
+        if !compressed.is_empty() {
+            content = compressed;
+        } else {
+            break;
+        }
     }
 
     ensure!(
@@ -437,7 +463,7 @@ fn generate_post(candidate: &NewsCandidate) -> anyhow::Result<String> {
 }
 
 /// 按所选新闻类型准备一条候选，先按热点分排序，再去重、AI 改写并持久化。
-pub fn prepare_next_post_blocking(filter: NewsFilter) -> anyhow::Result<Option<PreparedPost>> {
+pub fn prepare_next_post_blocking(filter: NewsFilter, cancel: &AtomicBool) -> anyhow::Result<Option<PreparedPost>> {
     app_log::post_info!("X 自动发帖内容准备：进入候选准备流程");
     let selection_started = std::time::Instant::now();
     let candidates = load_candidates(filter)?;
@@ -448,6 +474,7 @@ pub fn prepare_next_post_blocking(filter: NewsFilter) -> anyhow::Result<Option<P
     );
 
     for candidate in candidates {
+        ensure!(!cancel.load(Ordering::Acquire), "收到停止信号，取消候选新闻处理");
         let news_id = format!("{}:{}", candidate.kind.table(), candidate.id);
         let original_material = format!(
             "{}\n{}\n{}",
@@ -464,13 +491,29 @@ pub fn prepare_next_post_blocking(filter: NewsFilter) -> anyhow::Result<Option<P
 
         app_log::post_info!("X 自动发帖内容准备：选中候选新闻，news_id={}", news_id);
         // 最终入库前再次清理，防止 AI 输出或压缩重试结果夹带链接。
-        let content = strip_urls(&generate_post(&candidate)?);
+        let content = match generate_post(&candidate, cancel) {
+            Ok(content) => strip_urls(&content),
+            Err(error) => {
+                app_log::post_warn!(
+                    "X 自动发帖内容准备：跳过无法生成合规文案的候选，news_id={}，原因={error:#}",
+                    news_id
+                );
+                continue;
+            }
+        };
         ensure!(
             !content.is_empty() && content.chars().count() <= MAX_POST_CHARS,
             "清理链接后 AI 文案为空或超过 100 字，已阻止发布"
         );
 
         let content_hash = content_fingerprint(&content);
+        if is_post_similar_blocking(&content)? {
+            app_log::post_info!(
+                "X 自动发帖内容准备：跳过与近期发帖文案相似的候选，news_id={}",
+                news_id
+            );
+            continue;
+        }
         let post_id = reserve_post_blocking(
             Some(&news_id),
             candidate.url.as_deref(),

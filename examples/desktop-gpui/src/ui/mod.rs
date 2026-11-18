@@ -11,6 +11,7 @@ pub mod heatmap;
 pub mod kline;
 pub mod ma_signal;
 pub mod market;
+pub mod news_send_tasks;
 pub mod palette;
 pub mod spot;
 pub mod spot_ai_analysis;

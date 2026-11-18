@@ -34,6 +34,7 @@ actions!(
         OpenTaskBoard,
         OpenCryptoNews,
         OpenEntertainmentNews,
+        OpenNewsSendTasks,
     ]
 );
 
@@ -279,6 +280,14 @@ impl Render for DesktopTitleBar {
                                     })
                                     .on_click(|_, window, cx| {
                                         window.dispatch_action(Box::new(OpenEntertainmentNews), cx);
+                                    }),
+                                )
+                                .item(
+                                    PopupMenuItem::element(|_, _| {
+                                        div().text_size(px(11.)).child("发送任务")
+                                    })
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(OpenNewsSendTasks), cx);
                                     }),
                                 )
                                 .min_w(px(120.))

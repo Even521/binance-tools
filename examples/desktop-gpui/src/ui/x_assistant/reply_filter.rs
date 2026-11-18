@@ -2,8 +2,8 @@
 
 use std::{sync::atomic::AtomicBool, time::Duration};
 
-use super::{automation, vision::text_ai};
 use super::vision::VisionReplyOptions;
+use super::{automation, vision::text_ai};
 
 #[derive(Debug)]
 pub(super) struct ReplyQualityRejected {
@@ -12,7 +12,11 @@ pub(super) struct ReplyQualityRejected {
 
 impl std::fmt::Display for ReplyQualityRejected {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "回复连续两次未通过质量过滤，已放弃该帖子：{}", self.reason)
+        write!(
+            formatter,
+            "回复连续两次未通过质量过滤，已放弃该帖子：{}",
+            self.reason
+        )
     }
 }
 
@@ -27,7 +31,10 @@ pub(super) fn generate_compliant_reply(
 ) -> anyhow::Result<String> {
     // 首次生成失败后只允许再生成一次；仍不合格就放弃该条，绝不发送。
     const MAX_ATTEMPTS: usize = 2;
-    let mut prompt = initial_prompt.to_string();
+    let language = language_name(script_of(source_post));
+    let mut prompt = format!(
+        "目标回复语言：{language}。回复必须主要使用{language}，不得使用其他语言替代。\n{initial_prompt}"
+    );
     let mut last_error = None;
 
     for attempt in 1..=MAX_ATTEMPTS {
@@ -55,7 +62,7 @@ pub(super) fn generate_compliant_reply(
                 let previous_reply = generated.trim();
                 last_error = Some(error);
                 prompt = format!(
-                    "上一版回复未通过质量过滤，必须重新生成。严格使用原帖的主要语言，不得切换为中文；最多 {limit} 个字符；不要在结尾添加哈哈、啊、呀、吧、呢、真香啊等口头语，不要用感叹号收尾。违规原因：{}。上一版：{}。原帖：{}。回复规则：{}。只返回完整回复正文。",
+                    "上一版回复未通过质量过滤，必须重新生成。目标回复语言是{language}，整条回复必须使用{language}，不得改用中文或其他语言；最多 {limit} 个字符；不要在结尾添加哈哈、啊、呀、吧、呢、真香啊等口头语，不要用感叹号收尾。违规原因：{}。上一版：{}。原帖：{}。回复规则：{}。只返回完整回复正文。",
                     last_error.as_ref().unwrap(),
                     previous_reply,
                     source_post,
@@ -73,11 +80,7 @@ pub(super) fn generate_compliant_reply(
 }
 
 /// 统一清理结尾并验证语言、长度和用户规则。
-pub(super) fn sanitize_reply(
-    text: &str,
-    rules: &str,
-    source_post: &str,
-) -> anyhow::Result<String> {
+pub(super) fn sanitize_reply(text: &str, rules: &str, source_post: &str) -> anyhow::Result<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     // 这些属于内容质量问题，必须让模型重写，不能简单删掉后把残句发出去。
     anyhow::ensure!(
@@ -135,8 +138,20 @@ fn clean_reply_ending(input: &str) -> String {
         }
 
         const ENDINGS: &[&str] = &[
-            "真香啊", "哈哈哈哈", "哈哈哈", "hhh", "哈哈", "呵呵",
-            "啊", "呀", "哇", "吧", "呢", "哦", "诶", "欸",
+            "真香啊",
+            "哈哈哈哈",
+            "哈哈哈",
+            "hhh",
+            "哈哈",
+            "呵呵",
+            "啊",
+            "呀",
+            "哇",
+            "吧",
+            "呢",
+            "哦",
+            "诶",
+            "欸",
         ];
         let lower = text.to_lowercase();
         if let Some(suffix) = ENDINGS.iter().find(|suffix| lower.ends_with(**suffix)) {
@@ -173,21 +188,25 @@ fn script_of(text: &str) -> Script {
     for ch in text.chars() {
         let code = ch as u32;
         let index = match code {
-            0x3040..=0x30FF => 1, // Hiragana / Katakana
-            0xAC00..=0xD7AF => 2, // Hangul
+            0x3040..=0x30FF => 1,                   // Hiragana / Katakana
+            0xAC00..=0xD7AF => 2,                   // Hangul
             0x4E00..=0x9FFF | 0x3400..=0x4DBF => 0, // Han
-            0x0041..=0x024F => 3, // Latin
-            0x0400..=0x052F => 4, // Cyrillic
+            0x0041..=0x024F => 3,                   // Latin
+            0x0400..=0x052F => 4,                   // Cyrillic
             0x0600..=0x06FF | 0x0750..=0x077F => 5, // Arabic
-            0x0900..=0x097F => 6, // Devanagari
-            0x0E00..=0x0E7F => 7, // Thai
+            0x0900..=0x097F => 6,                   // Devanagari
+            0x0E00..=0x0E7F => 7,                   // Thai
             _ if ch.is_alphabetic() => 8,
             _ => continue,
         };
         counts[index] += 1;
     }
 
-    let (index, count) = counts.iter().enumerate().max_by_key(|(_, count)| *count).unwrap();
+    let (index, count) = counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| *count)
+        .unwrap();
     if *count < 2 {
         return Script::Unknown;
     }
@@ -201,6 +220,24 @@ fn script_of(text: &str) -> Script {
         6 => Script::Devanagari,
         7 => Script::Thai,
         _ => Script::Other,
+    }
+}
+
+pub(super) fn is_supported_post_language(text: &str) -> bool {
+    matches!(script_of(text), Script::Han | Script::Latin)
+}
+
+fn language_name(script: Script) -> &'static str {
+    match script {
+        Script::Han => "中文",
+        Script::Japanese => "日语",
+        Script::Korean => "韩语",
+        Script::Latin => "原帖使用的拉丁字母语言（按原帖的具体语言作答）",
+        Script::Cyrillic => "俄语",
+        Script::Arabic => "阿拉伯语",
+        Script::Devanagari => "印地语",
+        Script::Thai => "泰语",
+        Script::Other | Script::Unknown => "原帖的主要语言",
     }
 }
 
@@ -230,21 +267,46 @@ fn reply_quality_violation(text: &str) -> Option<&'static str> {
         .collect();
 
     let low_quality_patterns = [
-        "撒意思", "啥意思", "撒意思啊", "啥意思啊",
-        "真香啊", "字体模糊", "字体不清", "文字模糊", "字太模糊",
-        "看不清", "看不懂", "看不明白", "看不出来",
+        "撒意思",
+        "啥意思",
+        "撒意思啊",
+        "啥意思啊",
+        "真香啊",
+        "字体模糊",
+        "字体不清",
+        "文字模糊",
+        "字太模糊",
+        "看不清",
+        "看不懂",
+        "看不明白",
+        "看不出来",
     ];
-    if low_quality_patterns.iter().any(|phrase| compact.contains(phrase)) {
+    if low_quality_patterns
+        .iter()
+        .any(|phrase| compact.contains(phrase))
+    {
         return Some("出现“真香啊/字体模糊/看不清/看不懂”等低质量套话");
     }
     if text.contains('?') || text.contains('？') {
         return Some("使用了疑问或反问标点");
     }
     let rhetorical_patterns = [
-        "难道", "岂不是", "这不就是", "不就是", "不是吗", "不是么",
-        "还用说吗", "你说是不是", "你觉得呢", "你说呢", "不觉得吗",
+        "难道",
+        "岂不是",
+        "这不就是",
+        "不就是",
+        "不是吗",
+        "不是么",
+        "还用说吗",
+        "你说是不是",
+        "你觉得呢",
+        "你说呢",
+        "不觉得吗",
     ];
-    if rhetorical_patterns.iter().any(|pattern| compact.contains(pattern)) {
+    if rhetorical_patterns
+        .iter()
+        .any(|pattern| compact.contains(pattern))
+    {
         return Some("使用了反问句式");
     }
     None
@@ -280,15 +342,24 @@ fn is_emoji(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_reply_ending, ensure_reply_language, reply_quality_violation, sanitize_reply};
+    use super::{
+        clean_reply_ending, ensure_reply_language, is_supported_post_language, language_name,
+        reply_quality_violation, sanitize_reply, script_of,
+    };
 
     #[test]
     fn strips_repeated_filler_words_and_exclamation_from_ending() {
-        assert_eq!(clean_reply_ending("这次真的很不错哈哈啊！！"), "这次真的很不错");
+        assert_eq!(
+            clean_reply_ending("这次真的很不错哈哈啊！！"),
+            "这次真的很不错"
+        );
         assert_eq!(clean_reply_ending("这波真香啊！"), "这波");
         assert_eq!(clean_reply_ending("处理得很稳吧"), "处理得很稳");
         assert_eq!(clean_reply_ending("哈哈"), "");
-        assert_eq!(clean_reply_ending("这件事啊，值得关注"), "这件事啊，值得关注");
+        assert_eq!(
+            clean_reply_ending("这件事啊，值得关注"),
+            "这件事啊，值得关注"
+        );
     }
 
     #[test]
@@ -307,9 +378,34 @@ mod tests {
     }
 
     #[test]
+    fn supports_chinese_and_latin_script_but_rejects_other_scripts() {
+        assert!(is_supported_post_language("这是一条中文帖子"));
+        assert!(is_supported_post_language("This is an English post."));
+        assert!(!is_supported_post_language("今日はいい天気です"));
+        assert!(!is_supported_post_language("Привет, как дела?"));
+        assert!(!is_supported_post_language(""));
+    }
+
+    #[test]
+    fn identifies_language_constraint_for_latin_script_posts() {
+        assert_eq!(
+            language_name(script_of("Learn to say, I'm not okay today.")),
+            "原帖使用的拉丁字母语言（按原帖的具体语言作答）"
+        );
+    }
+
+    #[test]
     fn rejects_chinese_reply_to_english_post() {
-        assert!(ensure_reply_language("This is an amazing update from today.", "确实很不错").is_err());
-        assert!(ensure_reply_language("This is an amazing update from today.", "That is a great update").is_ok());
+        assert!(
+            ensure_reply_language("This is an amazing update from today.", "确实很不错").is_err()
+        );
+        assert!(
+            ensure_reply_language(
+                "This is an amazing update from today.",
+                "That is a great update"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -321,8 +417,14 @@ mod tests {
     #[test]
     fn sanitizes_without_truncating_body_or_changing_internal_words() {
         let rules = "10个字内，回答自然";
-        assert_eq!(sanitize_reply("  这次处理得很稳哈哈！ ", rules, "这次处理得很好").unwrap(), "这次处理得很稳");
-        assert_eq!(sanitize_reply("这件事啊，值得关注", rules, "这次处理得很好").unwrap(), "这件事啊，值得关注");
+        assert_eq!(
+            sanitize_reply("  这次处理得很稳哈哈！ ", rules, "这次处理得很好").unwrap(),
+            "这次处理得很稳"
+        );
+        assert_eq!(
+            sanitize_reply("这件事啊，值得关注", rules, "这次处理得很好").unwrap(),
+            "这件事啊，值得关注"
+        );
     }
 
     #[test]
