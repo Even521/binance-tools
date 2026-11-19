@@ -756,7 +756,7 @@ fn run_visual_reply_inner(
         });
     }
 
-    let mut post = if options.stage2_ocr {
+    let post = if options.stage2_ocr {
         match identify_post_for_mode(&options, &feed, cancel) {
             Ok(post) => post,
             Err(error) => {
@@ -767,6 +767,8 @@ fn run_visual_reply_inner(
                 ));
                 let action_coordinate_failed =
                     error_detail.contains("局部 OCR 两轮均未识别到回复坐标");
+                let account_verification_failed = error_detail.contains("账号二次 OCR");
+                let incomplete_post = is_incomplete_post_error(&error);
 
                 if cancel.load(Ordering::Acquire) {
                     automation::log_event(
@@ -774,7 +776,7 @@ fn run_visual_reply_inner(
                     );
                     return Err(error);
                 }
-                if !action_coordinate_failed {
+                if !action_coordinate_failed && !account_verification_failed && !incomplete_post {
                     let unavailable_check_start = Instant::now();
                     automation::log_event("[自动回复][01/03]：开始复核帖子是否已删除或不可用。");
                     let unavailable =
@@ -811,13 +813,21 @@ fn run_visual_reply_inner(
                             summary: "帖子已被删除或不可见，已跳过并继续。".to_string(),
                         });
                     }
-                } else {
+                } else if action_coordinate_failed {
                     automation::log_event(
                         "[自动回复][01/03]：回复坐标识别失败，跳过重复的整页删除状态 OCR，直接返回错误。",
                     );
+                } else if account_verification_failed {
+                    automation::log_event(
+                        "[自动回复][01/03]：账号二次核验失败，跳过与账号核验无关的整页删除状态 OCR；保持安全跳过。",
+                    );
+                } else if incomplete_post {
+                    automation::log_event(
+                        "[自动回复][01/03]：帖子信息不完整，跳过同一截图的整页删除状态 OCR，直接安全跳过。",
+                    );
                 }
 
-                if is_incomplete_post_error(&error) {
+                if incomplete_post {
                     automation::log_event(&format!(
                         "[自动回复][01/03]：当前截图未能识别完整帖子（{error:#}）；不再重复截图和 OCR，安全跳过。"
                     ));
@@ -860,64 +870,17 @@ fn run_visual_reply_inner(
         binance_tools::db::x_assistant::replied_to_account_within_day_blocking(&account_handle)?;
     if first_is_duplicate {
         automation::log_event(&format!(
-            "首条可见帖子账号 {} 过去 24 小时已回复；尝试识别同一截图中的第二条完整帖子。",
+            "首条可见帖子账号 {} 过去 24 小时已回复；不再对同一截图重复执行整页 OCR，直接跳过并滚动。",
             account_handle
         ));
-        if options.stage2_ocr {
-            match ocr::identify_post_and_action_bar_at(&feed.png, 1) {
-                Ok(second_post) => {
-                    let second_account = second_post.account_handle.trim().to_string();
-                    if !binance_tools::db::x_assistant::replied_to_account_within_day_blocking(
-                        &second_account,
-                    )? {
-                        post = decision_from_local_post(second_post);
-                        post_text = post.post_text.trim().to_string();
-                        author_name = post.author_name.trim().to_string();
-                        account_handle = post.account_handle.trim().to_string();
-                        posted_at = post.posted_at.trim().to_string();
-                        automation::log_event(&format!(
-                            "已跳过已回复账号，改选第二条完整帖子：作者={}，账号={}，时间={}。",
-                            author_name, account_handle, posted_at
-                        ));
-                    } else {
-                        automation::log_event(&format!(
-                            "第二条完整帖子账号 {} 过去 24 小时也已回复。",
-                            second_account
-                        ));
-                        return Ok(duplicate_post_result(
-                            screenshots,
-                            author_name,
-                            account_handle,
-                            posted_at,
-                            post_text,
-                            "当前截图中的前两条完整帖子账号均已回复，已跳过。",
-                        ));
-                    }
-                }
-                Err(error) => {
-                    automation::log_event(&format!(
-                        "未能安全识别第二条完整帖子，保持跳过行为：{error:#}"
-                    ));
-                    return Ok(duplicate_post_result(
-                        screenshots,
-                        author_name,
-                        account_handle,
-                        posted_at,
-                        post_text,
-                        "首条可见帖子已回复，但第二条帖子未能安全识别；已跳过当前截图。",
-                    ));
-                }
-            }
-        } else {
-            return Ok(duplicate_post_result(
-                screenshots,
-                author_name,
-                account_handle,
-                posted_at,
-                post_text,
-                "首条可见帖子账号过去 24 小时已回复；视觉 AI 模式不自动切换到第二条帖子。",
-            ));
-        }
+        return Ok(duplicate_post_result(
+            screenshots,
+            author_name,
+            account_handle,
+            posted_at,
+            post_text,
+            "首条可见帖子过去 24 小时已回复；为避免重复 OCR，跳过当前截图并继续扫描。",
+        ));
     }
 
     if !reply_filter::is_supported_post_language(&post_text) {
@@ -1531,38 +1494,43 @@ fn run_visual_reply_inner(
     // 第一次发送结果检查：同一张截图只执行一次 OCR
     // ============================================================
 
-    let ocr_started = std::time::Instant::now();
-
-    let mut status = match recognize_send_status(&done.png) {
-        Ok(status) => {
-            automation::log_event(&format!(
-                "[OCR][发送状态] 识别成功，耗时 {} ms。",
-                ocr_started.elapsed().as_millis()
-            ));
-            status
-        }
-        Err(error) => {
-            automation::log_event(&format!(
-                "[OCR][发送状态] 识别失败，耗时 {} ms：{error:#}；继续检查专用发送提示，不自动重试。",
-                ocr_started.elapsed().as_millis()
-            ));
-            Default::default()
-        }
-    };
-
-    // X 的蓝色“你的帖子已发送”提示可能位于页面底部，整页 OCR 容易漏掉。
-    // 使用已存在的底部全宽、多阈值专用 OCR 再识别一次；它适用于帖子和回复。
+    // 先检查底部专用成功提示：明确命中时，直接走原有“已发送”成功处理，
+    // 避免再对同一张截图执行较慢的整页状态 OCR；未命中或识别失败时完整回退。
     let mut sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
         Ok(true) => {
-            automation::log_event("[OCR][发送提示] 识别成功：X 已显示发送成功提示。");
+            automation::log_event(
+                "[OCR][发送提示] 识别成功：X 已显示发送成功提示；跳过本次整页发送状态 OCR。",
+            );
             true
         }
         Ok(false) => false,
         Err(error) => {
             automation::log_event(&format!(
-                "[OCR][发送提示] 识别失败：{error:#}；继续只读核验。"
+                "[OCR][发送提示] 识别失败：{error:#}；回退整页只读状态核验。"
             ));
             false
+        }
+    };
+
+    let mut status = if sent_toast {
+        Default::default()
+    } else {
+        let ocr_started = std::time::Instant::now();
+        match recognize_send_status(&done.png) {
+            Ok(status) => {
+                automation::log_event(&format!(
+                    "[OCR][发送状态] 识别成功，耗时 {} ms。",
+                    ocr_started.elapsed().as_millis()
+                ));
+                status
+            }
+            Err(error) => {
+                automation::log_event(&format!(
+                    "[OCR][发送状态] 识别失败，耗时 {} ms：{error:#}；继续只读补查，不自动重试。",
+                    ocr_started.elapsed().as_millis()
+                ));
+                Default::default()
+            }
         }
     };
 
@@ -1594,22 +1562,26 @@ fn run_visual_reply_inner(
                 uncertain_send_error(&run_id, format!("{stage} 页面路由核验失败：{error:#}"))
             })?;
 
-            status = match recognize_send_status(&done.png) {
-                Ok(status) => status,
-                Err(error) => {
-                    automation::log_event(&format!(
-                        "[OCR][发送状态] 识别失败（{stage}）：{error:#}；继续只读核验。"
-                    ));
-                    Default::default()
-                }
-            };
             sent_toast = match ocr::recognize_post_sent_toast(&done.png) {
                 Ok(found) => found,
                 Err(error) => {
                     automation::log_event(&format!(
-                        "[OCR][发送提示] 识别失败（{stage}）：{error:#}。"
+                        "[OCR][发送提示] 识别失败（{stage}）：{error:#}；回退整页状态核验。"
                     ));
                     false
+                }
+            };
+            status = if sent_toast {
+                Default::default()
+            } else {
+                match recognize_send_status(&done.png) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        automation::log_event(&format!(
+                            "[OCR][发送状态] 识别失败（{stage}）：{error:#}；继续只读核验。"
+                        ));
+                        Default::default()
+                    }
                 }
             };
 
@@ -2197,38 +2169,58 @@ fn uncertain_send_error(run_id: &str, reason: impl std::fmt::Display) -> anyhow:
     anyhow::Error::new(SendOutcomeUncertain).context(reason)
 }
 
-/// 发送结果确认后，短暂重试数据库写入；仍失败则停止自动回复，避免重复处理。
+/// X 已确认发送成功后，如数据库暂时被锁，则后台持续重试状态写入。
+/// 重试期间保留 submitting 状态：它会阻止同一账号被重复回复，但不会中断自动化。
 fn mark_reply_completed_or_stop(run_id: &str) -> anyhow::Result<()> {
-    let mut last_error = None;
-    for attempt in 1..=3 {
-        match binance_tools::db::x_assistant::mark_last_step_completed_quick_blocking(run_id) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                automation::log_event(&format!(
-                    "发送结果已确认，SQLite 完成状态快速写入第 {attempt}/3 次失败：{error:#}"
-                ));
-                last_error = Some(error);
-                if attempt < 3 {
-                    thread::sleep(Duration::from_millis(200));
-                }
-            }
+    match binance_tools::db::x_assistant::mark_last_step_completed_quick_blocking(run_id) {
+        Ok(()) => return Ok(()),
+        Err(initial_error) => {
+            automation::log_event(&format!(
+                "X 已确认发送成功，但 SQLite 完成状态写入暂时失败；保留 submitting 防止重复回复，并启动后台重试：run_id={run_id}，错误={initial_error:#}"
+            ));
         }
     }
 
-    let reason = format!(
-        "X 已确认回复发送，但 SQLite 连续 3 次无法保存完成状态；run_id={run_id}；最后错误：{}",
-        last_error
-            .map(|error| format!("{error:#}"))
-            .unwrap_or_else(|| "未知错误".to_string())
-    );
-    if let Err(error) =
-        binance_tools::db::x_assistant::mark_reply_uncertain_quick_blocking(run_id, &reason)
+    let retry_run_id = run_id.to_string();
+    if let Err(error) = thread::Builder::new()
+        .name("x-reply-status-retry".to_string())
+        .spawn(move || {
+            let mut attempt = 0_u32;
+            loop {
+                let delay_secs = 1_u64 << attempt.min(4);
+                thread::sleep(Duration::from_secs(delay_secs));
+                attempt = attempt.saturating_add(1);
+
+                match binance_tools::db::x_assistant::mark_last_step_completed_quick_blocking(
+                    &retry_run_id,
+                ) {
+                    Ok(()) => {
+                        app_log::x_info!(
+                            "[X助手][SQLite] 后台补写回复完成状态成功：run_id={}，重试次数={}",
+                            retry_run_id,
+                            attempt
+                        );
+                        break;
+                    }
+                    Err(error) if attempt == 1 || attempt % 5 == 0 => {
+                        app_log::x_warn!(
+                            "[X助手][SQLite] 后台补写回复完成状态仍被锁：run_id={}，重试次数={}，错误={:#}",
+                            retry_run_id,
+                            attempt,
+                            error
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+        })
     {
         automation::log_event(&format!(
-            "发送已确认，快速写入 uncertain 状态仍失败；保留原 submitting 记录以阻止重复回复：{error:#}"
+            "无法启动 SQLite 状态补写线程；记录仍保持 submitting 以防重复回复，run_id={run_id}，错误={error}"
         ));
     }
-    Err(anyhow::Error::new(SendOutcomeUncertain).context(reason))
+
+    Ok(())
 }
 
 fn already_sent_result(
@@ -2725,34 +2717,6 @@ pub(super) fn is_incomplete_post_error(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|marker| message.contains(marker))
-}
-
-fn decision_from_local_post(post: ocr::LocalPostIdentification) -> VisionDecision {
-    VisionDecision {
-        ok: true,
-        reason: "本地 OCR 识别的第二条完整帖子".to_string(),
-        post_text: post.post_text,
-        author_name: post.author_name,
-        account_handle: post.account_handle,
-        posted_at: post.posted_at,
-        reply_text: String::new(),
-        point: None,
-        reply_point: Some(Point {
-            x: post.reply_point.0,
-            y: post.reply_point.1,
-        }),
-        repost_point: post.repost_point.map(|(x, y)| Point { x, y }),
-        like_point: post.like_point.map(|(x, y)| Point { x, y }),
-        post_text_bottom_y: Some(post.post_text_bottom_y),
-        post_bottom_y: Some(post.post_bottom_y),
-        refresh_posts: false,
-        composer_open: false,
-        text_matches: false,
-        reply_field_matches: false,
-        poll_mode: false,
-        completed: false,
-        reply_post_state: None,
-    }
 }
 
 fn duplicate_post_result(
@@ -3587,8 +3551,9 @@ fn check_cancel(cancel: &AtomicBool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Point, identity_text_matches, parse_decision, reply_target_account_matches,
+        identity_text_matches, parse_decision, reply_target_account_matches,
         reply_target_identity_matches, validate_action_targets, validate_composer_input_point,
+        Point,
     };
 
     #[test]

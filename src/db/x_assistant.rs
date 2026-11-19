@@ -64,10 +64,13 @@ pub fn today_sent_reply_count_blocking() -> anyhow::Result<u64> {
     let count: i64 = connection.query_row(
         "SELECT COUNT(*)
          FROM x_assistant_reply_records
-         WHERE send_status = 'sent'
-           AND completed_last_step = 1
-           AND completed_at IS NOT NULL
-           AND date(completed_at) = date('now', '+8 hours')",
+         WHERE (
+             (send_status = 'sent' AND completed_last_step = 1 AND completed_at IS NOT NULL
+              AND date(completed_at) = date('now', '+8 hours'))
+             OR
+             (send_status IN ('submitting', 'uncertain')
+              AND date(created_at) = date('now', '+8 hours'))
+         )",
         [],
         |row| row.get(0),
     )?;
@@ -145,11 +148,11 @@ pub fn mark_last_step_completed_blocking(run_id: &str) -> anyhow::Result<()> {
     mark_completed(&connection, run_id)
 }
 
-/// 已确认发送后的完成状态写入允许等待短暂的并发写锁，避免过短超时造成状态丢失。
+/// 已确认发送后的完成状态写入等待较长的并发写锁，避免短超时把成功发送误报为失败。
 pub fn mark_last_step_completed_quick_blocking(run_id: &str) -> anyhow::Result<()> {
     use std::time::{Duration, Instant};
 
-    const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+    const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
     let started = Instant::now();
     let result = (|| {
         let connection = super::open_default_connection_with_busy_timeout(BUSY_TIMEOUT)?;
