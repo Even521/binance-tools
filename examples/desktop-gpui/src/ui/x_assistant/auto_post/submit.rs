@@ -296,56 +296,58 @@ pub fn submit_prepared_post(
         click_attempted = true;
         automation::native::click_at_client_position(submit_point.0, submit_point.1)?;
         automation::log_post_event("[自动发帖] 发帖按钮点击动作已执行");
-        // 点击只负责触发提交；随后立即将指针移到浏览器最右侧空白边缘，
-        // 避免鼠标一直悬停在按钮上影响后续界面状态与人工观察。
-        let cursor_x = (width as i32 - 24).max(0);
-        let cursor_y = (height as i32 / 2).max(0);
-        match automation::native::move_cursor_to_client_position(cursor_x, cursor_y) {
-            Ok(()) => automation::log_post_event(
-                "[自动发帖] 已将鼠标移到浏览器右侧空白区域，开始检查编辑弹窗是否真正提交",
-            ),
-            Err(error) => automation::log_post_event(&format!(
-                "[自动发帖] 警告：点击后鼠标未能移开：{error:#}；继续执行提交状态核验"
-            )),
-        }
 
-        // 点击发布后绝不再次点击。复用自动回复的整图 PP-OCR 状态识别：
-        // recognize_send_status -> recognize_document(4/3 放大、阈值 200) -> contains_sent_confirmation。
-        // 先等待 X 完成提交，再最多检查 3 张桌面截图；每次截图只执行一次 OCR。
-        wait_or_cancel(cancel, Duration::from_secs(2))?;
+        // 点击发布后绝不再次点击。第一张截图必须紧跟提交动作，避免错过短暂成功提示；
+        // 随后继续补查 3 张截图，每张只执行一次 OCR。
         let mut published = false;
         let mut last_result_page = None;
 
-        for attempt in 1..=3 {
+        for attempt in 1..=4 {
             check_cancel(cancel)?;
             if attempt > 1 {
                 wait_or_cancel(cancel, Duration::from_secs(1))?;
             }
 
-            let result_page = capture_desktop(
-                post.post_id,
-                &format!("after-submit-status-check-{attempt:02}"),
-            )?;
+            let label = if attempt == 1 {
+                "after-submit-immediate".to_string()
+            } else {
+                format!("after-submit-status-check-{attempt:02}")
+            };
+            let result_page = capture_desktop(post.post_id, &label)?;
             last_result_page = Some(result_page.clone());
+
+            if attempt == 1 {
+                // 先保留提交后的即时画面，再移动鼠标，避免短暂 toast 在操作期间消失。
+                let cursor_x = (width as i32 - 24).max(0);
+                let cursor_y = (height as i32 / 2).max(0);
+                match automation::native::move_cursor_to_client_position(cursor_x, cursor_y) {
+                    Ok(()) => automation::log_post_event(
+                        "[自动发帖] 已保存提交后的即时截图，再将鼠标移到浏览器右侧空白区域",
+                    ),
+                    Err(error) => automation::log_post_event(&format!(
+                        "[自动发帖] 即时截图已保存，但鼠标未能移开：{error:#}；继续核验"
+                    )),
+                }
+            }
 
             // 优先识别 X 页面底部的蓝色成功 toast。该专用识别会扫描底部全宽区域，
             // 并使用灰度及多阈值模式；整屏状态识别作为第二道补充检查。
             match ocr::recognize_post_sent_toast(&result_page) {
                 Ok(true) => {
                     automation::log_post_event(&format!(
-                        "[自动发帖] 第 {attempt}/3 次底部 toast OCR 识别到 X 发布成功提示，确认发布成功；立即结束核验"
+                        "[自动发帖] 第 {attempt}/4 次底部 toast OCR 识别到 X 发布成功提示，确认发布成功；立即结束核验"
                     ));
                     published = true;
                     break;
                 }
                 Ok(false) => {
                     automation::log_post_event(&format!(
-                        "[自动发帖] 第 {attempt}/3 次底部 toast OCR 未识别到成功提示，继续执行整屏状态识别"
+                        "[自动发帖] 第 {attempt}/4 次底部 toast OCR 未识别到成功提示，继续执行整屏状态识别"
                     ));
                 }
                 Err(error) => {
                     automation::log_post_event(&format!(
-                        "[自动发帖] 第 {attempt}/3 次底部 toast OCR 识别失败：{error:#}；继续执行整屏状态识别"
+                        "[自动发帖] 第 {attempt}/4 次底部 toast OCR 识别失败：{error:#}；继续执行整屏状态识别"
                     ));
                 }
             }
@@ -353,7 +355,7 @@ pub fn submit_prepared_post(
             match recognize_send_status(&result_page) {
                 Ok(status) => {
                     automation::log_post_event(&format!(
-                        "[自动发帖] 第 {attempt}/3 次整图 PP-OCR 状态：sent={}，already_sent={}，rate_limited={}，retryable_error={}",
+                        "[自动发帖] 第 {attempt}/4 次整图 PP-OCR 状态：sent={}，already_sent={}，rate_limited={}，retryable_error={}",
                         status.sent,
                         status.already_sent,
                         status.rate_limited,
@@ -361,7 +363,7 @@ pub fn submit_prepared_post(
                     ));
                     if status.sent {
                         automation::log_post_event(&format!(
-                            "[自动发帖] 第 {attempt}/3 次整屏 OCR 识别到发布成功提示，确认发布成功；立即结束核验"
+                            "[自动发帖] 第 {attempt}/4 次整屏 OCR 识别到发布成功提示，确认发布成功；立即结束核验"
                         ));
                         published = true;
                         break;
@@ -369,7 +371,7 @@ pub fn submit_prepared_post(
                 }
                 Err(error) => {
                     automation::log_post_event(&format!(
-                        "[自动发帖] 第 {attempt}/3 次整图 PP-OCR 状态识别失败：{error:#}；不会再次点击发布"
+                        "[自动发帖] 第 {attempt}/4 次整图 PP-OCR 状态识别失败：{error:#}；不会再次点击发布"
                     ));
                 }
             }
@@ -409,7 +411,7 @@ pub fn submit_prepared_post(
             })
         } else {
             let reason = format!(
-                "已点击发帖按钮，但连续 3 次整图 PP-OCR 状态检查均未识别到“你的贴已发送。查看”成功提示。最后截图：{}。发布结果不确定，禁止自动重发。",
+                "已点击发帖按钮，但连续 4 次整图 PP-OCR 状态检查均未识别到“你的贴已发送。查看”成功提示。最后截图：{}。发布结果不确定，禁止自动重发。",
                 result_page.display()
             );
             binance_tools::db::x_posting::mark_post_unknown_blocking(post.post_id, &reason)?;

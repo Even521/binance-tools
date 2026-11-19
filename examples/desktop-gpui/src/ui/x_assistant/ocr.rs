@@ -61,25 +61,30 @@ pub(super) fn locate_post_composer_input(path: &Path) -> anyhow::Result<Option<(
             *scale_den,
             *threshold,
         )?;
-        let best = doc.lines.iter().filter_map(|line| {
-            let normalized = normalize_text(&line.text).to_lowercase();
-            let line_len = normalized.chars().count();
-            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-            if line_len < 4
-                || line_len > 36
-                || center_x < crop.width as f32 * 0.10
-                || center_x > crop.width as f32 * 0.90
-                || center_y < crop.height as f32 * 0.10
-                || center_y > crop.height as f32 * 0.90
-            {
-                return None;
-            }
-            let score = expected.iter()
-                .map(|phrase| text_match_ratio(&normalized, phrase))
-                .fold(0.0_f32, f32::max);
-            (score >= 0.72).then_some((center_x, center_y, score, line.text.as_str()))
-        }).max_by(|left, right| left.2.total_cmp(&right.2));
+        let best = doc
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let normalized = normalize_text(&line.text).to_lowercase();
+                let line_len = normalized.chars().count();
+                let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+                let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+                if line_len < 4
+                    || line_len > 36
+                    || center_x < crop.width as f32 * 0.10
+                    || center_x > crop.width as f32 * 0.90
+                    || center_y < crop.height as f32 * 0.10
+                    || center_y > crop.height as f32 * 0.90
+                {
+                    return None;
+                }
+                let score = expected
+                    .iter()
+                    .map(|phrase| text_match_ratio(&normalized, phrase))
+                    .fold(0.0_f32, f32::max);
+                (score >= 0.72).then_some((center_x, center_y, score, line.text.as_str()))
+            })
+            .max_by(|left, right| left.2.total_cmp(&right.2));
 
         if let Some((center_x, center_y, score, _recognized)) = best {
             let point = (
@@ -88,7 +93,9 @@ pub(super) fn locate_post_composer_input(path: &Path) -> anyhow::Result<Option<(
             );
             super::automation::log_event(&format!(
                 "[OCR][发帖输入框] 识别成功（模式：{mode_name}），匹配度 {:.0}%，坐标=({}, {})",
-                score * 100.0, point.0, point.1
+                score * 100.0,
+                point.0,
+                point.1
             ));
             if attempt > 0 {
                 super::automation::log_event(&format!(
@@ -220,7 +227,10 @@ pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
     let source = image::open(path)?;
     let width = source.width();
     let height = source.height();
-    anyhow::ensure!(width >= 800 && height >= 600, "发布结果截图尺寸异常（{width}x{height}）");
+    anyhow::ensure!(
+        width >= 800 && height >= 600,
+        "发布结果截图尺寸异常（{width}x{height}）"
+    );
 
     // 旧实现只扫描 x=25%..75%、y=70%..96%，会漏掉位于左下方的 X toast，
     // 也会漏掉贴近窗口底边的提示。新实现扫描整个底部 42% 区域。
@@ -385,23 +395,32 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
 
     let source = image::open(path)?.to_rgba8();
     let (width, height) = source.dimensions();
-    anyhow::ensure!(width >= 800 && height >= 600, "截图尺寸不足，无法检测 compose 弹窗");
+    anyhow::ensure!(
+        width >= 800 && height >= 600,
+        "截图尺寸不足，无法检测 compose 弹窗"
+    );
     let background = estimate_overlay_luminance(&source);
     let threshold = background.saturating_add(18).min(250);
     let bounds = detect_bright_bounds(
-        &source, width * 15 / 100, height * 8 / 100,
-        width * 85 / 100, height * 92 / 100, threshold,
-    ).ok_or_else(|| anyhow::anyhow!("未检测到可信的明亮 compose 弹窗边界"))?;
+        &source,
+        width * 15 / 100,
+        height * 8 / 100,
+        width * 85 / 100,
+        height * 92 / 100,
+        threshold,
+    )
+    .ok_or_else(|| anyhow::anyhow!("未检测到可信的明亮 compose 弹窗边界"))?;
     let (left, top, right, bottom) = bounds;
     if let Some(inner) = detect_bright_bounds(&source, left, top, right, bottom, 245) {
         let inner_width = inner.2.saturating_sub(inner.0);
         let inner_height = inner.3.saturating_sub(inner.1);
-        if inner_width * 100 < (right - left) * 82
-            && inner_height * 100 < (bottom - top) * 82
-        {
+        if inner_width * 100 < (right - left) * 82 && inner_height * 100 < (bottom - top) * 82 {
             anyhow::bail!(
                 "检测到嵌套二次确认框，外层弹窗={}x{}，内层区域={}x{}；禁止继续回复或点击",
-                right - left, bottom - top, inner_width, inner_height
+                right - left,
+                bottom - top,
+                inner_width,
+                inner_height
             );
         }
     }
@@ -418,7 +437,10 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
             && crop_width <= width * 75 / 100
             && crop_height <= height * 85 / 100,
         "检测到的弹窗尺寸不合理：{}x{}，截图={}x{}",
-        crop_width, crop_height, width, height
+        crop_width,
+        crop_height,
+        width,
+        height
     );
     let crop_image = crop_imm(&source, left, top, crop_width, crop_height).to_image();
     super::automation::log_event(&format!(
@@ -435,8 +457,12 @@ fn crop_compose_dialog(path: &Path) -> anyhow::Result<ComposeDialogCrop> {
 }
 
 fn detect_bright_bounds(
-    image: &image::RgbaImage, left: u32, top: u32,
-    right: u32, bottom: u32, threshold: u8,
+    image: &image::RgbaImage,
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+    threshold: u8,
 ) -> Option<(u32, u32, u32, u32)> {
     let rows = bright_row_projection(image, left, right, top, bottom, threshold);
     let (top_offset, bottom_offset) = projection_span(&rows, (right - left) / 8, 14)?;
@@ -444,14 +470,20 @@ fn detect_bright_bounds(
     let bottom = top + (bottom_offset - top_offset) as u32;
     let columns = bright_column_projection(image, top, bottom, left, right, threshold);
     let (left_offset, right_offset) = projection_span(&columns, (bottom - top) / 8, 14)?;
-    Some((left + left_offset as u32, top, left + right_offset as u32, bottom))
+    Some((
+        left + left_offset as u32,
+        top,
+        left + right_offset as u32,
+        bottom,
+    ))
 }
 
 fn estimate_overlay_luminance(image: &image::RgbaImage) -> u8 {
     let (width, height) = image.dimensions();
     let mut samples = Vec::new();
     for y in (height / 10..height * 9 / 10).step_by(6) {
-        for x in (width / 20..width * 3 / 20).step_by(6)
+        for x in (width / 20..width * 3 / 20)
+            .step_by(6)
             .chain((width * 17 / 20..width * 19 / 20).step_by(6))
         {
             samples.push(pixel_luminance(image.get_pixel(x, y).0));
@@ -462,26 +494,42 @@ fn estimate_overlay_luminance(image: &image::RgbaImage) -> u8 {
 }
 
 fn pixel_luminance(pixel: [u8; 4]) -> u8 {
-    ((u16::from(pixel[0]) * 299 + u16::from(pixel[1]) * 587
-        + u16::from(pixel[2]) * 114) / 1000) as u8
+    ((u16::from(pixel[0]) * 299 + u16::from(pixel[1]) * 587 + u16::from(pixel[2]) * 114) / 1000)
+        as u8
 }
 
 fn bright_row_projection(
-    image: &image::RgbaImage, x_start: u32, x_end: u32,
-    y_start: u32, y_end: u32, threshold: u8,
+    image: &image::RgbaImage,
+    x_start: u32,
+    x_end: u32,
+    y_start: u32,
+    y_end: u32,
+    threshold: u8,
 ) -> Vec<u32> {
-    (y_start..y_end).map(|y| {
-        (x_start..x_end).filter(|&x| pixel_luminance(image.get_pixel(x, y).0) >= threshold).count() as u32
-    }).collect()
+    (y_start..y_end)
+        .map(|y| {
+            (x_start..x_end)
+                .filter(|&x| pixel_luminance(image.get_pixel(x, y).0) >= threshold)
+                .count() as u32
+        })
+        .collect()
 }
 
 fn bright_column_projection(
-    image: &image::RgbaImage, y_start: u32, y_end: u32,
-    x_start: u32, x_end: u32, threshold: u8,
+    image: &image::RgbaImage,
+    y_start: u32,
+    y_end: u32,
+    x_start: u32,
+    x_end: u32,
+    threshold: u8,
 ) -> Vec<u32> {
-    (x_start..x_end).map(|x| {
-        (y_start..y_end).filter(|&y| pixel_luminance(image.get_pixel(x, y).0) >= threshold).count() as u32
-    }).collect()
+    (x_start..x_end)
+        .map(|x| {
+            (y_start..y_end)
+                .filter(|&y| pixel_luminance(image.get_pixel(x, y).0) >= threshold)
+                .count() as u32
+        })
+        .collect()
 }
 
 fn projection_span(values: &[u32], minimum: u32, max_gap: usize) -> Option<(usize, usize)> {
@@ -489,7 +537,9 @@ fn projection_span(values: &[u32], minimum: u32, max_gap: usize) -> Option<(usiz
     let (mut start, mut last, mut score) = (0, 0, 0_u64);
     for (index, &value) in values.iter().enumerate() {
         if value >= minimum {
-            if score == 0 { start = index; }
+            if score == 0 {
+                start = index;
+            }
             last = index;
             score += u64::from(value);
         } else if score > 0 && index.saturating_sub(last) > max_gap {
@@ -505,19 +555,20 @@ fn projection_span(values: &[u32], minimum: u32, max_gap: usize) -> Option<(usiz
     best.map(|(start, end, _)| (start, end))
 }
 
-/// 检查 X 时间线是否显示网络/加载错误提示。
-pub(super) fn timeline_has_reload_error(path: &Path) -> anyhow::Result<bool> {
-    let source = image::open(path)?.to_rgb8();
-    with_cached_ocr_engine(|engine| {
-        let (_, _, page_json) =
-            engine.recognize_image_with_action_coordinates_and_timeline(&source, path)?;
-        let Some(items) = page_json["timeline"]["unclassified"].as_array() else {
-            return Ok(false);
-        };
-        for item in items {
-            let Some(text) = item["text"].as_str() else {
-                continue;
-            };
+const TIMELINE_RELOAD_ERROR_MARKER: &str = "X_TIMELINE_RELOAD_ERROR";
+
+pub(super) fn is_timeline_reload_error(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains(TIMELINE_RELOAD_ERROR_MARKER)
+}
+
+fn page_has_timeline_reload_error(page_json: &serde_json::Value) -> bool {
+    let Some(items) = page_json["timeline"]["unclassified"].as_array() else {
+        return false;
+    };
+    items
+        .iter()
+        .filter_map(|item| item["text"].as_str())
+        .any(|text| {
             let normalized = text
                 .chars()
                 .filter(|ch| {
@@ -526,15 +577,10 @@ pub(super) fn timeline_has_reload_error(path: &Path) -> anyhow::Result<bool> {
                         && !matches!(ch, '。' | '，' | '！' | '？' | '：' | '；' | '、')
                 })
                 .collect::<String>();
-            if normalized.contains("出错了")
+            normalized.contains("出错了")
                 && normalized.contains("重新加载")
                 && (normalized.contains("请尝试") || normalized.contains("请重新加载"))
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    })
+        })
 }
 
 pub(super) fn identify_post_and_action_bar(path: &Path) -> anyhow::Result<LocalPostIdentification> {
@@ -551,6 +597,11 @@ pub(super) fn identify_post_and_action_bar_at(
         // OCR 和时间线解析一次完成，不再重复 parse_timeline
         let (result, parsed, page_json) =
             engine.recognize_image_with_action_coordinates_and_timeline(&source, path)?;
+
+        anyhow::ensure!(
+            !page_has_timeline_reload_error(&page_json),
+            "{TIMELINE_RELOAD_ERROR_MARKER}: 识别到‘出错了，请重新加载’"
+        );
 
         anyhow::ensure!(
             page_json["current_url"]
@@ -695,9 +746,10 @@ pub(super) fn identify_post_and_action_bar_at(
             let second_handle = second_pass
                 .text_blocks
                 .iter()
-                .filter_map(|block| extract_account_token(&block.text).map(|value| {
-                    (value, block.text_score, block.text.clone())
-                }))
+                .filter_map(|block| {
+                    extract_account_token(&block.text)
+                        .map(|value| (value, block.text_score, block.text.clone()))
+                })
                 .filter(|(value, _, _)| value.eq_ignore_ascii_case(account_token))
                 .max_by(|left, right| left.1.total_cmp(&right.1));
             let Some((verified_handle, confidence, recognized_line)) = second_handle else {
@@ -855,7 +907,9 @@ pub(super) fn identify_post_and_action_bar_at(
             // 首轮局部 OCR 未找到目标回复坐标时，仅在失败路径放大 2 倍复核。
             let first_pass_has_reply = crop_parsed.timeline.posts.iter().any(|candidate| {
                 let same_account = candidate.account.as_deref().is_some_and(|account| {
-                    account.trim_start_matches('@').eq_ignore_ascii_case(account_token)
+                    account
+                        .trim_start_matches('@')
+                        .eq_ignore_ascii_case(account_token)
                 });
                 same_account
                     && candidate.timestamp.as_deref() == Some(posted_at.as_str())
@@ -872,10 +926,14 @@ pub(super) fn identify_post_and_action_bar_at(
                     image::imageops::FilterType::Lanczos3,
                 );
                 let (_, retry_parsed, _) = engine
-                    .recognize_image_with_action_coordinates_and_timeline_for_crop(&enlarged, path)?;
+                    .recognize_image_with_action_coordinates_and_timeline_for_crop(
+                        &enlarged, path,
+                    )?;
                 let retry_has_reply = retry_parsed.timeline.posts.iter().any(|candidate| {
                     let same_account = candidate.account.as_deref().is_some_and(|account| {
-                        account.trim_start_matches('@').eq_ignore_ascii_case(account_token)
+                        account
+                            .trim_start_matches('@')
+                            .eq_ignore_ascii_case(account_token)
                     });
                     same_account
                         && candidate.timestamp.as_deref() == Some(posted_at.as_str())
@@ -884,13 +942,9 @@ pub(super) fn identify_post_and_action_bar_at(
                 if retry_has_reply {
                     crop_parsed = retry_parsed;
                     coordinate_scale = 2;
-                    super::automation::log_event(
-                        "[互动栏恢复] 2 倍放大复核成功，使用复核坐标。",
-                    );
+                    super::automation::log_event("[互动栏恢复] 2 倍放大复核成功，使用复核坐标。");
                 } else {
-                    super::automation::log_event(
-                        "[互动栏恢复] 2 倍放大复核仍未找到目标回复坐标。",
-                    );
+                    super::automation::log_event("[互动栏恢复] 2 倍放大复核仍未找到目标回复坐标。");
                 }
             }
 
@@ -1157,6 +1211,39 @@ pub(super) fn reply_composer_is_open(path: &Path) -> anyhow::Result<bool> {
         .any(|line| text_match_ratio(&normalize_text(&line.text), &expected) >= 0.75))
 }
 
+/// 仅在弹窗内 OCR 明确识别到 X 的可重试发送错误时，返回左上角关闭按钮坐标。
+pub(super) fn locate_retryable_error_close_button(
+    path: &Path,
+) -> anyhow::Result<Option<(i32, i32)>> {
+    let crop = crop_compose_dialog(path)?;
+    let doc = recognize_document_image(
+        &image::DynamicImage::ImageRgba8(crop.image.clone()),
+        3,
+        2,
+        Some(200),
+    )?;
+    if !contains_retryable_send_error(&doc.text) {
+        return Ok(None);
+    }
+
+    // crop_compose_dialog 在真实弹窗边界外留了 24px padding；X 的关闭图标
+    // 位于弹窗左上角约 20px 处，因此目标点约为裁剪图原点 + 44px。
+    const CLOSE_BUTTON_OFFSET: u32 = 44;
+    anyhow::ensure!(
+        crop.width > CLOSE_BUTTON_OFFSET && crop.height > CLOSE_BUTTON_OFFSET,
+        "网络错误弹窗裁剪尺寸不足，无法定位关闭按钮"
+    );
+    let point = (
+        (crop.left + CLOSE_BUTTON_OFFSET) as i32,
+        (crop.top + CLOSE_BUTTON_OFFSET) as i32,
+    );
+    super::automation::log_event(&format!(
+        "[网络错误恢复] 已在弹窗 OCR 确认可重试错误，关闭按钮坐标=({}, {})，弹窗区域原点=({}, {})、尺寸={}x{}。",
+        point.0, point.1, crop.left, crop.top, crop.width, crop.height
+    ));
+    Ok(Some(point))
+}
+
 pub(super) fn recognize_save_draft_confirmation(path: &Path) -> anyhow::Result<bool> {
     let doc = recognize_document(path)?;
     Ok(doc.lines.iter().any(|line| {
@@ -1401,19 +1488,22 @@ pub(super) fn locate_reply_submit_button(
     let reply_text = normalize_text(reply_text);
     // 先用“回复 @账号”定位实际输入框起点。只有位于该锚点下方的文字
     // 才能作为待发送正文，避免把引用/原帖正文误判成当前回复。
-    let target_anchor_bottom = doc.lines.iter()
+    let target_anchor_bottom = doc
+        .lines
+        .iter()
         .filter(|line| {
             let text = normalize_text(&line.text);
-            text.starts_with(&normalize_text("回复"))
-                && text.contains('@')
+            text.starts_with(&normalize_text("回复")) && text.contains('@')
         })
         .map(|line| line.bottom / doc.scale_y)
         .max_by(f32::total_cmp);
-    let mut matching_lines = doc.lines.iter()
+    let mut matching_lines = doc
+        .lines
+        .iter()
         .filter(|line| text_match_ratio(&normalize_text(&line.text), &reply_text) >= 0.80)
-        .filter(|line| target_anchor_bottom.is_none_or(|bottom| {
-            line.top / doc.scale_y > bottom + 6.0
-        }))
+        .filter(|line| {
+            target_anchor_bottom.is_none_or(|bottom| line.top / doc.scale_y > bottom + 6.0)
+        })
         .collect::<Vec<_>>();
     let mut used_spatial_fallback = false;
 
@@ -1422,7 +1512,9 @@ pub(super) fn locate_reply_submit_button(
     if matching_lines.is_empty() {
         if let Some(anchor_bottom) = target_anchor_bottom {
             let expected_len = reply_text.chars().count();
-            matching_lines = doc.lines.iter()
+            matching_lines = doc
+                .lines
+                .iter()
                 .filter(|line| {
                     let normalized = normalize_text(&line.text);
                     let actual_len = normalized.chars().count();
@@ -1443,14 +1535,23 @@ pub(super) fn locate_reply_submit_button(
     }
 
     let normalized_document = normalize_text(&doc.text);
-    let reply_text_verified = !matching_lines.is_empty()
-        || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
+    let reply_text_verified =
+        !matching_lines.is_empty() || text_match_ratio(&normalized_document, &reply_text) >= 0.80;
     if !reply_text_verified || matching_lines.is_empty() {
-        let candidates = doc.lines.iter()
-            .map(|line| format!("{}({:.0},{:.0})", line.text,
-                (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
-                (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32))
-            .take(30).collect::<Vec<_>>().join(" | ");
+        let candidates = doc
+            .lines
+            .iter()
+            .map(|line| {
+                format!(
+                    "{}({:.0},{:.0})",
+                    line.text,
+                    (line.left + line.right) * 0.5 / doc.scale_x + crop.left as f32,
+                    (line.top + line.bottom) * 0.5 / doc.scale_y + crop.top as f32
+                )
+            })
+            .take(30)
+            .collect::<Vec<_>>()
+            .join(" | ");
         super::automation::log_event(&format!(
             "阶段 2/3：提交前 PP-OCR 未能在单行中可靠匹配回复文本‘{reply_text}’，禁止使用视觉模型猜测提交坐标。识别行：{candidates}"
         ));
@@ -1468,44 +1569,56 @@ pub(super) fn locate_reply_submit_button(
 
     if used_spatial_fallback {
         super::automation::log_event(
-            "[OCR][回复正文] 严格匹配未命中，已通过回复目标锚点下方的空间约束完成短文本模糊匹配（阈值 70%）"
+            "[OCR][回复正文] 严格匹配未命中，已通过回复目标锚点下方的空间约束完成短文本模糊匹配（阈值 70%）",
         );
     }
 
     // X 的回复弹窗提交按钮固定在弹窗右下方，不与回复正文处于同一行。
     // 先用已核验的回复正文确定横向锚点，再限定在弹窗下半部的右侧查找“回复”文字。
     // 不搜索任意深色矩形，也不接受正文/引用区里的“回复”文字，避免误点。
-    let reply_right = matching_lines.iter()
+    let reply_right = matching_lines
+        .iter()
         .map(|line| line.right / doc.scale_x)
         .fold(0.0_f32, f32::max);
-    let reply_top = matching_lines.iter()
+    let reply_top = matching_lines
+        .iter()
         .map(|line| line.top / doc.scale_y)
         .fold(f32::MAX, f32::min);
-    let reply_bottom = matching_lines.iter()
+    let reply_bottom = matching_lines
+        .iter()
         .map(|line| line.bottom / doc.scale_y)
         .fold(0.0_f32, f32::max);
     let submit_region_top = (reply_bottom + 40.0).max(crop.height as f32 * 0.45);
     let submit_region_bottom = crop.height as f32 * 0.995;
 
-    let ocr_button = doc.lines.iter().filter_map(|line| {
-        let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-        let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-        let label = normalize_text(&line.text);
-        let label_match = label == normalize_text("回复");
-        let right_of_reply = center_x >= (reply_right + 12.0).max(crop.width as f32 * 0.52);
-        let in_bottom_submit_region =
-            center_y >= submit_region_top && center_y <= submit_region_bottom;
-        (label_match && right_of_reply && in_bottom_submit_region)
-            .then_some((center_x, center_y, line.text.as_str()))
-    }).min_by(|left, right| {
-        let left_distance = (left.1 - submit_region_top).abs();
-        let right_distance = (right.1 - submit_region_top).abs();
-        left_distance.total_cmp(&right_distance)
-    });
+    let ocr_button = doc
+        .lines
+        .iter()
+        .filter_map(|line| {
+            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+            let label = normalize_text(&line.text);
+            let label_match = label == normalize_text("回复");
+            let right_of_reply = center_x >= (reply_right + 12.0).max(crop.width as f32 * 0.52);
+            let in_bottom_submit_region =
+                center_y >= submit_region_top && center_y <= submit_region_bottom;
+            (label_match && right_of_reply && in_bottom_submit_region).then_some((
+                center_x,
+                center_y,
+                line.text.as_str(),
+            ))
+        })
+        .min_by(|left, right| {
+            let left_distance = (left.1 - submit_region_top).abs();
+            let right_distance = (right.1 - submit_region_top).abs();
+            left_distance.total_cmp(&right_distance)
+        });
 
     let Some((x, y, recognized)) = ocr_button else {
         let min_button_x = (reply_right + 12.0).max(crop.width as f32 * 0.52);
-        let candidates = doc.lines.iter()
+        let candidates = doc
+            .lines
+            .iter()
             .filter(|line| normalize_text(&line.text).contains(&normalize_text("回复")))
             .map(|line| {
                 let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
@@ -1530,11 +1643,17 @@ pub(super) fn locate_reply_submit_button(
             })
             .collect::<Vec<_>>()
             .join(" | ");
-        let ocr_lines = doc.lines.iter().map(|line| {
-            let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
-            let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
-            format!("{}@({:.0},{:.0})", line.text, center_x, center_y)
-        }).take(40).collect::<Vec<_>>().join(" | ");
+        let ocr_lines = doc
+            .lines
+            .iter()
+            .map(|line| {
+                let center_x = (line.left + line.right) * 0.5 / doc.scale_x;
+                let center_y = (line.top + line.bottom) * 0.5 / doc.scale_y;
+                format!("{}@({:.0},{:.0})", line.text, center_x, center_y)
+            })
+            .take(40)
+            .collect::<Vec<_>>()
+            .join(" | ");
         super::automation::log_event(&format!(
             "[OCR][回复提交按钮诊断] 正文右边界={reply_right:.0}，按钮搜索范围 x>={min_button_x:.0} y={submit_region_top:.0}..{submit_region_bottom:.0}；相关候选：{candidates}"
         ));
@@ -1542,7 +1661,7 @@ pub(super) fn locate_reply_submit_button(
             "[OCR][回复提交按钮诊断] OCR 全部识别行（最多 40 条）：{ocr_lines}"
         ));
         super::automation::log_event(
-            "[OCR][回复提交按钮诊断] 标注颜色：蓝=回复正文，红=按钮搜索区域，黄=包含‘回复’的普通文字，橙=精确‘回复’但位置未通过，绿=位置条件通过的按钮候选。"
+            "[OCR][回复提交按钮诊断] 标注颜色：蓝=回复正文，红=按钮搜索区域，黄=包含‘回复’的普通文字，橙=精确‘回复’但位置未通过，绿=位置条件通过的按钮候选。",
         );
         match save_reply_submit_ocr_diagnostic(
             path,
@@ -1572,11 +1691,15 @@ pub(super) fn locate_reply_submit_button(
         (y + crop.top as f32).round() as i32,
     );
     anyhow::ensure!(
-        point.0 >= 0 && point.1 >= 0
+        point.0 >= 0
+            && point.1 >= 0
             && point.0 < screenshot_width as i32
             && point.1 < screenshot_height as i32,
         "OCR 提交按钮坐标 ({}, {}) 超出截图范围 {}x{}",
-        point.0, point.1, screenshot_width, screenshot_height
+        point.0,
+        point.1,
+        screenshot_width,
+        screenshot_height
     );
     anyhow::ensure!(
         x >= reply_right + 12.0
@@ -2025,7 +2148,6 @@ pub(super) fn contains_sent_confirmation(text: &str) -> bool {
         .any(|ch| matches!(ch, '帖' | '贴' | '回'))
 }
 
-
 fn extract_account_token(text: &str) -> Option<String> {
     let at = text.find('@')?;
     let token = text[at + 1..]
@@ -2104,7 +2226,10 @@ mod tests {
         assert!(!post.account_handle.trim().is_empty());
         assert!(!post.posted_at.trim().is_empty());
         assert!(!post.post_text.trim().is_empty());
-        assert!(post.reply_point.0 < post.repost_point.0);
+        let repost_point = post
+            .repost_point
+            .expect("local OCR did not identify the repost button");
+        assert!(post.reply_point.0 < repost_point.0);
         //assert!(post.repost_point.0 < post.like_point.0);
         //assert!((post.reply_point.1 - post.like_point.1).abs() <= 8);
     }
@@ -2184,7 +2309,9 @@ mod tests {
     fn recognizes_explicit_rate_limit_messages_only() {
         assert!(contains_rate_limit("请求过于频繁，请稍后再试"));
         assert!(contains_rate_limit("Too many requests"));
-        assert!(contains_rate_limit("你已达到每日帖子上限。订阅 Plus 以获得更高上限。"));
+        assert!(contains_rate_limit(
+            "你已达到每日帖子上限。订阅 Plus 以获得更高上限。"
+        ));
         assert!(contains_rate_limit("达到每日帖子上限"));
         assert!(!contains_rate_limit("出错了，别担心，让我们再试一次"));
     }
@@ -2199,7 +2326,9 @@ mod tests {
         ));
         assert!(contains_retryable_send_error("出错了，别担心，让我们再试"));
         assert!(contains_retryable_send_error("出错了！稍后再试一次"));
-        assert!(contains_retryable_send_error("Something went wrong, please try again"));
+        assert!(contains_retryable_send_error(
+            "Something went wrong, please try again"
+        ));
         assert!(!contains_retryable_send_error("出错了，请检查网络连接"));
         assert!(!contains_retryable_send_error("你的回复已发送。"));
     }

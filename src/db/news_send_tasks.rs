@@ -27,8 +27,9 @@ pub struct NewsSendTask {
 }
 
 fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
-    connection.execute_batch(
-        r#"
+    connection
+        .execute_batch(
+            r#"
         CREATE TABLE IF NOT EXISTS news_send_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER NOT NULL,
@@ -55,8 +56,8 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
         );
         INSERT OR IGNORE INTO news_send_settings (id, target_mode) VALUES (1, 'all');
         "#,
-    )
-    .context("initialize per-platform news send task table")?;
+        )
+        .context("initialize per-platform news send task table")?;
     let has_sent_at = {
         let mut statement = connection.prepare("PRAGMA table_info(news_send_tasks)")?;
         let columns = statement
@@ -81,9 +82,13 @@ pub fn load_target_mode_blocking() -> anyhow::Result<String> {
 }
 
 pub fn save_target_mode_blocking(mode: &str) -> anyhow::Result<()> {
-    ensure!(matches!(mode, "all" | "x" | "binance"), "invalid news send target mode: {mode}");
+    ensure!(
+        matches!(mode, "all" | "x" | "binance"),
+        "invalid news send target mode: {mode}"
+    );
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
+    let transaction_trace = super::TransactionTrace::start("news_send_tasks.save_target_mode");
     let transaction = connection.unchecked_transaction()?;
     transaction.execute(
         "UPDATE news_send_settings SET target_mode = ?1,
@@ -107,6 +112,7 @@ pub fn save_target_mode_blocking(mode: &str) -> anyhow::Result<()> {
         [mode],
     )?;
     transaction.commit()?;
+    transaction_trace.commit();
     Ok(())
 }
 
@@ -253,9 +259,8 @@ pub fn ensure_tasks_for_pending_posts_blocking(
 ) -> anyhow::Result<()> {
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
-    let mut statement = connection.prepare(
-        "SELECT id FROM x_published_posts WHERE status = 'pending' ORDER BY id ASC",
-    )?;
+    let mut statement = connection
+        .prepare("SELECT id FROM x_published_posts WHERE status = 'pending' ORDER BY id ASC")?;
     let post_ids = statement
         .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -290,8 +295,9 @@ pub fn load_next_pending_by_filter_blocking(
 ) -> anyhow::Result<Option<(i64, String)>> {
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
-    Ok(connection.query_row(
-        "SELECT p.id, p.content FROM x_published_posts p
+    Ok(connection
+        .query_row(
+            "SELECT p.id, p.content FROM x_published_posts p
          JOIN news_send_tasks t ON t.post_id = p.id
          WHERE p.status = 'pending' AND t.status = 'pending'
            AND (?1 = 'all'
@@ -301,9 +307,10 @@ pub fn load_next_pending_by_filter_blocking(
              OR (?2 = 'crypto' AND t.news_id LIKE 'crypto_news:%')
              OR (?2 = 'entertainment' AND t.news_id LIKE 'entertainment_news:%'))
          ORDER BY t.id ASC LIMIT 1",
-        params![mode, filter],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional()?)
+            params![mode, filter],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
 }
 pub fn count_ready_posts_blocking(mode: &str) -> anyhow::Result<usize> {
     let connection = super::open_default_connection()?;
@@ -330,7 +337,8 @@ pub fn count_sent_posts_last_hour_blocking(mode: &str) -> anyhow::Result<u64> {
     ensure_schema(&connection)?;
     let count: i64 = connection.query_row(
         "SELECT COUNT(DISTINCT post_id) FROM news_send_tasks
-         WHERE status = 'sent' AND sent_at >= datetime('now', '+7 hours')
+         WHERE status IN ('sent', 'unknown', 'sending')
+           AND COALESCE(sent_at, updated_at) >= datetime('now', '+7 hours')
            AND (?1 = 'all'
              OR (?1 = 'x' AND platform = 'x')
              OR (?1 = 'binance' AND platform = 'binance_square'))",
@@ -344,9 +352,10 @@ pub fn seconds_since_last_send_blocking(mode: &str) -> anyhow::Result<Option<u64
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
     let age: Option<i64> = connection.query_row(
-        "SELECT CAST((julianday(datetime('now', '+8 hours')) - julianday(MAX(sent_at))) * 86400 AS INTEGER)
+        "SELECT CAST((julianday(datetime('now', '+8 hours')) -
+                      julianday(MAX(COALESCE(sent_at, updated_at)))) * 86400 AS INTEGER)
          FROM news_send_tasks
-         WHERE status = 'sent' AND sent_at IS NOT NULL
+         WHERE status IN ('sent', 'unknown', 'sending')
            AND (?1 = 'all'
              OR (?1 = 'x' AND platform = 'x')
              OR (?1 = 'binance' AND platform = 'binance_square'))",
@@ -375,7 +384,10 @@ pub fn update_task_status_blocking(
     last_error: Option<&str>,
 ) -> anyhow::Result<()> {
     ensure!(
-        matches!(status, "pending" | "sending" | "sent" | "failed" | "skipped" | "unknown"),
+        matches!(
+            status,
+            "pending" | "sending" | "sent" | "failed" | "skipped" | "unknown"
+        ),
         "invalid news send task status: {status}"
     );
     let connection = super::open_default_connection()?;

@@ -145,6 +145,47 @@ pub fn mark_last_step_completed_blocking(run_id: &str) -> anyhow::Result<()> {
     mark_completed(&connection, run_id)
 }
 
+/// 已确认发送后的完成状态写入允许等待短暂的并发写锁，避免过短超时造成状态丢失。
+pub fn mark_last_step_completed_quick_blocking(run_id: &str) -> anyhow::Result<()> {
+    use std::time::{Duration, Instant};
+
+    const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+    let started = Instant::now();
+    let result = (|| {
+        let connection = super::open_default_connection_with_busy_timeout(BUSY_TIMEOUT)?;
+        mark_completed(&connection, run_id)
+    })();
+    let elapsed = started.elapsed();
+    let database_path = super::default_database_path();
+
+    match &result {
+        Ok(()) if elapsed >= Duration::from_millis(100) => {
+            app_log::x_info!(
+                "[X助手][SQLite] 回复完成状态写入成功：run_id={}，耗时={}ms，busy_timeout={}ms，pid={}，数据库={}",
+                run_id,
+                elapsed.as_millis(),
+                BUSY_TIMEOUT.as_millis(),
+                std::process::id(),
+                database_path.display()
+            );
+        }
+        Err(error) => {
+            app_log::x_warn!(
+                "[X助手][SQLite] 回复完成状态写入失败：run_id={}，耗时={}ms，busy_timeout={}ms，pid={}，数据库={}，错误={:#}",
+                run_id,
+                elapsed.as_millis(),
+                BUSY_TIMEOUT.as_millis(),
+                std::process::id(),
+                database_path.display(),
+                error
+            );
+        }
+        _ => {}
+    }
+
+    result
+}
+
 /// 在点击 X 的提交按钮之前持久化提交意图，应用崩溃后可识别未决发送。
 pub fn mark_reply_submitting_blocking(run_id: &str) -> anyhow::Result<()> {
     let connection = super::open_default_connection()?;
@@ -164,6 +205,17 @@ pub fn mark_reply_submitting_blocking(run_id: &str) -> anyhow::Result<()> {
 /// 发送状态无法确认时留下持久化标记，禁止后续任务误判为普通未发送。
 pub fn mark_reply_uncertain_blocking(run_id: &str, reason: &str) -> anyhow::Result<()> {
     let connection = super::open_default_connection()?;
+    mark_reply_uncertain(&connection, run_id, reason)
+}
+
+/// Short-timeout variant used after a confirmed send when the completion write remains locked.
+pub fn mark_reply_uncertain_quick_blocking(run_id: &str, reason: &str) -> anyhow::Result<()> {
+    let connection =
+        super::open_default_connection_with_busy_timeout(std::time::Duration::from_millis(400))?;
+    mark_reply_uncertain(&connection, run_id, reason)
+}
+
+fn mark_reply_uncertain(connection: &Connection, run_id: &str, reason: &str) -> anyhow::Result<()> {
     let changed = connection.execute(
         "UPDATE x_assistant_reply_records
          SET send_status = 'uncertain', send_error = ?2
@@ -307,8 +359,9 @@ mod tests {
     #[test]
     fn unresolved_send_attempt_blocks_same_account_for_one_day() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE x_assistant_reply_records (
+        connection
+            .execute_batch(
+                "CREATE TABLE x_assistant_reply_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id TEXT NOT NULL UNIQUE,
                 author_name TEXT NOT NULL DEFAULT '',
@@ -324,9 +377,18 @@ mod tests {
                 send_attempted_at TEXT,
                 send_error TEXT
             );",
-        ).unwrap();
+            )
+            .unwrap();
 
-        insert_reply_record(&connection, "uncertain-1", "Alice", "@alice", "刚刚", "帖子正文").unwrap();
+        insert_reply_record(
+            &connection,
+            "uncertain-1",
+            "Alice",
+            "@alice",
+            "刚刚",
+            "帖子正文",
+        )
+        .unwrap();
         connection.execute(
             "UPDATE x_assistant_reply_records SET send_status = 'uncertain' WHERE run_id = 'uncertain-1'",
             [],
@@ -371,20 +433,24 @@ mod tests {
         assert!(replied_to_account_within_day(&connection, "@ALICE").unwrap());
         assert!(!replied_to_account_within_day(&connection, "@bob").unwrap());
 
-        let row: (String, String, String, String, bool, String) = connection.query_row(
-            "SELECT author_name, account_handle, posted_at_text, reply_text,
+        let row: (String, String, String, String, bool, String) = connection
+            .query_row(
+                "SELECT author_name, account_handle, posted_at_text, reply_text,
                     completed_last_step, send_status
              FROM x_assistant_reply_records WHERE run_id = ?1",
-            ["run-1"],
-            |row| Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-            )),
-        ).unwrap();
+                ["run-1"],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(
             row,
             (

@@ -1207,10 +1207,20 @@ fn run_visual_reply_inner(
 
     let composer = capture(&dir, &id, "02-composer", &mut screenshots)?;
 
-    // X 每日帖子上限提示会覆盖在回复弹窗顶部；必须在解析输入框、
-    // 生成回复或点击发送之前识别，避免把限流页面当作普通弹窗错误继续恢复。
-    let composer_status = ocr::recognize_document(&composer.png)?;
-    if ocr::contains_rate_limit(&composer_status.text) {
+    // stage2 OCR 已会识别地址栏和中央回复弹窗；直接复用 dialog_text 检查限流，
+    // 避免同一张截图再额外执行一次全图 OCR。非本地 OCR 模式仍保留原全图检查。
+    let compose_ocr_started = Instant::now();
+    let compose_page = if options.stage2_ocr {
+        Some(ocr::recognize_compose_reply_page(&composer.png)?)
+    } else {
+        None
+    };
+    let composer_text = if let Some(page) = compose_page.as_ref() {
+        page["dialog_text"].as_str().unwrap_or_default().to_string()
+    } else {
+        ocr::recognize_document(&composer.png)?.text
+    };
+    if ocr::contains_rate_limit(&composer_text) {
         automation::log_event(
             "[自动回复][02/03]：检测到 X 每日帖子上限提示；立即终止自动回复，不再生成或提交回复。",
         );
@@ -1218,8 +1228,8 @@ fn run_visual_reply_inner(
     }
 
     let (input_point, reply_text) = if options.stage2_ocr {
-        let ocr_started = std::time::Instant::now();
-        let compose_page = ocr::recognize_compose_reply_page(&composer.png)?;
+        let ocr_started = compose_ocr_started;
+        let compose_page = compose_page.expect("stage2 OCR page was recognized above");
 
         automation::log_event("[OCR][回复弹窗] 页面局部识别完成，正在校验页面地址和输入框");
         let mut current_url = compose_page["current_url"].as_str().map(str::to_owned);
@@ -1461,10 +1471,15 @@ fn run_visual_reply_inner(
 
     check_cancel(cancel)?;
     let pre_submit = capture(&dir, &id, "03-presubmit", &mut screenshots)?;
-    anyhow::ensure!(
-        target_region_unchanged(&typed, &pre_submit, &send_button, "弹窗中的‘回复’按钮")?,
-        "回复弹窗内容发生变化，提交按钮坐标已过期；已停止"
-    );
+    let target_unchanged =
+        target_region_unchanged(&typed, &pre_submit, &send_button, "弹窗中的‘回复’按钮")?;
+    if !target_unchanged {
+        // X 的加载动画、计数器等动态内容会导致像素差异偏高；当前截图仍会重新 OCR
+        // 正文和提交按钮，并要求坐标与旧坐标接近后才允许点击。
+        automation::log_event(
+            "[自动回复][03/03]：按钮区域像素有变化；不直接放弃本轮，改以当前截图重新核验正文和提交按钮。",
+        );
+    }
     let refreshed_button = ocr::locate_reply_submit_button(
         &pre_submit.png,
         &reply_text,
@@ -2186,11 +2201,11 @@ fn uncertain_send_error(run_id: &str, reason: impl std::fmt::Display) -> anyhow:
 fn mark_reply_completed_or_stop(run_id: &str) -> anyhow::Result<()> {
     let mut last_error = None;
     for attempt in 1..=3 {
-        match binance_tools::db::x_assistant::mark_last_step_completed_blocking(run_id) {
+        match binance_tools::db::x_assistant::mark_last_step_completed_quick_blocking(run_id) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 automation::log_event(&format!(
-                    "发送结果已确认，SQLite 完成状态写入第 {attempt}/3 次失败：{error:#}"
+                    "发送结果已确认，SQLite 完成状态快速写入第 {attempt}/3 次失败：{error:#}"
                 ));
                 last_error = Some(error);
                 if attempt < 3 {
@@ -2199,15 +2214,21 @@ fn mark_reply_completed_or_stop(run_id: &str) -> anyhow::Result<()> {
             }
         }
     }
-    Err(uncertain_send_error(
-        &run_id,
-        format!(
-            "X 已确认回复发送，但 SQLite 连续 3 次无法保存完成状态；run_id={run_id}；最后错误：{}",
-            last_error
-                .map(|error| format!("{error:#}"))
-                .unwrap_or_else(|| "未知错误".to_string())
-        ),
-    ))
+
+    let reason = format!(
+        "X 已确认回复发送，但 SQLite 连续 3 次无法保存完成状态；run_id={run_id}；最后错误：{}",
+        last_error
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "未知错误".to_string())
+    );
+    if let Err(error) =
+        binance_tools::db::x_assistant::mark_reply_uncertain_quick_blocking(run_id, &reason)
+    {
+        automation::log_event(&format!(
+            "发送已确认，快速写入 uncertain 状态仍失败；保留原 submitting 记录以阻止重复回复：{error:#}"
+        ));
+    }
+    Err(anyhow::Error::new(SendOutcomeUncertain).context(reason))
 }
 
 fn already_sent_result(
@@ -2278,6 +2299,73 @@ fn close_reply_composer_safely(
 ) -> anyhow::Result<()> {
     for attempt in 0..4 {
         check_cancel(cancel)?;
+        // OCR/视觉核验期间焦点可能被其他窗口抢走。只在重新激活并确认仍处于 X 页面后
+        // 才发送 Escape，避免按键落到其他应用，同时不因暂时失焦直接终止恢复。
+        native::activate_browser().context("关闭回复弹窗前无法重新激活浏览器")?;
+        let before_escape = capture(
+            dir,
+            id,
+            &format!("05-network-error-before-escape-{}", attempt + 1),
+            screenshots,
+        )?;
+        ensure_reply_page_route(&before_escape, "网络错误关闭回复框前")?;
+        if ocr::recognize_save_draft_confirmation(&before_escape.png)? {
+            let Some((discard_x, discard_y)) =
+                ocr::locate_discard_draft_button(&before_escape.png)?
+            else {
+                anyhow::bail!("已识别草稿确认框，但无法精确定位‘放弃’按钮；保留页面，不猜测坐标")
+            };
+            automation::log_event(&format!(
+                "[自动回复][03/03]：关闭前已发现草稿确认框，立即点击 OCR 定位的‘放弃’按钮 ({discard_x}, {discard_y})。"
+            ));
+            native::click_at_client_position(discard_x, discard_y)?;
+            wait_cancel(cancel, Duration::from_millis(900))?;
+            let after_discard = capture(
+                dir,
+                id,
+                &format!("05-network-error-discard-before-close-{}", attempt + 1),
+                screenshots,
+            )?;
+            ensure_reply_page_route(&after_discard, "立即放弃草稿后")?;
+            let after_url = ocr::recognize_current_url(&after_discard.png)?;
+            if after_url.as_deref().is_some_and(ocr::is_x_home_address) {
+                automation::log_event("[自动回复][03/03]：点击‘放弃’后已确认回到 X 首页。");
+                return Ok(());
+            }
+            anyhow::bail!(
+                "点击‘放弃’后仍未确认回到 X 首页（地址：{after_url:?}）；保留页面，不继续盲目操作"
+            );
+        }
+        if let Some((close_x, close_y)) =
+            ocr::locate_retryable_error_close_button(&before_escape.png)?
+        {
+            automation::log_event(&format!(
+                "[自动回复][03/03]：检测到 X 网络发送错误，直接点击回复弹窗关闭按钮 ({close_x}, {close_y})，不再先按 Escape。"
+            ));
+            native::click_at_client_position(close_x, close_y)?;
+            wait_cancel(cancel, Duration::from_millis(700))?;
+            let after_close = capture(
+                dir,
+                id,
+                &format!("05-network-error-close-button-{}", attempt + 1),
+                screenshots,
+            )?;
+            ensure_reply_page_route(&after_close, "点击网络错误弹窗关闭按钮后")?;
+            let after_close_url = ocr::recognize_current_url(&after_close.png)?;
+            if after_close_url
+                .as_deref()
+                .is_some_and(ocr::is_x_home_address)
+            {
+                automation::log_event(
+                    "[自动回复][03/03]：点击关闭按钮后已确认回到 X 首页；该回复保持 uncertain，不重发。",
+                );
+                return Ok(());
+            }
+            automation::log_event(&format!(
+                "[自动回复][03/03]：关闭按钮已点击，当前仍在回复路由（{after_close_url:?}）；下一步立即检查并处理草稿确认框。"
+            ));
+            continue;
+        }
         native::press_escape()?;
         wait_cancel(cancel, Duration::from_millis(900))?;
         let shot = capture(
@@ -2397,13 +2485,29 @@ fn identify_post_for_mode(
     cancel: &AtomicBool,
 ) -> anyhow::Result<VisionDecision> {
     check_cancel(cancel)?;
-    if options.stage2_ocr {
-        // X 首页偶尔会在时间线位置显示网络错误提示。此时不能继续按“无完整帖子”
-        // 处理，否则会不断跳过帖子；持续刷新直到页面恢复，停止信号随时可中断。
-        if ocr::timeline_has_reload_error(&feed.png)? {
-            automation::log_event("时间线加载异常：识别到“出错了，请重新加载”，进入页面恢复循环。");
-            loop {
-                check_cancel(cancel)?;
+    if !options.stage2_ocr {
+        return identify_post_once(options, feed, cancel);
+    }
+
+    // 一次完整 PP-OCR 同时识别帖子和页面加载错误，避免对同一截图先后执行两次整页 OCR。
+    // 若识别结果表明时间线加载错误，保留原有刷新恢复策略，再对刷新后的截图重新识别。
+    let started = std::time::Instant::now();
+    let mut reload_attempts = 0usize;
+    let local = loop {
+        check_cancel(cancel)?;
+        match ocr::identify_post_and_action_bar(&feed.png) {
+            Ok(local) => break local,
+            Err(error) if ocr::is_timeline_reload_error(&error) => {
+                reload_attempts += 1;
+                automation::log_event(&format!(
+                    "时间线加载异常：帖子识别 OCR 同时检测到加载错误，开始第 {reload_attempts} 次刷新恢复。"
+                ));
+                if reload_attempts > 1 {
+                    automation::log_event(
+                        "连续刷新后仍识别到时间线加载错误，休眠 30 秒再重试；停止信号随时可中断。",
+                    );
+                    wait_cancel(cancel, Duration::from_secs(30))?;
+                }
                 native::activate_browser()?;
                 native::press_f5()?;
                 wait_cancel(cancel, Duration::from_secs(3))?;
@@ -2419,27 +2523,10 @@ fn identify_post_for_mode(
                     image.height()
                 );
                 image.save(&feed.png)?;
-
-                if !ocr::timeline_has_reload_error(&feed.png)? {
-                    automation::log_event(
-                        "时间线加载异常已恢复：重新 OCR 未发现加载错误，继续识别帖子。",
-                    );
-                    break;
-                }
-
-                automation::log_event(
-                    "时间线刷新后仍显示加载错误，休眠 30 秒后再次刷新；可随时点击停止。",
-                );
-                wait_cancel(cancel, Duration::from_secs(30))?;
             }
+            Err(error) => return Err(error),
         }
-    }
-    if !options.stage2_ocr {
-        return identify_post_once(options, feed, cancel);
-    }
-
-    let started = std::time::Instant::now();
-    let local = ocr::identify_post_and_action_bar(&feed.png)?;
+    };
     automation::log_event(&format!(
         "[自动回复][01/03]：ppocr-rs 本地识别帖子：作者={:?}，账号={:?}，时间={:?}，正文={:?}；评论/互动栏回复坐标={:?}，耗时={} ms。",
         local.author_name,
@@ -3501,7 +3588,7 @@ fn check_cancel(cancel: &AtomicBool) -> anyhow::Result<()> {
 mod tests {
     use super::{
         Point, identity_text_matches, parse_decision, reply_target_account_matches,
-        validate_action_targets, validate_composer_input_point,
+        reply_target_identity_matches, validate_action_targets, validate_composer_input_point,
     };
 
     #[test]

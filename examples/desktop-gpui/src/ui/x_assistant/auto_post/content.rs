@@ -731,7 +731,7 @@ pub fn prepare_next_post_blocking(
 
 #[cfg(test)]
 mod tests {
-    use super::{NewsFilter, NewsKind, clean_ai_text};
+    use super::{NewsFilter, NewsKind, clean_ai_text, contains_multiple_items};
 
     #[test]
     fn cleans_wrapped_ai_output() {

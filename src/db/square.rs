@@ -389,6 +389,7 @@ pub fn confirm_square_task(
 pub fn claim_due_square_tasks(
     connection: &mut Connection,
 ) -> anyhow::Result<Vec<BinanceSquareTask>> {
+    let transaction_trace = super::TransactionTrace::start("square.claim_due_tasks");
     let transaction = connection
         .transaction()
         .context("begin claim due Binance Square tasks transaction failed")?;
@@ -467,6 +468,7 @@ pub fn claim_due_square_tasks(
     transaction
         .commit()
         .context("commit claim due Binance Square tasks transaction failed")?;
+    transaction_trace.commit();
 
     Ok(tasks)
 }

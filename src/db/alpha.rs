@@ -163,6 +163,7 @@ pub fn replace_alpha_tokens(
     connection: &mut Connection,
     tokens: &[AlphaToken],
 ) -> anyhow::Result<()> {
+    let transaction_trace = super::TransactionTrace::start("alpha.replace_tokens");
     let transaction = connection
         .transaction()
         .context("begin replace alpha tokens transaction failed")?;
@@ -222,7 +223,9 @@ pub fn replace_alpha_tokens(
 
     transaction
         .commit()
-        .context("commit replace alpha tokens transaction failed")
+        .context("commit replace alpha tokens transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn list_alpha_exchange_info(connection: &Connection) -> anyhow::Result<AlphaExchangeInfo> {
@@ -289,6 +292,7 @@ pub fn replace_alpha_exchange_info(
     connection: &mut Connection,
     info: &AlphaExchangeInfo,
 ) -> anyhow::Result<()> {
+    let transaction_trace = super::TransactionTrace::start("alpha.replace_exchange_info");
     let transaction = connection
         .transaction()
         .context("begin replace alpha exchange info transaction failed")?;
@@ -348,13 +352,16 @@ pub fn replace_alpha_exchange_info(
 
     transaction
         .commit()
-        .context("commit replace alpha exchange info transaction failed")
+        .context("commit replace alpha exchange info transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn upsert_alpha_daily_klines(
     connection: &mut Connection,
     klines: &[AlphaDailyKline],
 ) -> anyhow::Result<()> {
+    let transaction_trace = super::TransactionTrace::start("alpha.upsert_daily_klines");
     let transaction = connection
         .transaction()
         .context("begin upsert alpha klines transaction failed")?;
@@ -399,7 +406,9 @@ pub fn upsert_alpha_daily_klines(
 
     transaction
         .commit()
-        .context("commit upsert alpha klines transaction failed")
+        .context("commit upsert alpha klines transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn list_cached_alpha_usdt_daily_ma_signals(

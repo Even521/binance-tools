@@ -7,7 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub mod ai;
@@ -34,11 +34,81 @@ pub fn default_database_path() -> PathBuf {
     PathBuf::from(DEFAULT_DATABASE_PATH)
 }
 
+/// Traces explicit write transactions so long-held SQLite writer locks can be attributed.
+pub(crate) struct TransactionTrace {
+    operation: &'static str,
+    started: Instant,
+    completed: bool,
+}
+
+impl TransactionTrace {
+    pub(crate) fn start(operation: &'static str) -> Self {
+        app_log::debug!(
+            "[SQLite TX] begin operation={} pid={} database={}",
+            operation,
+            std::process::id(),
+            default_database_path().display()
+        );
+        Self {
+            operation,
+            started: Instant::now(),
+            completed: false,
+        }
+    }
+
+    pub(crate) fn commit(mut self) {
+        let elapsed = self.started.elapsed();
+        self.completed = true;
+        if elapsed >= Duration::from_millis(100) {
+            app_log::info!(
+                "[SQLite TX] committed operation={} elapsed_ms={} pid={} database={}",
+                self.operation,
+                elapsed.as_millis(),
+                std::process::id(),
+                default_database_path().display()
+            );
+        } else {
+            app_log::debug!(
+                "[SQLite TX] committed operation={} elapsed_ms={} pid={} database={}",
+                self.operation,
+                elapsed.as_millis(),
+                std::process::id(),
+                default_database_path().display()
+            );
+        }
+    }
+}
+
+impl Drop for TransactionTrace {
+    fn drop(&mut self) {
+        if !self.completed {
+            app_log::warn!(
+                "[SQLite TX] aborted operation={} elapsed_ms={} pid={} database={}",
+                self.operation,
+                self.started.elapsed().as_millis(),
+                std::process::id(),
+                default_database_path().display()
+            );
+        }
+    }
+}
+
 pub fn open_default_connection() -> anyhow::Result<Connection> {
     open_connection(default_database_path())
 }
 
+pub fn open_default_connection_with_busy_timeout(timeout: Duration) -> anyhow::Result<Connection> {
+    open_connection_with_busy_timeout(default_database_path(), timeout)
+}
+
 pub fn open_connection(path: impl AsRef<Path>) -> anyhow::Result<Connection> {
+    open_connection_with_busy_timeout(path, Duration::from_secs(10))
+}
+
+pub fn open_connection_with_busy_timeout(
+    path: impl AsRef<Path>,
+    timeout: Duration,
+) -> anyhow::Result<Connection> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -50,7 +120,7 @@ pub fn open_connection(path: impl AsRef<Path>) -> anyhow::Result<Connection> {
 
     // 多个识别/统计任务并发访问时，给短暂写锁冲突留出等待时间。
     connection
-        .busy_timeout(Duration::from_secs(10))
+        .busy_timeout(timeout)
         .context("configure SQLite busy timeout failed")?;
 
     // 每个 :memory: 连接都是独立数据库，不能套用文件数据库的 WAL/迁移缓存。
@@ -481,7 +551,7 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             version TEXT PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
         );
-        "#
+        "#,
     )?;
 
     let reply_timezone_migration_applied: bool = connection.query_row(
@@ -500,7 +570,7 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
             WHERE completed_at IS NOT NULL;
             INSERT INTO app_schema_migrations (version)
             VALUES ('x_reply_timestamps_beijing_v1');
-            "#
+            "#,
         )?;
     }
 
@@ -516,8 +586,18 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
         "send_attempt_count",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
-    add_column_if_missing(connection, "x_assistant_reply_records", "send_attempted_at", "TEXT")?;
-    add_column_if_missing(connection, "x_assistant_reply_records", "send_error", "TEXT")?;
+    add_column_if_missing(
+        connection,
+        "x_assistant_reply_records",
+        "send_attempted_at",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "x_assistant_reply_records",
+        "send_error",
+        "TEXT",
+    )?;
 
     // 老数据库的表结构不会因 CREATE TABLE IF NOT EXISTS 自动更新 DEFAULT。
     // 旧默认值可能仍是 UTC；如果创建时间与后续显式写入的北京时间相差约 8 小时，
@@ -545,7 +625,7 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
 
             INSERT INTO app_schema_migrations (version)
             VALUES ('x_reply_timestamps_beijing_v2');
-            "#
+            "#,
         )?;
     }
 
@@ -557,7 +637,7 @@ fn run_migrations(connection: &Connection) -> anyhow::Result<()> {
          UPDATE x_assistant_reply_records
          SET send_status = 'uncertain',
              send_error = COALESCE(send_error, '程序上次退出时发送状态尚未核验')
-         WHERE completed_last_step = 0 AND send_status IN ('pending', 'submitting');"
+         WHERE completed_last_step = 0 AND send_status IN ('pending', 'submitting');",
     )?;
 
     add_column_if_missing(connection, "binance_square_tasks", "last_sent_at", "TEXT")?;

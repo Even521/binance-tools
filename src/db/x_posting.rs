@@ -473,6 +473,7 @@ pub fn reserve_post_blocking(
 
     let mut connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
+    let transaction_trace = super::TransactionTrace::start("x_posting.reserve_post");
     let tx = connection.transaction()?;
 
     let active_duplicate: bool = tx.query_row(
@@ -535,6 +536,7 @@ pub fn reserve_post_blocking(
     };
 
     tx.commit()?;
+    transaction_trace.commit();
     Ok(id)
 }
 
@@ -738,22 +740,23 @@ pub fn count_posts_last_hour_blocking() -> anyhow::Result<u64> {
     ensure_schema(&connection)?;
     let count: i64 = connection.query_row(
         "SELECT COUNT(*) FROM x_published_posts
-         WHERE status = 'published'
-           AND published_at >= datetime('now', '+7 hours')",
+         WHERE status IN ('published', 'submitting', 'unknown')
+           AND COALESCE(published_at, updated_at) >= datetime('now', '+7 hours')",
         [],
         |row| row.get(0),
     )?;
     Ok(count.max(0) as u64)
 }
 
-/// Age in seconds of the most recently confirmed published post.
+/// Age in seconds of the most recent confirmed post or unresolved submission attempt.
 pub fn seconds_since_last_post_blocking() -> anyhow::Result<Option<u64>> {
     let connection = super::open_default_connection()?;
     ensure_schema(&connection)?;
     let age: Option<i64> = connection.query_row(
-        "SELECT CAST(strftime('%s', 'now', '+8 hours') - strftime('%s', MAX(published_at)) AS INTEGER)
+        "SELECT CAST(strftime('%s', 'now', '+8 hours') -
+                    strftime('%s', MAX(COALESCE(published_at, updated_at))) AS INTEGER)
          FROM x_published_posts
-         WHERE status = 'published' AND published_at IS NOT NULL",
+         WHERE status IN ('published', 'submitting', 'unknown')",
         [],
         |row| row.get(0),
     )?;

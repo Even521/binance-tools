@@ -6,8 +6,8 @@ use crate::binance::{
     vision::VisionKline,
 };
 use anyhow::Context;
-use rusqlite::{Connection, OptionalExtension, params};
 use chrono::{Datelike, Duration as ChronoDuration, Months};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     sync::{
         Arc,
@@ -100,7 +100,8 @@ pub fn load_or_fetch_usdt_daily_ma_signals_blocking(
             .checked_add_months(Months::new(1))
             .context("calculate next archive month failed")?;
         let release_date = first_monday_of_month(next_month);
-        let monthly_available = month < current_month && today >= release_date + ChronoDuration::days(2);
+        let monthly_available =
+            month < current_month && today >= release_date + ChronoDuration::days(2);
 
         if monthly_available {
             let period = month.format("%Y-%m").to_string();
@@ -167,29 +168,31 @@ pub fn load_or_fetch_usdt_daily_ma_signals_blocking(
                 let next_job = &next_job;
                 let stop_workers = &stop_workers;
 
-                scope.spawn(move || loop {
-                    if stop_workers.load(AtomicOrdering::Acquire) {
-                        break;
-                    }
-                    let index = next_job.fetch_add(1, AtomicOrdering::Relaxed);
-                    let Some(job) = jobs.get(index).cloned() else {
-                        break;
-                    };
-
-                    let result = crate::binance::spot_archive::download_spot_daily_klines_zip(
-                        &client,
-                        &job.symbol,
-                        job.archive_type,
-                        &job.period,
-                    );
-                    if let Err(error) = &result {
-                        let message = format!("{:#}", error);
-                        if message.contains("429") || message.contains("418") {
-                            stop_workers.store(true, AtomicOrdering::Release);
+                scope.spawn(move || {
+                    loop {
+                        if stop_workers.load(AtomicOrdering::Acquire) {
+                            break;
                         }
-                    }
-                    if sender.send((job, result)).is_err() {
-                        break;
+                        let index = next_job.fetch_add(1, AtomicOrdering::Relaxed);
+                        let Some(job) = jobs.get(index).cloned() else {
+                            break;
+                        };
+
+                        let result = crate::binance::spot_archive::download_spot_daily_klines_zip(
+                            &client,
+                            &job.symbol,
+                            job.archive_type,
+                            &job.period,
+                        );
+                        if let Err(error) = &result {
+                            let message = format!("{:#}", error);
+                            if message.contains("429") || message.contains("418") {
+                                stop_workers.store(true, AtomicOrdering::Release);
+                            }
+                        }
+                        if sender.send((job, result)).is_err() {
+                            break;
+                        }
                     }
                 });
             }
@@ -215,11 +218,8 @@ pub fn load_or_fetch_usdt_daily_ma_signals_blocking(
                             );
                             continue;
                         }
-                        if let Err(error) = mark_spot_archive_import(
-                            &connection,
-                            &job,
-                            "imported",
-                        ) {
+                        if let Err(error) = mark_spot_archive_import(&connection, &job, "imported")
+                        {
                             failed_files += 1;
                             app_log::error!(
                                 "[Binance][现货] ZIP 导入状态写入失败：symbol={} type={} period={} error={:#}",
@@ -292,7 +292,8 @@ pub fn load_or_fetch_usdt_daily_ma_signals_blocking(
         );
 
         if let Some(error) = rate_limit_error {
-            return Err(error).context("Binance public data archive rate limit stopped this import");
+            return Err(error)
+                .context("Binance public data archive rate limit stopped this import");
         }
     } else {
         app_log::info!(
@@ -337,10 +338,7 @@ fn should_download_spot_archive(
     }
 }
 
-fn should_remember_missing_archive(
-    job: &SpotDailyArchiveJob,
-    today: chrono::NaiveDate,
-) -> bool {
+fn should_remember_missing_archive(job: &SpotDailyArchiveJob, today: chrono::NaiveDate) -> bool {
     if job.archive_type == "monthly" {
         let Ok(month_start) =
             chrono::NaiveDate::parse_from_str(&format!("{}-01", job.period), "%Y-%m-%d")
@@ -381,8 +379,8 @@ fn mark_spot_archive_import(
 }
 
 /// Load up to 121 closed daily candles for every cached USDT spot symbol in one SQLite query.
-pub fn load_cached_usdt_daily_klines_blocking(
-) -> anyhow::Result<std::collections::HashMap<String, Vec<SpotDailyKline>>> {
+pub fn load_cached_usdt_daily_klines_blocking()
+-> anyhow::Result<std::collections::HashMap<String, Vec<SpotDailyKline>>> {
     let connection = super::open_default_connection()?;
     let now = current_time_millis();
     let mut statement = connection.prepare(
@@ -399,13 +397,19 @@ pub fn load_cached_usdt_daily_klines_blocking(
         FROM ranked
         WHERE rn <= 121
         ORDER BY symbol, open_time
-        "#
+        "#,
     )?;
     let rows = statement.query_map([now], |row| {
         Ok(SpotDailyKline {
-            symbol: row.get(0)?, interval: row.get(1)?, open_time: row.get(2)?,
-            open_price: row.get(3)?, high_price: row.get(4)?, low_price: row.get(5)?,
-            close_price: row.get(6)?, volume: row.get(7)?, close_time: row.get(8)?,
+            symbol: row.get(0)?,
+            interval: row.get(1)?,
+            open_time: row.get(2)?,
+            open_price: row.get(3)?,
+            high_price: row.get(4)?,
+            low_price: row.get(5)?,
+            close_price: row.get(6)?,
+            volume: row.get(7)?,
+            close_time: row.get(8)?,
         })
     })?;
     let mut result: std::collections::HashMap<String, Vec<SpotDailyKline>> =
@@ -417,10 +421,9 @@ pub fn load_cached_usdt_daily_klines_blocking(
     Ok(result)
 }
 
-
 /// Load up to 320 closed daily candles for the spot backtest in one SQLite query.
-pub fn load_cached_usdt_daily_klines_for_backtest_blocking(
-) -> anyhow::Result<std::collections::HashMap<String, Vec<SpotDailyKline>>> {
+pub fn load_cached_usdt_daily_klines_for_backtest_blocking()
+-> anyhow::Result<std::collections::HashMap<String, Vec<SpotDailyKline>>> {
     let connection = super::open_default_connection()?;
     let now = current_time_millis();
     let mut statement = connection.prepare(
@@ -441,9 +444,15 @@ pub fn load_cached_usdt_daily_klines_for_backtest_blocking(
     )?;
     let rows = statement.query_map([now], |row| {
         Ok(SpotDailyKline {
-            symbol: row.get(0)?, interval: row.get(1)?, open_time: row.get(2)?,
-            open_price: row.get(3)?, high_price: row.get(4)?, low_price: row.get(5)?,
-            close_price: row.get(6)?, volume: row.get(7)?, close_time: row.get(8)?,
+            symbol: row.get(0)?,
+            interval: row.get(1)?,
+            open_time: row.get(2)?,
+            open_price: row.get(3)?,
+            high_price: row.get(4)?,
+            low_price: row.get(5)?,
+            close_price: row.get(6)?,
+            volume: row.get(7)?,
+            close_time: row.get(8)?,
         })
     })?;
     let mut result: std::collections::HashMap<String, Vec<SpotDailyKline>> =
@@ -487,9 +496,8 @@ pub fn load_or_fetch_spot_daily_klines_blocking(
         let next_month = month
             .checked_add_months(Months::new(1))
             .context("calculate next single-symbol archive month failed")?;
-        let monthly_available =
-            month < current_month
-                && today >= first_monday_of_month(next_month) + ChronoDuration::days(2);
+        let monthly_available = month < current_month
+            && today >= first_monday_of_month(next_month) + ChronoDuration::days(2);
 
         if monthly_available {
             let job = SpotDailyArchiveJob {
@@ -616,6 +624,7 @@ pub fn replace_spot_symbols(
     connection: &mut Connection,
     symbols: &[SpotSymbolInfo],
 ) -> anyhow::Result<()> {
+    let transaction_trace = super::TransactionTrace::start("spot.replace_symbols");
     let transaction = connection
         .transaction()
         .context("begin replace spot symbols transaction failed")?;
@@ -663,7 +672,9 @@ pub fn replace_spot_symbols(
 
     transaction
         .commit()
-        .context("commit replace spot symbols transaction failed")
+        .context("commit replace spot symbols transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn upsert_spot_daily_klines(
@@ -671,6 +682,7 @@ pub fn upsert_spot_daily_klines(
     klines: &[SpotDailyKline],
 ) -> anyhow::Result<()> {
     let table = SPOT_KLINES_1D_TABLE;
+    let transaction_trace = super::TransactionTrace::start("spot.upsert_daily_klines");
     let transaction = connection
         .transaction()
         .context("begin upsert spot klines transaction failed")?;
@@ -723,7 +735,9 @@ pub fn upsert_spot_daily_klines(
 
     transaction
         .commit()
-        .context("commit upsert spot klines transaction failed")
+        .context("commit upsert spot klines transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn upsert_spot_vision_klines(
@@ -735,6 +749,7 @@ pub fn upsert_spot_vision_klines(
     };
     let table = backtest_kline_table_for_interval(&first.interval);
     let conflict_target = backtest_kline_conflict_target_for_interval(&first.interval);
+    let transaction_trace = super::TransactionTrace::start("spot.upsert_vision_klines");
     let transaction = connection
         .transaction()
         .context("begin upsert spot vision klines transaction failed")?;
@@ -787,7 +802,9 @@ pub fn upsert_spot_vision_klines(
 
     transaction
         .commit()
-        .context("commit upsert spot vision klines transaction failed")
+        .context("commit upsert spot vision klines transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn count_spot_klines_in_range(
@@ -1007,7 +1024,7 @@ pub fn list_usdt_symbols_missing_daily_klines(
                     OR unfinished.symbol IS NOT NULL
                 )
             ORDER BY s.symbol
-            "#
+            "#,
         )
         .context("prepare missing USDT daily kline SQL failed")?;
 

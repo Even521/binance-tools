@@ -8,10 +8,6 @@
     "url": "https://rss.odaily.news/rss/newsflash"
   },
   {
-    "name": "BlockBeats-快讯",
-    "url": "https://api.theblockbeats.news/v2/rss/newsflash"
-  },
-  {
     "name": "ChainCatcher-链捕手",
     "url": "https://www.chaincatcher.com/rss/clist"
   }

@@ -100,6 +100,7 @@ pub fn replace_market_products(
     connection: &mut Connection,
     products: &[MarketProduct],
 ) -> anyhow::Result<()> {
+    let transaction_trace = super::TransactionTrace::start("market.replace_products");
     let transaction = connection
         .transaction()
         .context("begin replace market products transaction failed")?;
@@ -174,7 +175,9 @@ pub fn replace_market_products(
 
     transaction
         .commit()
-        .context("commit replace market products transaction failed")
+        .context("commit replace market products transaction failed")?;
+    transaction_trace.commit();
+    Ok(())
 }
 
 pub fn is_market_products_cache_fresh(
