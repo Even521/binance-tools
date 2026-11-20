@@ -14,17 +14,36 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex,
 };
-use spot_ai_analysis::{AnalysisResult, BacktestCandle, BacktestResult, DailyKlineSnapshot, DailyMaSnapshot, MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt, run_backtest};
-use std::{cmp::Ordering, collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
+use spot_ai_analysis::{
+    AnalysisResult, BacktestCandle, BacktestResult, DailyKlineSnapshot, DailyMaSnapshot,
+    MarketSentiment, MarketSnapshot, analyze_market_with_sentiment, build_report_prompt,
+    run_backtest,
+};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SpotAiView { QuantSelection, Backtest }
+enum SpotAiView {
+    QuantSelection,
+    Backtest,
+}
 
 #[derive(Clone, Copy, Debug)]
-enum SpotLoadMode { Cache, Sync, Refresh }
+enum SpotLoadMode {
+    Cache,
+    Sync,
+    Refresh,
+}
 
 pub enum SpotAiAnalysisEvent {
-    AnalyzeWithAi { prompt: String, display_content: String },
+    AnalyzeWithAi {
+        prompt: String,
+        display_content: String,
+    },
     OpenKline(String),
 }
 
@@ -46,11 +65,9 @@ struct SpotAiAnalysisRow {
     basis: String,
     ma120_average_price: Option<f64>,
     ma120_difference_percent: Option<f64>,
-    ma120_samples: usize,
 }
 
-impl SpotAiAnalysisRow {
-}
+impl SpotAiAnalysisRow {}
 
 pub struct SpotAiAnalysisPage {
     view: SpotAiView,
@@ -121,58 +138,120 @@ impl SpotAiAnalysisPage {
     }
 
     fn load_data(&mut self, mode: SpotLoadMode, cx: &mut Context<Self>) {
-        if self.loading { return; }
+        if self.loading {
+            return;
+        }
         self.loading = true;
         self.error = None;
         cx.notify();
         self._load_task = cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let products = match mode {
-                    SpotLoadMode::Cache => {
-                        let cached = binance_tools::db::market::load_cached_market_products_blocking()?;
-                        if cached.is_empty() { binance_tools::db::market::load_or_fetch_market_products_blocking()? } else { cached }
-                    }
-                    SpotLoadMode::Sync => binance_tools::db::market::load_or_fetch_market_products_blocking()?,
-                    SpotLoadMode::Refresh => binance_tools::db::market::refresh_market_products_blocking()?,
-                };
-                let cached_ma = binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30).unwrap_or_default();
-                let cached_ma120 = if matches!(mode, SpotLoadMode::Sync) {
-                    match binance_tools::db::spot::load_or_fetch_usdt_daily_ma_signals_blocking(BinanceSettings::production(), 120) {
-                        Ok(signals) => signals,
-                        Err(error) => {
-                            app_log::warn!("[现货AI分析] MA120 同步失败，使用本地缓存 error={:#}", error);
-                            binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120).unwrap_or_default()
+            let result = cx
+                .background_spawn(async move {
+                    let products = match mode {
+                        SpotLoadMode::Cache => {
+                            let cached =
+                                binance_tools::db::market::load_cached_market_products_blocking()?;
+                            if cached.is_empty() {
+                                binance_tools::db::market::load_or_fetch_market_products_blocking()?
+                            } else {
+                                cached
+                            }
                         }
-                    }
-                } else { binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120).unwrap_or_default() };
-                let cached_daily = binance_tools::db::spot::load_cached_usdt_daily_klines_blocking().unwrap_or_default();
-                let sentiment = if matches!(mode, SpotLoadMode::Cache) { None } else { fetch_cmc_sentiment().ok() };
-                let rows = build_analysis_rows(products, &cached_ma, &cached_ma120, &cached_daily, sentiment.as_ref());
-                Ok::<_, anyhow::Error>((rows, sentiment))
-            }).await;
+                        SpotLoadMode::Sync => {
+                            binance_tools::db::market::load_or_fetch_market_products_blocking()?
+                        }
+                        SpotLoadMode::Refresh => {
+                            binance_tools::db::market::refresh_market_products_blocking()?
+                        }
+                    };
+                    let cached_ma =
+                        binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(30)
+                            .unwrap_or_default();
+                    let cached_ma120 = if matches!(mode, SpotLoadMode::Sync) {
+                        match binance_tools::db::spot::load_or_fetch_usdt_daily_ma_signals_blocking(
+                            BinanceSettings::production(),
+                            120,
+                        ) {
+                            Ok(signals) => signals,
+                            Err(error) => {
+                                app_log::warn!(
+                                    "[现货AI分析] MA120 同步失败，使用本地缓存 error={:#}",
+                                    error
+                                );
+                                binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(
+                                    120,
+                                )
+                                .unwrap_or_default()
+                            }
+                        }
+                    } else {
+                        binance_tools::db::spot::load_cached_usdt_daily_ma_signals_blocking(120)
+                            .unwrap_or_default()
+                    };
+                    let cached_daily =
+                        binance_tools::db::spot::load_cached_usdt_daily_klines_blocking()
+                            .unwrap_or_default();
+                    let sentiment = if matches!(mode, SpotLoadMode::Cache) {
+                        None
+                    } else {
+                        fetch_cmc_sentiment().ok()
+                    };
+                    let rows = build_analysis_rows(
+                        products,
+                        &cached_ma,
+                        &cached_ma120,
+                        &cached_daily,
+                        sentiment.as_ref(),
+                    );
+                    Ok::<_, anyhow::Error>((rows, sentiment))
+                })
+                .await;
             _ = this.update(cx, |this, cx| {
                 this.loading = false;
                 match result {
                     Ok((rows, sentiment)) => {
                         this.scanned_count = rows.len();
-                        if this.selected_symbol.as_ref().map_or(true, |symbol| !rows.iter().any(|row| &row.product.symbol == symbol)) {
-                            this.selected_symbol = rows.first().map(|row| row.product.symbol.clone());
+                        if this.selected_symbol.as_ref().map_or(true, |symbol| {
+                            !rows.iter().any(|row| &row.product.symbol == symbol)
+                        }) {
+                            this.selected_symbol =
+                                rows.first().map(|row| row.product.symbol.clone());
                         }
                         this.rows = rows;
                         if let Some(s) = sentiment.as_ref() {
-                            app_log::info!("[现货AI分析] 恐惧与贪婪指数={} 分类={} 更新时间={}", s.value, s.classification, s.update_time);
+                            app_log::info!(
+                                "[现货AI分析] 恐惧与贪婪指数={} 分类={} 更新时间={}",
+                                s.value,
+                                s.classification,
+                                s.update_time
+                            );
                         }
                         this.refresh_visible_rows(cx);
-                        app_log::info!("[现货AI分析] 数据加载完成 mode={:?} rows={}", mode, this.scanned_count);
+                        app_log::info!(
+                            "[现货AI分析] 数据加载完成 mode={:?} rows={}",
+                            mode,
+                            this.scanned_count
+                        );
                     }
-                    Err(err) => { this.error = Some(format!("{:#}", err)); app_log::error!("[现货AI分析] 数据加载失败 mode={:?} error={:#}", mode, err); }
+                    Err(err) => {
+                        this.error = Some(format!("{:#}", err));
+                        app_log::error!(
+                            "[现货AI分析] 数据加载失败 mode={:?} error={:#}",
+                            mode,
+                            err
+                        );
+                    }
                 }
                 cx.notify();
             });
         });
     }
-    fn sync_data(&mut self, cx: &mut Context<Self>) { self.load_data(SpotLoadMode::Sync, cx); }
-    fn refresh_data(&mut self, cx: &mut Context<Self>) { self.load_data(SpotLoadMode::Refresh, cx); }
+    fn sync_data(&mut self, cx: &mut Context<Self>) {
+        self.load_data(SpotLoadMode::Sync, cx);
+    }
+    fn refresh_data(&mut self, cx: &mut Context<Self>) {
+        self.load_data(SpotLoadMode::Refresh, cx);
+    }
 
     fn select_symbol(&mut self, symbol: String, cx: &mut Context<Self>) {
         self.selected_symbol = Some(symbol);
@@ -199,7 +278,9 @@ impl SpotAiAnalysisPage {
                     || row.product.asset_name.to_lowercase().contains(&query);
                 let matches_ma120 = match ma120_filter.as_str() {
                     "线上" => row.ma120_difference_percent.is_some_and(|v| v > 1.0),
-                    "趋近" => row.ma120_difference_percent.is_some_and(|v| (-1.0..=1.0).contains(&v)),
+                    "趋近" => row
+                        .ma120_difference_percent
+                        .is_some_and(|v| (-1.0..=1.0).contains(&v)),
                     "线下" => row.ma120_difference_percent.is_some_and(|v| v < -1.0),
                     _ => true,
                 };
@@ -241,7 +322,11 @@ impl SpotAiAnalysisPage {
                 .flex_1()
                 .justify_center()
                 .items_center()
-                .child(div().text_color(palette::muted(cx.theme())).child("选择一个交易对查看研究摘要"))
+                .child(
+                    div()
+                        .text_color(palette::muted(cx.theme()))
+                        .child("选择一个交易对查看研究摘要"),
+                )
                 .into_any_element();
         };
 
@@ -411,8 +496,21 @@ impl SpotAiAnalysisPage {
                         h_flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child(format!("当前显示 {} 个 / 共 {} 个候选币种", visible_count, selected_count)))
-                            .child(div().text_size(px(11.)).text_color(palette::muted(theme)).child("1–7 天波段 · 按综合评分排序")),
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(palette::muted(theme))
+                                    .child(format!(
+                                        "当前显示 {} 个 / 共 {} 个候选币种",
+                                        visible_count, selected_count
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(palette::muted(theme))
+                                    .child("1–7 天波段 · 按综合评分排序"),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -445,20 +543,47 @@ impl SpotAiAnalysisPage {
                                                 .border_1()
                                                 .border_color(palette::border(theme))
                                                 .shadow_lg()
-                                                .children(["全部", "线上", "趋近", "线下"].into_iter().map(|filter| {
-                                                    let selected = self.ma120_filter == filter;
-                                                    Button::new(SharedString::from(format!("spot-ai-ma120-option-{filter}")))
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .w_full()
-                                                        .label(filter)
-                                                        .when(selected, |button| button.bg(theme.primary.opacity(0.14)).text_color(palette::text_strong(theme)))
-                                                        .on_click(cx.listener(move |this, _, _, cx| this.set_ma120_filter(filter.to_string(), cx)))
-                                                })),
+                                                .children(
+                                                    ["全部", "线上", "趋近", "线下"]
+                                                        .into_iter()
+                                                        .map(|filter| {
+                                                            let selected =
+                                                                self.ma120_filter == filter;
+                                                            Button::new(SharedString::from(
+                                                                format!(
+                                                                    "spot-ai-ma120-option-{filter}"
+                                                                ),
+                                                            ))
+                                                            .ghost()
+                                                            .xsmall()
+                                                            .w_full()
+                                                            .label(filter)
+                                                            .when(selected, |button| {
+                                                                button
+                                                                    .bg(theme.primary.opacity(0.14))
+                                                                    .text_color(
+                                                                        palette::text_strong(theme),
+                                                                    )
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    this.set_ma120_filter(
+                                                                        filter.to_string(),
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            ))
+                                                        }),
+                                                ),
                                         )
                                     }),
                             )
-                            .child(div().w(px(280.)).max_w(px(340.)).child(Input::new(&self.search_input).small().cleanable(true))),
+                            .child(
+                                div()
+                                    .w(px(280.))
+                                    .max_w(px(340.))
+                                    .child(Input::new(&self.search_input).small().cleanable(true)),
+                            ),
                     ),
             )
             .child(
@@ -494,7 +619,9 @@ impl SpotAiAnalysisPage {
     }
 
     fn run_backtest(&mut self, cx: &mut Context<Self>) {
-        if self.backtest_loading { return; }
+        if self.backtest_loading {
+            return;
+        }
         self.backtest_loading = true;
         self.error = None;
         cx.notify();
@@ -564,22 +691,83 @@ impl SpotAiAnalysisPage {
                 .child("V2 六因子横截面排名 · 每 3 日调仓 · 下一日执行并持有 3 根日线 · 前 5 名等权 · 往返成本估算 0.30% · BTC 买入持有基准"));
         if let Some(result) = result {
             view = view
-                .child(h_flex().gap_2()
-                    .child(detail_stat_colored("策略净收益", format!("{:+.2}%", result.total_return_percent), change_color(Some(result.total_return_percent), theme), theme))
-                    .child(detail_stat_colored("BTC 基准", format!("{:+.2}%", result.benchmark_return_percent), change_color(Some(result.benchmark_return_percent), theme), theme))
-                    .child(detail_stat_colored("最大回撤", format!("{:.2}%", result.max_drawdown_percent), theme.danger, theme))
-                    .child(detail_stat("胜率", format!("{:.1}%", result.win_rate_percent), theme))
-                    .child(detail_stat("Profit Factor", if result.profit_factor.is_finite() { format!("{:.2}", result.profit_factor) } else { "∞".into() }, theme))
-                    .child(detail_stat("Sharpe Ratio", format!("{:.2}", result.sharpe_ratio), theme))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(detail_stat_colored(
+                            "策略净收益",
+                            format!("{:+.2}%", result.total_return_percent),
+                            change_color(Some(result.total_return_percent), theme),
+                            theme,
+                        ))
+                        .child(detail_stat_colored(
+                            "BTC 基准",
+                            format!("{:+.2}%", result.benchmark_return_percent),
+                            change_color(Some(result.benchmark_return_percent), theme),
+                            theme,
+                        ))
+                        .child(detail_stat_colored(
+                            "最大回撤",
+                            format!("{:.2}%", result.max_drawdown_percent),
+                            theme.danger,
+                            theme,
+                        ))
+                        .child(detail_stat(
+                            "胜率",
+                            format!("{:.1}%", result.win_rate_percent),
+                            theme,
+                        ))
+                        .child(detail_stat(
+                            "Profit Factor",
+                            if result.profit_factor.is_finite() {
+                                format!("{:.2}", result.profit_factor)
+                            } else {
+                                "∞".into()
+                            },
+                            theme,
+                        ))
+                        .child(detail_stat(
+                            "Sharpe Ratio",
+                            format!("{:.2}", result.sharpe_ratio),
+                            theme,
+                        )),
                 )
-                .child(div().text_size(px(11.)).text_color(palette::muted(theme))
-                    .child(format!("区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
-                        result.start_date, result.end_date, result.data_symbols, result.points.len(), result.selected_days)))
-                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("账户资金曲线（柱形趋势）"))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(palette::muted(theme))
+                        .child(format!(
+                            "区间 {} 至 {} · 数据币种 {} · 评估日 {} · 有持仓日 {}",
+                            result.start_date,
+                            result.end_date,
+                            result.data_symbols,
+                            result.points.len(),
+                            result.selected_days
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_semibold()
+                        .text_color(palette::text_strong(theme))
+                        .child("账户资金曲线（柱形趋势）"),
+                )
                 .child(render_backtest_bars(&result.points, false, theme))
-                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("BTC 基准曲线"))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_semibold()
+                        .text_color(palette::text_strong(theme))
+                        .child("BTC 基准曲线"),
+                )
                 .child(render_backtest_bars(&result.points, true, theme))
-                .child(div().text_size(px(12.)).font_semibold().text_color(palette::text_strong(theme)).child("策略回撤"))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_semibold()
+                        .text_color(palette::text_strong(theme))
+                        .child("策略回撤"),
+                )
                 .child(render_drawdown_bars(&result.points, theme));
         } else {
             view = view
@@ -590,7 +778,6 @@ impl SpotAiAnalysisPage {
         }
         view.into_any_element()
     }
-
 }
 
 impl EventEmitter<SpotAiAnalysisEvent> for SpotAiAnalysisPage {}
@@ -691,26 +878,65 @@ impl Render for SpotAiAnalysisPage {
     }
 }
 
-fn render_backtest_bars(points: &[spot_ai_analysis::BacktestPoint], benchmark: bool, theme: &gpui_component::Theme) -> AnyElement {
-    if points.is_empty() { return div().child("暂无回测数据").into_any_element(); }
+fn render_backtest_bars(
+    points: &[spot_ai_analysis::BacktestPoint],
+    benchmark: bool,
+    theme: &gpui_component::Theme,
+) -> AnyElement {
+    if points.is_empty() {
+        return div().child("暂无回测数据").into_any_element();
+    }
     let stride = (points.len() / 60).max(1);
-    let values = points.iter().step_by(stride).map(|p| if benchmark { p.benchmark } else { p.equity }).collect::<Vec<_>>();
+    let values = points
+        .iter()
+        .step_by(stride)
+        .map(|p| if benchmark { p.benchmark } else { p.equity })
+        .collect::<Vec<_>>();
     let min = values.iter().copied().fold(f64::INFINITY, f64::min);
     let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = (max - min).max(1.0);
-    h_flex().w_full().h(px(150.)).items_end().gap(px(2.)).children(values.into_iter().map(|value| {
-        let height = (18.0 + (value - min) / range * 112.0) as f32;
-        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.))
-            .bg((if benchmark { theme.primary } else { theme.success }).opacity(0.78))
-    })).into_any_element()
+    h_flex()
+        .w_full()
+        .h(px(150.))
+        .items_end()
+        .gap(px(2.))
+        .children(values.into_iter().map(|value| {
+            let height = (18.0 + (value - min) / range * 112.0) as f32;
+            div()
+                .flex_1()
+                .min_w(px(1.))
+                .h(px(height))
+                .rounded(px(2.))
+                .bg((if benchmark {
+                    theme.primary
+                } else {
+                    theme.success
+                })
+                .opacity(0.78))
+        }))
+        .into_any_element()
 }
 
-fn render_drawdown_bars(points: &[spot_ai_analysis::BacktestPoint], theme: &gpui_component::Theme) -> AnyElement {
+fn render_drawdown_bars(
+    points: &[spot_ai_analysis::BacktestPoint],
+    theme: &gpui_component::Theme,
+) -> AnyElement {
     let stride = (points.len() / 60).max(1);
-    h_flex().w_full().h(px(90.)).items_end().gap(px(2.)).children(points.iter().step_by(stride).map(|point| {
-        let height = (point.drawdown_percent.abs().min(100.0) / 100.0 * 78.0).max(2.0) as f32;
-        div().flex_1().min_w(px(1.)).h(px(height)).rounded(px(2.)).bg(theme.danger.opacity(0.78))
-    })).into_any_element()
+    h_flex()
+        .w_full()
+        .h(px(90.))
+        .items_end()
+        .gap(px(2.))
+        .children(points.iter().step_by(stride).map(|point| {
+            let height = (point.drawdown_percent.abs().min(100.0) / 100.0 * 78.0).max(2.0) as f32;
+            div()
+                .flex_1()
+                .min_w(px(1.))
+                .h(px(height))
+                .rounded(px(2.))
+                .bg(theme.danger.opacity(0.78))
+        }))
+        .into_any_element()
 }
 
 fn build_analysis_rows(
@@ -720,71 +946,138 @@ fn build_analysis_rows(
     cached_daily: &HashMap<String, Vec<binance_tools::binance::spot::SpotDailyKline>>,
     sentiment: Option<&MarketSentiment>,
 ) -> Vec<SpotAiAnalysisRow> {
-    let inputs = products.iter().map(|p| MarketSnapshot {
-        symbol:p.symbol.clone(), base_asset:p.base_asset.clone(), asset_name:p.asset_name.clone(),
-        quote_asset:p.quote_asset.clone(), is_trading:p.is_trading, is_etf:p.is_etf,
-        price_change_percent:p.price_change_percent, quote_volume:p.quote_volume,
-        last_price:p.last_price, high_price:p.high_price, low_price:p.low_price, volume:p.volume,
-        daily_klines: cached_daily.get(&p.symbol).into_iter().flatten().map(|k| DailyKlineSnapshot {
-            high:k.high_price, low:k.low_price, close:k.close_price, quote_turnover:k.close_price*k.volume,
-        }).collect(),
-    }).collect::<Vec<_>>();
-    let ma = cached_ma.iter().map(|s| DailyMaSnapshot {
-        symbol:s.symbol.clone(), difference_percent:s.difference_percent, samples:s.samples,
-    }).collect::<Vec<_>>();
-    let ma120 = cached_ma120.iter()
+    let inputs = products
+        .iter()
+        .map(|p| MarketSnapshot {
+            symbol: p.symbol.clone(),
+            base_asset: p.base_asset.clone(),
+            asset_name: p.asset_name.clone(),
+            quote_asset: p.quote_asset.clone(),
+            is_trading: p.is_trading,
+            is_etf: p.is_etf,
+            price_change_percent: p.price_change_percent,
+            quote_volume: p.quote_volume,
+            last_price: p.last_price,
+            high_price: p.high_price,
+            low_price: p.low_price,
+            volume: p.volume,
+            daily_klines: cached_daily
+                .get(&p.symbol)
+                .into_iter()
+                .flatten()
+                .map(|k| DailyKlineSnapshot {
+                    high: k.high_price,
+                    low: k.low_price,
+                    close: k.close_price,
+                    quote_turnover: k.close_price * k.volume,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let ma = cached_ma
+        .iter()
+        .map(|s| DailyMaSnapshot {
+            symbol: s.symbol.clone(),
+            difference_percent: s.difference_percent,
+            samples: s.samples,
+        })
+        .collect::<Vec<_>>();
+    let ma120 = cached_ma120
+        .iter()
         .map(|signal| (signal.symbol.as_str(), signal))
         .collect::<HashMap<_, _>>();
-    let scores = analyze_market_with_sentiment(&inputs,&ma,sentiment).into_iter()
-        .map(|s|(s.symbol.clone(),s)).collect::<HashMap<_,_>>();
-    let mut rows=products.into_iter().filter_map(|product| {
-        let s=scores.get(&product.symbol)?;
-        let ma120_signal = ma120
-            .get(product.symbol.as_str())
-            .copied()
-            .filter(|signal| signal.samples >= 120);        let ma120_average_price = ma120_signal.map(|signal| signal.average_price);
-        let ma120_samples = ma120_signal.map(|signal| signal.samples).unwrap_or(0);
-        let ma120_difference_percent = ma120_signal
-            .filter(|signal| signal.samples >= 120)
-            .and_then(|signal| product.last_price.zip(Some(signal.average_price)))
-            .filter(|(_, average)| *average > 0.0)
-            .map(|(price, average)| (price - average) / average * 100.0);
-        let ma120_basis = ma120_difference_percent
-            .map(|difference| format!("120 日均线：均线价 {}，当前价偏离 {:+.2}%，有效收盘样本 {} 根。", format_price(ma120_average_price), difference, ma120_samples))
-            .unwrap_or_else(|| "120 日均线：数据不足，尚无完整的 120 根已收盘日线缓存。".to_string());
-        Some(SpotAiAnalysisRow {
-            product, trend_score:s.trend_score, volume_score:s.volume_score,
-            technical_score:s.technical_score, risk_score:s.risk_score,
-            sentiment_score:s.sentiment_score, sentiment_value:s.sentiment_value,
-            sentiment_classification:s.sentiment_classification.clone(), sentiment_update_time:s.sentiment_update_time.clone(),
-            liquidity_score:s.liquidity_score,
-            total_score:s.total_score, data_completeness:s.data_completeness, trend_label:s.trend_label.clone(),
-            basis:format!("{} {}", s.basis, ma120_basis),
-            ma120_average_price, ma120_difference_percent, ma120_samples,
+    let scores = analyze_market_with_sentiment(&inputs, &ma, sentiment)
+        .into_iter()
+        .map(|s| (s.symbol.clone(), s))
+        .collect::<HashMap<_, _>>();
+    let mut rows = products
+        .into_iter()
+        .filter_map(|product| {
+            let s = scores.get(&product.symbol)?;
+            let ma120_signal = ma120
+                .get(product.symbol.as_str())
+                .copied()
+                .filter(|signal| signal.samples >= 120);
+            let ma120_average_price = ma120_signal.map(|signal| signal.average_price);
+            let ma120_samples = ma120_signal.map(|signal| signal.samples).unwrap_or(0);
+            let ma120_difference_percent = ma120_signal
+                .filter(|signal| signal.samples >= 120)
+                .and_then(|signal| product.last_price.zip(Some(signal.average_price)))
+                .filter(|(_, average)| *average > 0.0)
+                .map(|(price, average)| (price - average) / average * 100.0);
+            let ma120_basis = ma120_difference_percent
+                .map(|difference| {
+                    format!(
+                        "120 日均线：均线价 {}，当前价偏离 {:+.2}%，有效收盘样本 {} 根。",
+                        format_price(ma120_average_price),
+                        difference,
+                        ma120_samples
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "120 日均线：数据不足，尚无完整的 120 根已收盘日线缓存。".to_string()
+                });
+            Some(SpotAiAnalysisRow {
+                product,
+                trend_score: s.trend_score,
+                volume_score: s.volume_score,
+                technical_score: s.technical_score,
+                risk_score: s.risk_score,
+                sentiment_score: s.sentiment_score,
+                sentiment_value: s.sentiment_value,
+                sentiment_classification: s.sentiment_classification.clone(),
+                sentiment_update_time: s.sentiment_update_time.clone(),
+                liquidity_score: s.liquidity_score,
+                total_score: s.total_score,
+                data_completeness: s.data_completeness,
+                trend_label: s.trend_label.clone(),
+                basis: format!("{} {}", s.basis, ma120_basis),
+                ma120_average_price,
+                ma120_difference_percent,
+            })
         })
-    }).collect::<Vec<_>>();
-    rows.sort_by(|a,b|b.total_score.partial_cmp(&a.total_score).unwrap_or(Ordering::Equal));
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        b.total_score
+            .partial_cmp(&a.total_score)
+            .unwrap_or(Ordering::Equal)
+    });
     rows
 }
 
-fn build_analysis_prompt(row:&SpotAiAnalysisRow)->String {
-    let market=MarketSnapshot {
-        symbol:row.product.symbol.clone(), base_asset:row.product.base_asset.clone(),
-        asset_name:row.product.asset_name.clone(), quote_asset:row.product.quote_asset.clone(),
-        is_trading:row.product.is_trading, is_etf:row.product.is_etf,
-        price_change_percent:row.product.price_change_percent, quote_volume:row.product.quote_volume,
-        last_price:row.product.last_price, high_price:row.product.high_price,
-        low_price:row.product.low_price, volume:row.product.volume, daily_klines: Vec::new(),
+fn build_analysis_prompt(row: &SpotAiAnalysisRow) -> String {
+    let market = MarketSnapshot {
+        symbol: row.product.symbol.clone(),
+        base_asset: row.product.base_asset.clone(),
+        asset_name: row.product.asset_name.clone(),
+        quote_asset: row.product.quote_asset.clone(),
+        is_trading: row.product.is_trading,
+        is_etf: row.product.is_etf,
+        price_change_percent: row.product.price_change_percent,
+        quote_volume: row.product.quote_volume,
+        last_price: row.product.last_price,
+        high_price: row.product.high_price,
+        low_price: row.product.low_price,
+        volume: row.product.volume,
+        daily_klines: Vec::new(),
     };
-    let analysis=AnalysisResult {
-        symbol:row.product.symbol.clone(), trend_score:row.trend_score, volume_score:row.volume_score,
-        technical_score:row.technical_score, risk_score:row.risk_score,
-        sentiment_score:row.sentiment_score, sentiment_value:row.sentiment_value,
-        sentiment_classification:row.sentiment_classification.clone(), sentiment_update_time:row.sentiment_update_time.clone(),
-        liquidity_score:row.liquidity_score,
-        total_score:row.total_score, data_completeness:row.data_completeness, trend_label:row.trend_label.clone(), basis:row.basis.clone(),
+    let analysis = AnalysisResult {
+        symbol: row.product.symbol.clone(),
+        trend_score: row.trend_score,
+        volume_score: row.volume_score,
+        technical_score: row.technical_score,
+        risk_score: row.risk_score,
+        sentiment_score: row.sentiment_score,
+        sentiment_value: row.sentiment_value,
+        sentiment_classification: row.sentiment_classification.clone(),
+        sentiment_update_time: row.sentiment_update_time.clone(),
+        liquidity_score: row.liquidity_score,
+        total_score: row.total_score,
+        data_completeness: row.data_completeness,
+        trend_label: row.trend_label.clone(),
+        basis: row.basis.clone(),
     };
-    build_report_prompt(&market,&analysis)
+    build_report_prompt(&market, &analysis)
 }
 
 fn detail_stat(label: &'static str, value: String, theme: &gpui_component::Theme) -> AnyElement {
@@ -795,11 +1088,22 @@ fn detail_stat(label: &'static str, value: String, theme: &gpui_component::Theme
         .p_2()
         .rounded(px(6.))
         .bg(theme.muted.opacity(0.08))
-        .child(div().w_full().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
-        .child(div().w_full().text_size(px(11.)).font_semibold().child(value))
+        .child(
+            div()
+                .w_full()
+                .text_size(px(10.))
+                .text_color(palette::muted(theme))
+                .child(label),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_size(px(11.))
+                .font_semibold()
+                .child(value),
+        )
         .into_any_element()
 }
-
 
 fn detail_stat_colored(
     label: &'static str,
@@ -816,8 +1120,21 @@ fn detail_stat_colored(
         .bg(color.opacity(0.08))
         .border_1()
         .border_color(color.opacity(0.18))
-        .child(div().w_full().text_size(px(10.)).text_color(palette::muted(theme)).child(label))
-        .child(div().w_full().text_size(px(11.)).font_semibold().text_color(color).child(value))
+        .child(
+            div()
+                .w_full()
+                .text_size(px(10.))
+                .text_color(palette::muted(theme))
+                .child(label),
+        )
+        .child(
+            div()
+                .w_full()
+                .text_size(px(11.))
+                .font_semibold()
+                .text_color(color)
+                .child(value),
+        )
         .into_any_element()
 }
 
@@ -839,45 +1156,58 @@ fn change_color(value: Option<f64>, theme: &gpui_component::Theme) -> gpui::Hsla
     }
 }
 
-fn trend_color(label: &str, theme: &gpui_component::Theme) -> gpui::Hsla {
-    if label.contains("偏强") || label.contains("走强") {
-        theme.success.opacity(0.95)
-    } else if label.contains("偏弱") || label.contains("走弱") {
-        theme.danger.opacity(0.95)
-    } else {
-        palette::text_strong(theme)
-    }
-}
-
 fn format_ma120_location(value: Option<f64>) -> String {
-    value.map(|value| format!("{value:+.2}%")).unwrap_or_default()
+    value
+        .map(|value| format!("{value:+.2}%"))
+        .unwrap_or_default()
 }
 
 fn format_signed_percent(value: Option<f64>) -> String {
-    value.map(|value| format!("{value:+.2}%")).unwrap_or_else(|| "-".to_string())
+    value
+        .map(|value| format!("{value:+.2}%"))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn format_price(value: Option<f64>) -> String {
-    let Some(value) = value else { return "-".to_string(); };
-    if value >= 100.0 { format!("{value:.2}") } else if value >= 1.0 { format!("{value:.4}") } else { format!("{value:.8}").trim_end_matches('0').trim_end_matches('.').to_string() }
+    let Some(value) = value else {
+        return "-".to_string();
+    };
+    if value >= 100.0 {
+        format!("{value:.2}")
+    } else if value >= 1.0 {
+        format!("{value:.4}")
+    } else {
+        format!("{value:.8}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
 }
 
 fn format_compact(value: Option<f64>) -> String {
-    let Some(value) = value else { return "-".to_string(); };
+    let Some(value) = value else {
+        return "-".to_string();
+    };
     let abs = value.abs();
-    if abs >= 1_000_000_000.0 { format!("{:.2}B", value / 1_000_000_000.0) }
-    else if abs >= 1_000_000.0 { format!("{:.2}M", value / 1_000_000.0) }
-    else if abs >= 1_000.0 { format!("{:.2}K", value / 1_000.0) }    else { format!("{value:.2}") }
+    if abs >= 1_000_000_000.0 {
+        format!("{:.2}B", value / 1_000_000_000.0)
+    } else if abs >= 1_000_000.0 {
+        format!("{:.2}M", value / 1_000_000.0)
+    } else if abs >= 1_000.0 {
+        format!("{:.2}K", value / 1_000.0)
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 fn amplitude_percent(product: &MarketProduct) -> String {
-    product.high_price.zip(product.low_price)
+    product
+        .high_price
+        .zip(product.low_price)
         .filter(|(_, low)| *low > 0.0)
         .map(|(high, low)| format!("{:.2}%", (high - low) / low * 100.0))
         .unwrap_or_else(|| "-".to_string())
 }
-
-
 
 /// CMC Keyless Public API：无需 API Key，接口缓存/更新频率为 15 分钟。
 /// 使用 blocking reqwest：GPUI 的 background_spawn 不保证处于 Tokio Runtime 中。
@@ -962,7 +1292,15 @@ fn fetch_cmc_sentiment() -> anyhow::Result<MarketSentiment> {
 fn format_beijing_time(value: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
-        .and_then(|time| chrono::FixedOffset::east_opt(8 * 60 * 60).map(|offset| time.with_timezone(&offset)))
+        .and_then(|time| {
+            chrono::FixedOffset::east_opt(8 * 60 * 60).map(|offset| time.with_timezone(&offset))
+        })
         .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| if value.is_empty() { "暂无数据".to_string() } else { value.to_string() })
+        .unwrap_or_else(|| {
+            if value.is_empty() {
+                "暂无数据".to_string()
+            } else {
+                value.to_string()
+            }
+        })
 }

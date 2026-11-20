@@ -1123,6 +1123,7 @@ fn today_utc_open_time_millis() -> i64 {
     current_time_millis() / DAY_MILLIS * DAY_MILLIS
 }
 
+#[cfg(test)]
 fn has_complete_daily_window(samples: usize, latest_open_time: Option<i64>, days: u16) -> bool {
     samples >= days as usize
         && latest_open_time.is_some_and(|time| time >= today_utc_open_time_millis())

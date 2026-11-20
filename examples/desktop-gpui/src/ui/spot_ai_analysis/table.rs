@@ -3,9 +3,10 @@ use crate::ui::palette;
 use gpui::*;
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt,
-    h_flex, v_flex,
     button::{Button, ButtonVariants},
+    h_flex,
     table::{Column, ColumnSort, TableDelegate, TableState},
+    v_flex,
 };
 use std::cmp::Ordering;
 
@@ -13,7 +14,6 @@ use std::cmp::Ordering;
 pub(super) struct SpotAiAnalysisTableDelegate {
     columns: Vec<Column>,
     rows: Vec<SpotAiAnalysisRow>,
-    loading: bool,
     page: WeakEntity<SpotAiAnalysisPage>,
 }
 
@@ -21,34 +21,27 @@ impl SpotAiAnalysisTableDelegate {
     pub(super) fn new(page: WeakEntity<SpotAiAnalysisPage>) -> Self {
         Self {
             columns: vec![
-                Column::new("symbol", "名称").width(px(190.)).fixed_left().sortable(),
+                Column::new("symbol", "名称")
+                    .width(px(190.))
+                    .fixed_left()
+                    .sortable(),
                 Column::new("change", "24h 涨跌").width(px(112.)).sortable(),
                 Column::new("trend", "趋势判断").width(px(96.)).sortable(),
-                Column::new("turnover", "24h 成交额").width(px(140.)).sortable(),
-                Column::new("ma120", "120日线位置").width(px(132.)).sortable(),
-                Column::new("score", "综合评分").width(px(90.)).sortable()
+                Column::new("turnover", "24h 成交额")
+                    .width(px(140.))
+                    .sortable(),
+                Column::new("ma120", "120日线位置")
+                    .width(px(132.))
+                    .sortable(),
+                Column::new("score", "综合评分").width(px(90.)).sortable(),
             ],
             rows: Vec::new(),
-            loading: false,
             page,
-        }
-    }
-
-    pub(super) fn set_loading(&mut self, loading: bool) {
-        self.loading = loading;
-        if loading {
-            self.rows.clear();
         }
     }
 
     pub(super) fn set_rows(&mut self, rows: Vec<SpotAiAnalysisRow>) {
         self.rows = rows;
-        self.loading = false;
-    }
-
-    pub(super) fn set_error(&mut self) {
-        self.rows.clear();
-        self.loading = false;
     }
 
     pub(super) fn visible_rows_count(&self) -> usize {
@@ -160,13 +153,14 @@ impl SpotAiAnalysisTableDelegate {
                     .child(candlestick_icon(palette::muted(theme)))
                     .on_click(move |_, _, cx| {
                         _ = page_for_chart.update(cx, |_, cx| {
-                            cx.emit(super::SpotAiAnalysisEvent::OpenKline(symbol_for_chart.clone()));
+                            cx.emit(super::SpotAiAnalysisEvent::OpenKline(
+                                symbol_for_chart.clone(),
+                            ));
                         });
                     }),
             )
             .into_any_element()
     }
-
 }
 
 impl TableDelegate for SpotAiAnalysisTableDelegate {
@@ -198,24 +192,56 @@ impl TableDelegate for SpotAiAnalysisTableDelegate {
             "symbol" => self.name_cell(row_ix, col_ix, row, theme),
             "change" => {
                 let value = row.product.price_change_percent.unwrap_or(0.0);
-                self.select_cell(row_ix, col_ix, row, Self::cell(
-                    format!("{value:+.2}%"),
-                    if value >= 0.0 { theme.success } else { theme.danger },
-                ))
+                self.select_cell(
+                    row_ix,
+                    col_ix,
+                    row,
+                    Self::cell(
+                        format!("{value:+.2}%"),
+                        if value >= 0.0 {
+                            theme.success
+                        } else {
+                            theme.danger
+                        },
+                    ),
+                )
             }
-            "trend" => self.select_cell(row_ix, col_ix, row, Self::cell(row.trend_label.clone(), palette::text(theme))),
-            "score" => self.select_cell(row_ix, col_ix, row, Self::cell(format!("{:.0}", row.total_score), palette::text(theme))),
-            "turnover" => self.select_cell(row_ix, col_ix, row, Self::cell(format_compact(row.product.quote_volume), palette::text(theme))),
+            "trend" => self.select_cell(
+                row_ix,
+                col_ix,
+                row,
+                Self::cell(row.trend_label.clone(), palette::text(theme)),
+            ),
+            "score" => self.select_cell(
+                row_ix,
+                col_ix,
+                row,
+                Self::cell(format!("{:.0}", row.total_score), palette::text(theme)),
+            ),
+            "turnover" => self.select_cell(
+                row_ix,
+                col_ix,
+                row,
+                Self::cell(
+                    format_compact(row.product.quote_volume),
+                    palette::text(theme),
+                ),
+            ),
             "ma120" => {
                 let value = row.ma120_difference_percent;
-                self.select_cell(row_ix, col_ix, row, Self::cell(
-                    format_ma120_location(value),
-                    match value {
-                        Some(value) if value > 1.0 => theme.success,
-                        Some(value) if value < -1.0 => theme.danger,
-                        _ => palette::muted(theme),
-                    },
-                ))
+                self.select_cell(
+                    row_ix,
+                    col_ix,
+                    row,
+                    Self::cell(
+                        format_ma120_location(value),
+                        match value {
+                            Some(value) if value > 1.0 => theme.success,
+                            Some(value) if value < -1.0 => theme.danger,
+                            _ => palette::muted(theme),
+                        },
+                    ),
+                )
             }
             _ => Self::cell("", palette::text(theme)),
         }
@@ -248,21 +274,18 @@ impl TableDelegate for SpotAiAnalysisTableDelegate {
                     .partial_cmp(&b.product.quote_volume)
                     .unwrap_or(Ordering::Equal),
                 "trend" => a.trend_label.cmp(&b.trend_label),
-                "ma120" => a.ma120_difference_percent
+                "ma120" => a
+                    .ma120_difference_percent
                     .partial_cmp(&b.ma120_difference_percent)
                     .unwrap_or(Ordering::Equal),
                 _ => Ordering::Equal,
             };
-            if descending {
-                order.reverse()
-            } else {
-                order
-            }
+            if descending { order.reverse() } else { order }
         });
     }
 
     fn loading(&self, _: &App) -> bool {
-        self.loading
+        false
     }
 }
 
@@ -325,7 +348,9 @@ fn truncate_asset_name(value: &str, max_chars: usize) -> String {
 }
 
 fn format_ma120_location(value: Option<f64>) -> String {
-    value.map(|value| format!("{value:+.2}%")).unwrap_or_default()
+    value
+        .map(|value| format!("{value:+.2}%"))
+        .unwrap_or_default()
 }
 
 fn format_compact(value: Option<f64>) -> String {

@@ -39,7 +39,15 @@ impl FloatingStatus {
             let thread_stop = Arc::clone(&stop);
             let thread_running = Arc::clone(&running);
             let thread_task_kind = Arc::clone(&task_kind);
-            std::thread::spawn(move || windows_overlay::run(thread_stop, thread_running, thread_task_kind, task_label, accent_color));
+            std::thread::spawn(move || {
+                windows_overlay::run(
+                    thread_stop,
+                    thread_running,
+                    thread_task_kind,
+                    task_label,
+                    accent_color,
+                )
+            });
         }
 
         #[cfg(not(windows))]
@@ -61,7 +69,6 @@ impl FloatingStatus {
         #[cfg(windows)]
         windows_overlay::request_redraw();
     }
-
 }
 
 impl Drop for FloatingStatus {
@@ -72,9 +79,19 @@ impl Drop for FloatingStatus {
 
 #[cfg(not(windows))]
 mod windows_overlay {
-    use std::sync::{Arc, atomic::{AtomicBool, AtomicIsize, AtomicU8}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicIsize, AtomicU8},
+    };
 
-    pub(super) fn run(_: Arc<AtomicBool>, _: Arc<AtomicBool>, _: Arc<AtomicU8>, _: &'static str, _: (u8, u8, u8)) {}
+    pub(super) fn run(
+        _: Arc<AtomicBool>,
+        _: Arc<AtomicBool>,
+        _: Arc<AtomicU8>,
+        _: &'static str,
+        _: (u8, u8, u8),
+    ) {
+    }
 }
 
 #[cfg(windows)]
@@ -95,21 +112,20 @@ mod windows_overlay {
     use windows::Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
-            FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, PAINTSTRUCT,
-            SelectObject, SetBkMode, SetTextColor, TextOutW, TRANSPARENT,
+            BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, Ellipse, EndPaint,
+            FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FillRect,
+            PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateIconFromResourceEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-            DispatchMessageW, DrawIconEx, EnumWindows, GetWindowRect,
-            GetWindowThreadProcessId, IsIconic, IsWindowVisible, LoadCursorW, MSG, PM_REMOVE,
-            PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-            TranslateMessage, UnregisterClassW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
-            DI_NORMAL, HICON, HWND_TOPMOST, IMAGE_FLAGS, LWA_COLORKEY, SW_HIDE,
-            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSW, WM_DESTROY,
-            WM_ERASEBKGND, WM_PAINT, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+            CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateIconFromResourceEx, CreateWindowExW,
+            DI_NORMAL, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, DrawIconEx,
+            EnumWindows, GetWindowRect, GetWindowThreadProcessId, HICON, HWND_TOPMOST, IMAGE_FLAGS,
+            IsIconic, IsWindowVisible, LWA_COLORKEY, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+            RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+            SetLayeredWindowAttributes, SetWindowPos, ShowWindow, TranslateMessage,
+            UnregisterClassW, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
     };
     use windows::core::w;
@@ -130,11 +146,19 @@ mod windows_overlay {
     pub(super) fn request_redraw() {
         let hwnd = HWND(OVERLAY_HWND.load(Ordering::Acquire) as _);
         if !hwnd.is_invalid() {
-            unsafe { let _ = PostMessageW(Some(hwnd), WM_APP_REDRAW, WPARAM(0), LPARAM(0)); }
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), WM_APP_REDRAW, WPARAM(0), LPARAM(0));
+            }
         }
     }
 
-    pub(super) fn run(stop: Arc<AtomicBool>, running: Arc<AtomicBool>, task_kind: Arc<AtomicU8>, task_label: &'static str, accent_color: (u8, u8, u8)) {
+    pub(super) fn run(
+        stop: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
+        task_kind: Arc<AtomicU8>,
+        task_label: &'static str,
+        accent_color: (u8, u8, u8),
+    ) {
         let _ = task_label;
         let (red, green, blue) = accent_color;
         ACCENT_COLOR.store(
@@ -178,7 +202,11 @@ mod windows_overlay {
             ICON_HANDLE.store(icon.0 as isize, Ordering::Release);
 
             let hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+                WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT,
                 class_name,
                 w!("Binance Tools X automation"),
                 WS_POPUP,
@@ -194,7 +222,7 @@ mod windows_overlay {
 
             let Ok(hwnd) = hwnd else {
                 app_log::x_warn!("悬浮状态：创建原生窗口失败");
-                DestroyIcon(icon);
+                let _ = DestroyIcon(icon);
                 ICON_HANDLE.store(0, Ordering::Release);
                 let _ = UnregisterClassW(class_name, Some(instance));
                 return;
@@ -242,7 +270,7 @@ mod windows_overlay {
             OVERLAY_HWND.store(0, Ordering::Release);
             OVERLAY_RUNNING.store(0, Ordering::Release);
             OVERLAY_TASK_KIND.store(0, Ordering::Release);
-            DestroyIcon(icon);
+            let _ = DestroyIcon(icon);
             ICON_HANDLE.store(0, Ordering::Release);
             let _ = UnregisterClassW(class_name, Some(instance));
         }
@@ -258,7 +286,11 @@ mod windows_overlay {
 
     fn task_kind() -> u8 {
         let ptr = OVERLAY_TASK_KIND.load(Ordering::Acquire) as *const AtomicU8;
-        if ptr.is_null() { 0 } else { unsafe { (*ptr).load(Ordering::Acquire) } }
+        if ptr.is_null() {
+            0
+        } else {
+            unsafe { (*ptr).load(Ordering::Acquire) }
+        }
     }
 
     fn browser_toolbar_position() -> Option<(i32, i32)> {
@@ -287,7 +319,10 @@ mod windows_overlay {
         }
     }
 
-    unsafe extern "system" fn collect_browser_windows(hwnd: HWND, data: LPARAM) -> windows::core::BOOL {
+    unsafe extern "system" fn collect_browser_windows(
+        hwnd: HWND,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
         if unsafe { IsWindowVisible(hwnd) }.as_bool() && !unsafe { IsIconic(hwnd) }.as_bool() {
             let mut process_id = 0u32;
             unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
@@ -307,15 +342,15 @@ mod windows_overlay {
     }
 
     unsafe fn is_chrome_process(process_id: u32) -> bool {
-        use windows::Win32::System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-            PROCESS_QUERY_LIMITED_INFORMATION,
-        };
         use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
 
-        let Ok(process) = (unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
-        }) else {
+        let Ok(process) =
+            (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+        else {
             return false;
         };
         let mut path = [0u16; 1024];
@@ -407,25 +442,58 @@ mod windows_overlay {
                     let _ = SetBkMode(dc, TRANSPARENT);
                     // 原生默认字体在 180px 宽的悬浮条里过大，显式缩小并使用 Segoe UI。
                     let title_font = CreateFontW(
-                        -13, 0, 0, 0, 600, 0, 0, 0, FONT_CHARSET(1), FONT_OUTPUT_PRECISION(0),
-                        FONT_CLIP_PRECISION(0), FONT_QUALITY(5), 0,
+                        -13,
+                        0,
+                        0,
+                        0,
+                        600,
+                        0,
+                        0,
+                        0,
+                        FONT_CHARSET(1),
+                        FONT_OUTPUT_PRECISION(0),
+                        FONT_CLIP_PRECISION(0),
+                        FONT_QUALITY(5),
+                        0,
                         w!("Segoe UI"),
                     );
                     let task_font = CreateFontW(
-                        -11, 0, 0, 0, 400, 0, 0, 0, FONT_CHARSET(1), FONT_OUTPUT_PRECISION(0),
-                        FONT_CLIP_PRECISION(0), FONT_QUALITY(5), 0,
+                        -11,
+                        0,
+                        0,
+                        0,
+                        400,
+                        0,
+                        0,
+                        0,
+                        FONT_CHARSET(1),
+                        FONT_OUTPUT_PRECISION(0),
+                        FONT_CLIP_PRECISION(0),
+                        FONT_QUALITY(5),
+                        0,
                         w!("Segoe UI"),
                     );
                     let is_running = overlay_is_running();
-                    let title: Vec<u16> = if is_running { "自动化运行中" } else { "自动化已停止" }.encode_utf16().collect();
+                    let title: Vec<u16> = if is_running {
+                        "自动化运行中"
+                    } else {
+                        "自动化已停止"
+                    }
+                    .encode_utf16()
+                    .collect();
                     let kind = task_kind();
                     let task_label = if kind == TASK_POST {
-                        if super::WAITING_FOR_POST.load(Ordering::Acquire) { "Waiting for post" } else { "Auto posting" }
+                        if super::WAITING_FOR_POST.load(Ordering::Acquire) {
+                            "Waiting for post"
+                        } else {
+                            "Auto posting"
+                        }
                     } else if kind == TASK_TEST_POST {
                         "Test post"
                     } else {
                         "Auto reply"
-                    };                    let task: Vec<u16> = task_label.encode_utf16().collect();
+                    };
+                    let task: Vec<u16> = task_label.encode_utf16().collect();
                     // 根据主题背景亮度自动选择文字颜色，确保深色/浅色主题都清晰。
                     let red = (accent.0 & 0xFF) as f64;
                     let green = ((accent.0 >> 8) & 0xFF) as f64;
@@ -446,7 +514,11 @@ mod windows_overlay {
                     let _ = DeleteObject(task_font.into());
 
                     // Refresh the indicator from the shared run state on every paint.
-                    let dot = CreateSolidBrush(if is_running { COLORREF(0x0000C000) } else { COLORREF(0x000000D0) });
+                    let dot = CreateSolidBrush(if is_running {
+                        COLORREF(0x0000C000)
+                    } else {
+                        COLORREF(0x000000D0)
+                    });
                     let previous = SelectObject(dc, dot.into());
                     let _ = Ellipse(dc, 163, 7, 173, 17);
                     let _ = SelectObject(dc, previous);

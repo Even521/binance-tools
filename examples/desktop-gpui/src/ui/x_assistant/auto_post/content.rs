@@ -73,7 +73,7 @@ impl NewsKind {
     fn system_prompt(self) -> &'static str {
         match self {
             Self::Crypto => {
-                "你是长期关注加密行业的中文 X 用户，不是新闻播报机器人。把一条新闻写成自然、克制、易读的短帖：先说最重要的事实，只有确实有助理解时才补充一项背景或数字。不要机械地重复标题，不要使用‘据消息’‘值得关注’‘引发关注’‘与此同时’等套话，不要堆砌机构名和数字，不要强行下结论、预测行情或添加个人观点。只能写一个核心事件；多事件、盘点或晚讯直接拒绝，不要拼成一帖。传闻保留传闻属性，不得补充来源没有的信息。格式固定为标题单独一行、空一行、正文；正文用完整自然句，必要的补充细节另起一行，不要把标题和正文挤成一段。不要使用感叹号、问号、话题标签或链接。控制在 100 个 Unicode 字符以内，只输出可直接发布的正文。"
+                "你是长期关注加密行业的中文 X 用户，不是新闻播报机器人。把一条新闻写成自然、克制、易读的短帖：先说最重要的事实，只有确实有助理解时才补充一项背景或数字。不要机械地重复标题，不要使用‘据消息’‘值得关注’‘引发关注’‘与此同时’等套话，不要堆砌机构名和数字，不要强行下结论、预测行情或添加个人观点。只能写一个核心事件；多事件、盘点或晚讯直接拒绝，不要拼成一帖。传闻保留传闻属性，不得补充来源没有的信息。所有数字、金额、百分比、时间和单位必须严格依据来源，不得改写数值、换算近似值、挪用其他指标或自行推算；不确定时删去该数字，不确定会改变核心事实时直接输出‘跳过’。格式固定为标题单独一行、空一行、正文；正文用完整自然句，必要的补充细节另起一行，不要把标题和正文挤成一段。不要使用感叹号、问号、话题标签或链接。控制在 100 个 Unicode 字符以内，只输出可直接发布的正文。"
             }
             Self::Entertainment => {
                 "你是熟悉中文社交平台表达的娱乐资讯编辑，不是新闻播报机器人。把一条新闻写成自然、简洁、克制的中文短帖，优先讲清人物做了什么、发生了什么；只在有助理解时补充一项背景。不要机械重复标题，不用‘引发热议’‘值得关注’等空话，不写标题党、营销腔、强行互动或无依据评价。只写一个核心事件；多事件盘点或晚讯直接拒绝。传闻必须明确标注为传闻，不得造谣、影射或补充未经证实的信息。格式固定为标题单独一行、空一行、正文；正文用完整自然句，必要补充细节另起一行。不要使用感叹号、问号、话题标签或链接。控制在 100 个 Unicode 字符以内，只输出可直接发布的正文。"
@@ -88,6 +88,8 @@ struct NewsCandidate {
     id: i64,
     title: String,
     body: String,
+    source_title: String,
+    source_body: String,
     url: Option<String>,
     published_at: Option<String>,
     collected_at: String,
@@ -286,6 +288,77 @@ fn bigram_dice_similarity(left: &[char], right: &[char]) -> f64 {
     }
 }
 
+fn numeric_values(value: &str) -> Vec<f64> {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut values = Vec::new();
+    let mut index = 0;
+
+    while index < chars.len() {
+        if !chars[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < chars.len() {
+            if chars[index].is_ascii_digit() {
+                index += 1;
+            } else if matches!(chars[index], ',' | '.' | '，')
+                && chars
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_ascii_digit())
+            {
+                index += 1;
+            } else {
+                break;
+            }
+        }
+        let number = chars[start..index]
+            .iter()
+            .filter(|ch| !matches!(ch, ',' | '，'))
+            .collect::<String>();
+        let Ok(mut value) = number.parse::<f64>() else {
+            continue;
+        };
+        let unit_start = chars[index..]
+            .iter()
+            .position(|ch| !ch.is_whitespace())
+            .map_or(index, |offset| index + offset);
+        let unit = chars[unit_start..]
+            .iter()
+            .take(12)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let multiplier = if unit.starts_with("billion") {
+            1_000_000_000.0
+        } else if unit.starts_with('亿') {
+            100_000_000.0
+        } else if unit.starts_with("million") || unit.starts_with("百万") {
+            1_000_000.0
+        } else if unit.starts_with('万') {
+            10_000.0
+        } else if unit.starts_with('千') || unit.starts_with("thousand") {
+            1_000.0
+        } else {
+            1.0
+        };
+        value *= multiplier;
+        values.push(value);
+    }
+    values
+}
+
+fn numeric_facts_are_source_supported(source: &str, rewritten: &str) -> bool {
+    let source_values = numeric_values(source);
+    numeric_values(rewritten)
+        .into_iter()
+        .all(|rewritten_value| {
+            source_values.iter().any(|source_value| {
+                let tolerance = source_value.abs().max(rewritten_value.abs()) * 1e-9 + 1e-6;
+                (source_value - rewritten_value).abs() <= tolerance
+            })
+        })
+}
+
 fn is_likely_same_news(
     candidate_title: &str,
     candidate_body: &str,
@@ -340,7 +413,7 @@ fn load_candidates(filter: NewsFilter) -> anyhow::Result<Vec<NewsCandidate>> {
             continue;
         }
         let sql = format!(
-            "SELECT id, title, COALESCE(NULLIF(chinese_title, ''), title),                     COALESCE(NULLIF(chinese_summary, ''), summary), url,                     published_at, collected_at              FROM {}              ORDER BY datetime(COALESCE(published_at, collected_at)) DESC              LIMIT ?1",
+            "SELECT id, title, COALESCE(NULLIF(chinese_title, ''), title),                     COALESCE(NULLIF(chinese_summary, ''), summary), summary, url,                     published_at, collected_at              FROM {}              ORDER BY datetime(COALESCE(published_at, collected_at)) DESC              LIMIT ?1",
             kind.table()
         );
         let mut statement = connection
@@ -354,14 +427,16 @@ fn load_candidates(filter: NewsFilter) -> anyhow::Result<Vec<NewsCandidate>> {
                 kind,
                 id: row.get(0)?,
                 title: if display_title.trim().is_empty() {
-                    original_title
+                    original_title.clone()
                 } else {
                     display_title
                 },
                 body: body.unwrap_or_default(),
-                url: row.get(4)?,
-                published_at: row.get(5)?,
-                collected_at: row.get(6)?,
+                source_title: original_title,
+                source_body: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                url: row.get(5)?,
+                published_at: row.get(6)?,
+                collected_at: row.get(7)?,
                 hot_score: 0,
             })
         })?;
@@ -623,7 +698,7 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
             "写得像一个懂这条新闻的人在简洁转述，而不是把标题和摘要拼接起来。句式随事实变化，不要每条都用相同结构；只保留读者理解事件所需的信息。",
         ),
         ChatMessage::user(format!(
-            "请将以下{}新闻整理成一条自然、简洁的中文 X 短帖。只写一个核心事件，不能把标题和摘要原样拼接；避免套话、空泛评价和新闻稿口吻。严格按格式输出：标题单独一行，空一行，再写正文；正文使用完整自然句，必要补充细节另起一行。多事件/盘点内容不要改写，直接输出‘跳过’。不得添加来源材料之外的信息。不要使用感叹号、问号和 #话题标签，不要输出网址、域名或链接。最多 100 个 Unicode 字符，只输出正文。\n\n标题：{}\n内容：{}",
+            "请将以下{}新闻整理成一条自然、简洁的中文 X 短帖。只写一个核心事件，不能把标题和摘要原样拼接；避免套话、空泛评价和新闻稿口吻。严格按格式输出：标题单独一行，空一行，再写正文；正文使用完整自然句，必要补充细节另起一行。多事件/盘点内容不要改写，直接输出‘跳过’。不得添加来源材料之外的信息。数字、金额、比例、日期和单位必须保持来源数值准确，不得估算、改数、混淆总量与分项；无法确认时删去数字或输出‘跳过’。不要使用感叹号、问号和 #话题标签，不要输出网址、域名或链接。最多 100 个 Unicode 字符，只输出正文。\n\n标题：{}\n内容：{}",
             candidate.kind.label(),
             source_title,
             source_body
@@ -675,7 +750,7 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
         let retry_messages = [
             ChatMessage::system(candidate.kind.system_prompt()),
             ChatMessage::user(format!(
-                "将这条单一新闻自然地压缩到 100 个 Unicode 字符以内。保留标题、空行、正文的格式；正文不要重复标题。不要补充或推断信息，只留下最重要事实；若背景不是理解事件所必需就删掉。保持正常中文语序，避免关键词堆叠。当前字符数={}，本次是第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩。删除感叹号、问号和 #话题标签，只输出正文。\n\n新闻：{}\n当前文案：{}",
+                "将这条单一新闻自然地压缩到 100 个 Unicode 字符以内。保留标题、空行、正文的格式；正文不要重复标题。不要补充或推断信息，只留下最重要事实；若背景不是理解事件所必需就删掉。保持正常中文语序，避免关键词堆叠。所有数值和单位必须与新闻原文一致，禁止改数或把不同统计口径混在一起。当前字符数={}，本次是第 {attempt}/{MAX_COMPRESSION_ATTEMPTS} 次压缩。删除感叹号、问号和 #话题标签，只输出正文。\n\n新闻：{}\n当前文案：{}",
                 content.chars().count(),
                 candidate.title,
                 content
@@ -734,6 +809,14 @@ fn generate_post(candidate: &NewsCandidate, cancel: &AtomicBool) -> anyhow::Resu
         !content.is_empty() && content.chars().count() <= MAX_POST_CHARS,
         "AI 文案超过 100 字或为空，已阻止进入发布队列"
     );
+    let source_material = format!(
+        "{}\n{}\n{}\n{}",
+        candidate.source_title, candidate.source_body, candidate.title, candidate.body
+    );
+    ensure!(
+        numeric_facts_are_source_supported(&source_material, &content),
+        "AI 文案包含原文未支持或数值被改动的数据，已跳过该新闻，阻止错误内容进入发布队列"
+    );
     ensure!(
         !content.contains("作为人工智能") && !content.contains("以下是改写"),
         "AI 返回了说明性文字，不是可发布正文"
@@ -766,7 +849,9 @@ pub fn prepare_next_post_blocking(
             "收到停止信号，取消候选新闻处理"
         );
         let news_id = format!("{}:{}", candidate.kind.table(), candidate.id);
-        if source_contains_multiple_items(&candidate.body) {
+        if source_contains_multiple_items(&candidate.body)
+            || source_contains_multiple_items(&candidate.source_body)
+        {
             app_log::post_info!(
                 "X 自动发帖内容准备：AI 改写前跳过列表/多条新闻素材，news_id={}，title={}",
                 news_id,
@@ -844,7 +929,7 @@ pub fn prepare_next_post_blocking(
 mod tests {
     use super::{
         clean_ai_text, contains_multiple_items, is_likely_same_news,
-        source_contains_multiple_items, NewsFilter, NewsKind,
+        numeric_facts_are_source_supported, source_contains_multiple_items, NewsFilter, NewsKind,
     };
 
     #[test]
@@ -891,6 +976,23 @@ mod tests {
             ),
             "《藏不住的好去处》新期打卡呼伦贝尔\n\n主持人周雪梅携韩东霖手持“初始宝藏地图”，在辽阔天地间解锁草原城市魅力与人文温度"
         );
+    }
+
+    #[test]
+    fn rejects_rewritten_numbers_not_supported_by_source() {
+        let source = "过去24小时全网合约爆仓3.24亿美元，多单2.15亿美元，BTC和ETH合计2亿美元，最大单笔321.33万美元";
+        assert!(numeric_facts_are_source_supported(
+            source,
+            "过去24小时爆仓3.24亿美元，多单2.15亿美元"
+        ));
+        assert!(!numeric_facts_are_source_supported(
+            source,
+            "过去24小时全网爆仓3200万美元，多单占大头"
+        ));
+        assert!(numeric_facts_are_source_supported(
+            "全网爆仓3.24亿美元",
+            "全网爆仓32400万美元"
+        ));
     }
 
     #[test]

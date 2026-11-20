@@ -1,14 +1,14 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use anyhow::{anyhow, Context};
-use serde_json::{json, Value};
+use anyhow::{Context, anyhow};
+use serde_json::{Value, json};
 
 static THINK_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 

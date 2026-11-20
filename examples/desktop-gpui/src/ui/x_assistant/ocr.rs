@@ -720,10 +720,12 @@ pub(super) fn identify_post_and_action_bar_at(
             .chars()
             .any(|ch| matches!(ch, 'i' | 'I' | 'l' | 'L' | '1' | 'o' | 'O' | '0'));
         if header_confidence < 0.92 || has_ambiguous_handle_char {
-            let crop_top = header_y.saturating_sub(6);
-            let crop_bottom = (header_y + 76).min(source.height());
-            let crop_left = header_left.saturating_sub(8);
-            let crop_right = (header_left + source.width() * 70 / 100).min(source.width());
+            // 账号文字可能被首轮 OCR 的窄文本框边界截断；二次核验扩大到完整作者栏，
+            // 避免把右侧日期/菜单附近内容错误地当成裁剪边界。最终仍要求账号完全一致。
+            let crop_top = header_y.saturating_sub(16);
+            let crop_bottom = header_y.saturating_add(128).min(source.height());
+            let crop_left = 0;
+            let crop_right = source.width();
             anyhow::ensure!(
                 crop_right > crop_left && crop_bottom > crop_top,
                 "账号二次 OCR 作者栏裁剪区域无效"
@@ -760,16 +762,25 @@ pub(super) fn identify_post_and_action_bar_at(
                 );
             };
             anyhow::ensure!(
-                verified_handle.eq_ignore_ascii_case(account_token),
+                account_handles_match_with_ocr_confusions(account_token, &verified_handle),
                 "账号二次 OCR 不一致：首轮=@{}，复核=@{}，复核行={:?}，置信度={:.2}；停止以避免回复错账号",
                 account_token,
                 verified_handle,
                 recognized_line,
                 confidence
             );
+            let exact_match = verified_handle.eq_ignore_ascii_case(account_token);
             super::automation::log_event(&format!(
-                "[账号二次核验] 首轮=@{}，复核=@{}，首轮置信度={:.2}，复核置信度={:.2}，通过。",
-                account_token, verified_handle, header_confidence, confidence
+                "[账号二次核验] 首轮=@{}，复核=@{}，首轮置信度={:.2}，复核置信度={:.2}，{}。",
+                account_token,
+                verified_handle,
+                header_confidence,
+                confidence,
+                if exact_match {
+                    "完全匹配，通过"
+                } else {
+                    "易混字符差异容错，通过"
+                }
             ));
         }
 
@@ -925,9 +936,15 @@ pub(super) fn identify_post_and_action_bar_at(
                     crop.image.height().saturating_mul(2),
                     image::imageops::FilterType::Lanczos3,
                 );
+                // 灰度增强作为失败路径备用预处理，改善浅灰色互动图标/数字的局部识别；
+                // 记录 2 倍坐标比例，最终仍检查账号、时间和帖子边界后才允许点击。
+                let enhanced = image::DynamicImage::ImageRgb8(enlarged)
+                    .grayscale()
+                    .adjust_contrast(18.0)
+                    .to_rgb8();
                 let (_, retry_parsed, _) = engine
                     .recognize_image_with_action_coordinates_and_timeline_for_crop(
-                        &enlarged, path,
+                        &enhanced, path,
                     )?;
                 let retry_has_reply = retry_parsed.timeline.posts.iter().any(|candidate| {
                     let same_account = candidate.account.as_deref().is_some_and(|account| {
@@ -1177,14 +1194,23 @@ const DIGIT_GLYPHS: [[u8; 7]; 4] = [
 ];
 
 pub(super) fn locate_new_posts_notice(path: &Path) -> anyhow::Result<Option<(i32, i32)>> {
-    let doc = recognize_document(path)?;
-    let (width, height) = image::image_dimensions(path)?;
+    use image::imageops::crop_imm;
+
+    let source = image::open(path)?;
+    let width = source.width();
+    let height = source.height();
+    let crop_left = width * 20 / 100;
+    let crop_width = width * 60 / 100;
+    let crop_height = height * 40 / 100;
+    let crop = crop_imm(&source, crop_left, 0, crop_width, crop_height).to_image();
+    let crop = image::DynamicImage::ImageRgba8(crop);
+    let doc = recognize_document_image(&crop, 4, 3, Some(200))?;
     let expected = normalize_text("显示帖子");
     Ok(doc
         .lines
         .iter()
         .filter_map(|line| {
-            let x = (line.left + line.right) * 0.5 / doc.scale_x;
+            let x = crop_left as f32 + (line.left + line.right) * 0.5 / doc.scale_x;
             let y = (line.top + line.bottom) * 0.5 / doc.scale_y;
             let normalized = normalize_text(&line.text);
             (text_match_ratio(&normalized, &expected) >= 0.75
@@ -2158,6 +2184,22 @@ fn extract_account_token(text: &str) -> Option<String> {
     (!token.is_empty() && token.len() <= 15).then_some(token)
 }
 
+/// 仅容忍 OCR 常见的账号字符混淆；长度、下划线和其他字符必须一致。
+fn account_handles_match_with_ocr_confusions(expected: &str, recognized: &str) -> bool {
+    fn canonicalize(handle: &str) -> String {
+        handle
+            .chars()
+            .map(|ch| match ch.to_ascii_lowercase() {
+                'i' | 'l' | '1' => '1',
+                'o' | '0' => '0',
+                other => other,
+            })
+            .collect()
+    }
+
+    expected.eq_ignore_ascii_case(recognized) || canonicalize(expected) == canonicalize(recognized)
+}
+
 fn text_block_bounds(block: &TextBlock) -> Option<(u32, u32, u32, u32)> {
     Some((
         block.box_points.iter().map(|point| point.x).min()?,
@@ -2190,20 +2232,28 @@ fn text_match_ratio(recognized: &str, expected: &str) -> f32 {
     matched as f32 / expected_chars.len() as f32
 }
 
-fn is_dark_pixel(image: &image::RgbImage, x: usize, y: usize) -> bool {
-    let [red, green, blue] = image.get_pixel(x as u32, y as u32).0;
-    red < 55 && green < 60 && blue < 65
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_already_sent_confirmation, contains_rate_limit, contains_reload_confirmation,
-        contains_retryable_send_error, contains_sent_confirmation, extract_x_url,
-        identify_post_and_action_bar, is_x_compose_post_address, is_x_home_address,
-        locate_discard_draft_button, reply_tooltip_matches_target, text_match_ratio,
+        account_handles_match_with_ocr_confusions, contains_already_sent_confirmation,
+        contains_rate_limit, contains_reload_confirmation, contains_retryable_send_error,
+        contains_sent_confirmation, extract_x_url, identify_post_and_action_bar,
+        is_x_compose_post_address, is_x_home_address, locate_discard_draft_button,
+        reply_tooltip_matches_target, text_match_ratio,
     };
     use std::{env, path::Path};
+
+    #[test]
+    fn account_verification_tolerates_only_common_ocr_confusions() {
+        assert!(account_handles_match_with_ocr_confusions("12i", "121"));
+        assert!(account_handles_match_with_ocr_confusions("cool0", "coo10"));
+        assert!(!account_handles_match_with_ocr_confusions("12i", "12x"));
+        assert!(!account_handles_match_with_ocr_confusions(
+            "user_name",
+            "username"
+        ));
+        assert!(!account_handles_match_with_ocr_confusions("abc1", "abc11"));
+    }
 
     #[test]
     fn locates_discard_button_in_configured_draft_confirmation() {

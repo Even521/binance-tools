@@ -1,7 +1,15 @@
 //! Per-platform delivery tasks for prepared news posts.
 
-use anyhow::{Context, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use anyhow::{ensure, Context};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::{
+    collections::HashSet,
+    fs,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 pub const PLATFORM_X: &str = "x";
 pub const PLATFORM_BINANCE: &str = "binance_square";
@@ -26,7 +34,50 @@ pub struct NewsSendTask {
     pub updated_at: String,
 }
 
+static READY_SCHEMAS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
 fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
+    let Some(database_path) = connection.path().filter(|path| *path != ":memory:") else {
+        return initialize_schema_with_retry(connection);
+    };
+    let database_path = PathBuf::from(database_path);
+    let database_path = fs::canonicalize(&database_path).unwrap_or(database_path);
+    let ready_schemas = READY_SCHEMAS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut ready_schemas = ready_schemas
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if ready_schemas.contains(&database_path) {
+        return Ok(());
+    }
+
+    initialize_schema_with_retry(connection)?;
+    ready_schemas.insert(database_path);
+    Ok(())
+}
+
+fn initialize_schema_with_retry(connection: &Connection) -> anyhow::Result<()> {
+    const RETRIES: usize = 3;
+    for attempt in 0..=RETRIES {
+        match initialize_schema(connection) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < RETRIES && is_sqlite_busy(&error) => {
+                let delay = Duration::from_millis(100 * (1 << attempt));
+                app_log::warn!(
+                    "[SQLite][news_send_tasks] schema 初始化遇到短暂写锁，第 {}/{} 次重试，等待 {}ms：{:#}",
+                    attempt + 1,
+                    RETRIES,
+                    delay.as_millis(),
+                    error
+                );
+                thread::sleep(delay);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("schema retry loop always returns")
+}
+
+fn initialize_schema(connection: &Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
             r#"
@@ -69,6 +120,20 @@ fn ensure_schema(connection: &Connection) -> anyhow::Result<()> {
         connection.execute("ALTER TABLE news_send_tasks ADD COLUMN sent_at TEXT", [])?;
     }
     Ok(())
+}
+
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|error| match error {
+                rusqlite::Error::SqliteFailure(code, _) => matches!(
+                    code.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ),
+                _ => false,
+            })
+    })
 }
 
 pub fn load_target_mode_blocking() -> anyhow::Result<String> {

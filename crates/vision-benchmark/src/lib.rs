@@ -1,10 +1,18 @@
 //! Shared template matching helpers used by the benchmark and desktop X assistant.
 
-use std::path::Path;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, ensure};
 use image::{RgbaImage, imageops::crop_imm};
 use robost_vision::{PreparedTemplate, ScreenPoint, TemplateMatcher};
+
+thread_local! {
+    static PREPARED_TEMPLATES: RefCell<HashMap<PathBuf, PreparedTemplate>> = RefCell::new(HashMap::new());
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SearchRegion {
@@ -47,16 +55,26 @@ pub fn scan_templates(
         .with_scales(scales.to_vec());
     let mut hits = Vec::new();
     for (name, path) in templates {
-        let template = PreparedTemplate::from_file(path)
-            .with_context(|| format!("load template {name}: {}", path.display()))?;
-        let found = matcher
-            .find_prepared(&image, &template, origin)
-            .with_context(|| format!("match template {name}"))?;
-        if found.score >= threshold {
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let result = PREPARED_TEMPLATES.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if !cache.contains_key(&key) {
+                let prepared = PreparedTemplate::from_file(path)
+                    .with_context(|| format!("load template {name}: {}", path.display()))?;
+                cache.insert(key.clone(), prepared);
+            }
+            let template = cache
+                .get(&key)
+                .expect("prepared template inserted into cache");
+            matcher
+                .find_prepared(&image, template, origin)
+                .with_context(|| format!("match template {name}"))
+        })?;
+        if result.score >= threshold {
             hits.push(ButtonHit {
                 name: (*name).to_string(),
-                center: found.center,
-                score: found.score,
+                center: result.center,
+                score: result.score,
             });
         }
     }

@@ -1,46 +1,75 @@
 //! USDT 现货 1–7 天波段选币 V2：趋势、成交、风险、入场、流动性与情绪。
 use crate::{AnalysisResult, DailyMaSnapshot, MarketSentiment, MarketSnapshot};
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 
 /// 趋势、成交、风险、入场、情绪、流动性。
 pub const SCORE_WEIGHTS: [f64; 6] = [0.30, 0.20, 0.20, 0.15, 0.05, 0.10];
 const STABLECOIN_BASE_ASSETS: &[&str] = &[
-    "USDT","USDC","BUSD","TUSD","FDUSD","DAI","USDP","USDE","PYUSD","USDS",
-    "GUSD","FRAX","LUSD","USDD","UST","USTC","USD1","USDJ","CRVUSD","EURI",
-    "AEUR","RLUSD","USDG",
+    "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP", "USDE", "PYUSD", "USDS", "GUSD",
+    "FRAX", "LUSD", "USDD", "UST", "USTC", "USD1", "USDJ", "CRVUSD", "EURI", "AEUR", "RLUSD",
+    "USDG",
 ];
 fn is_stablecoin_base_asset(asset: &str) -> bool {
-    STABLECOIN_BASE_ASSETS.iter().any(|s| asset.eq_ignore_ascii_case(s))
+    STABLECOIN_BASE_ASSETS
+        .iter()
+        .any(|s| asset.eq_ignore_ascii_case(s))
 }
-fn clamp_score(value: f64) -> f64 { if value.is_finite() { value.clamp(0.0,100.0) } else { 50.0 } }
+fn clamp_score(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 100.0)
+    } else {
+        50.0
+    }
+}
 fn percentile(values: &[f64], value: f64) -> Option<f64> {
-    if values.is_empty() || !value.is_finite() { return None; }
+    if values.is_empty() || !value.is_finite() {
+        return None;
+    }
     Some(values.partition_point(|v| *v <= value) as f64 / values.len() as f64 * 100.0)
 }
 fn average(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
 }
 fn returns(closes: &[f64], days: usize) -> Option<f64> {
-    if closes.len() <= days { return None; }
-    let old = closes[closes.len()-1-days];
-    (old > 0.0).then(|| (closes[closes.len()-1] / old - 1.0) * 100.0)
+    if closes.len() <= days {
+        return None;
+    }
+    let old = closes[closes.len() - 1 - days];
+    (old > 0.0).then(|| (closes[closes.len() - 1] / old - 1.0) * 100.0)
 }
-fn score_return(value: f64, scale: f64) -> f64 { clamp_score(50.0 + value * scale) }
+fn score_return(value: f64, scale: f64) -> f64 {
+    clamp_score(50.0 + value * scale)
+}
 
-pub fn analyze_market(products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot]) -> Vec<AnalysisResult> {
+pub fn analyze_market(
+    products: &[MarketSnapshot],
+    cached_ma: &[DailyMaSnapshot],
+) -> Vec<AnalysisResult> {
     analyze_market_with_sentiment(products, cached_ma, None)
 }
 pub fn analyze_market_with_sentiment(
-    products: &[MarketSnapshot], cached_ma: &[DailyMaSnapshot], sentiment: Option<&MarketSentiment>,
+    products: &[MarketSnapshot],
+    _cached_ma: &[DailyMaSnapshot],
+    sentiment: Option<&MarketSentiment>,
 ) -> Vec<AnalysisResult> {
-    let candidates = products.iter().filter(|p|
-        p.quote_asset == "USDT" && p.is_trading && !p.is_etf && !is_stablecoin_base_asset(&p.base_asset)
-    ).collect::<Vec<_>>();
-    let mut turnovers = candidates.iter().filter_map(|p| p.quote_volume)
-        .filter(|v| v.is_finite() && *v > 0.0).collect::<Vec<_>>();
-    turnovers.sort_by(|a,b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    let ma30 = cached_ma.iter().map(|s|(s.symbol.as_str(),s)).collect::<HashMap<_,_>>();
-    let sentiment_valid = sentiment.filter(|s| s.value.is_finite() && (0.0..=100.0).contains(&s.value));
+    let candidates = products
+        .iter()
+        .filter(|p| {
+            p.quote_asset == "USDT"
+                && p.is_trading
+                && !p.is_etf
+                && !is_stablecoin_base_asset(&p.base_asset)
+        })
+        .collect::<Vec<_>>();
+    let mut turnovers = candidates
+        .iter()
+        .filter_map(|p| p.quote_volume)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .collect::<Vec<_>>();
+    turnovers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+
+    let sentiment_valid =
+        sentiment.filter(|s| s.value.is_finite() && (0.0..=100.0).contains(&s.value));
 
     let mut results = candidates.into_iter().map(|p| {
         let candles = &p.daily_klines;
@@ -138,39 +167,79 @@ pub fn analyze_market_with_sentiment(
             liquidity_score,total_score:total,data_completeness:completeness,trend_label:label,basis
         }
     }).collect::<Vec<_>>();
-    results.sort_by(|a,b|b.total_score.partial_cmp(&a.total_score).unwrap_or(Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.total_score
+            .partial_cmp(&a.total_score)
+            .unwrap_or(Ordering::Equal)
+    });
     results
 }
-fn fmt(v:Option<f64>)->String{v.map(|x|format!("{x:.2}")).unwrap_or_else(||"缺失".into())}
+fn fmt(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.2}"))
+        .unwrap_or_else(|| "缺失".into())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn sample(symbol:&str, change:f64, turnover:f64)->MarketSnapshot {
-        MarketSnapshot{symbol:symbol.into(),base_asset:symbol.into(),asset_name:symbol.into(),
-            quote_asset:"USDT".into(),is_trading:true,is_etf:false,price_change_percent:Some(change),
-            quote_volume:Some(turnover),last_price:Some(100.0),high_price:Some(105.0),low_price:Some(95.0),
-            volume:Some(1000.0),daily_klines:vec![]}
+    fn sample(symbol: &str, change: f64, turnover: f64) -> MarketSnapshot {
+        MarketSnapshot {
+            symbol: symbol.into(),
+            base_asset: symbol.into(),
+            asset_name: symbol.into(),
+            quote_asset: "USDT".into(),
+            is_trading: true,
+            is_etf: false,
+            price_change_percent: Some(change),
+            quote_volume: Some(turnover),
+            last_price: Some(100.0),
+            high_price: Some(105.0),
+            low_price: Some(95.0),
+            volume: Some(1000.0),
+            daily_klines: vec![],
+        }
     }
-    #[test] fn excludes_stablecoins_and_nontrading(){
-        let mut inactive=sample("OFF",20.0,9000.0);inactive.is_trading=false;
-        let rows=analyze_market(&[sample("BTC",2.0,5000.0),sample("USDC",1.0,9999.0),inactive],&[]);
-        assert_eq!(rows.len(),1);assert_eq!(rows[0].symbol,"BTC");
+    #[test]
+    fn excludes_stablecoins_and_nontrading() {
+        let mut inactive = sample("OFF", 20.0, 9000.0);
+        inactive.is_trading = false;
+        let rows = analyze_market(
+            &[
+                sample("BTC", 2.0, 5000.0),
+                sample("USDC", 1.0, 9999.0),
+                inactive,
+            ],
+            &[],
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].symbol, "BTC");
     }
-    #[test] fn weights_sum_to_one(){assert!((SCORE_WEIGHTS.iter().sum::<f64>()-1.0).abs()<f64::EPSILON);}
-    #[test] fn missing_history_reduces_completeness_and_renormalizes(){
-        let row=analyze_market(&[sample("BTC",1.0,1000.0)],&[]).remove(0);
-        assert!(row.data_completeness<100.0);
+    #[test]
+    fn weights_sum_to_one() {
+        assert!((SCORE_WEIGHTS.iter().sum::<f64>() - 1.0).abs() < f64::EPSILON);
+    }
+    #[test]
+    fn missing_history_reduces_completeness_and_renormalizes() {
+        let row = analyze_market(&[sample("BTC", 1.0, 1000.0)], &[]).remove(0);
+        assert!(row.data_completeness < 100.0);
         assert!(row.total_score.is_finite());
     }
-    #[test] fn daily_history_enables_trend_risk_and_entry(){
-        let mut p=sample("BTC",1.0,1000.0);
-        p.daily_klines=(0..121).map(|i|{
-            let close=80.0+i as f64*0.2;
-            crate::DailyKlineSnapshot{high:close+1.0,low:close-1.0,close,quote_turnover:10000.0}
-        }).collect();
-        let row=analyze_market(&[p],&[]).remove(0);
-        assert!(row.data_completeness>=65.0);
-        assert!(row.trend_score>50.0);
+    #[test]
+    fn daily_history_enables_trend_risk_and_entry() {
+        let mut p = sample("BTC", 1.0, 1000.0);
+        p.daily_klines = (0..121)
+            .map(|i| {
+                let close = 80.0 + i as f64 * 0.2;
+                crate::DailyKlineSnapshot {
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    quote_turnover: 10000.0,
+                }
+            })
+            .collect();
+        let row = analyze_market(&[p], &[]).remove(0);
+        assert!(row.data_completeness >= 65.0);
+        assert!(row.trend_score > 50.0);
     }
 }

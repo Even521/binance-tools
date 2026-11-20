@@ -156,12 +156,7 @@ struct VisionDecision {
     refresh_posts: bool,
     #[serde(default)]
     composer_open: bool,
-    #[serde(default)]
-    text_matches: bool,
-    #[serde(default)]
-    reply_field_matches: bool,
-    #[serde(default)]
-    poll_mode: bool,
+
     #[serde(default)]
     completed: bool,
     // 视觉模型必须区分原帖下方已发布回复与编辑框中的草稿。
@@ -955,15 +950,17 @@ fn run_visual_reply_inner(
             );
         }
 
+        // 在采集重新识别截图前移开鼠标；否则光标可能盖住作者/正文，
+        // 导致 OCR 失败并触发整轮重试。坐标仍从新截图重新识别，不复用旧目标。
+        move_cursor_to_safe_blank_area(pre_click.width, pre_click.height)?;
         let wait_ms = random_wait_ms();
         automation::log_event(&format!(
-            "[自动回复][01/03]：等待 {wait_ms} ms 后进行第 {} 次重新识别。",
+            "[自动回复][01/03]：鼠标已移出时间线后等待 {wait_ms} ms，再进行第 {} 次重新识别。",
             refresh_attempt + 1
         ));
         wait_cancel(cancel, Duration::from_millis(wait_ms))?;
         let refreshed_feed_stage = format!("01-refreshed-feed-{}", refresh_attempt + 1);
         feed = capture(&dir, &id, &refreshed_feed_stage, &mut screenshots)?;
-        move_cursor_to_safe_blank_area(feed.width, feed.height)?;
         let refreshed_post = identify_post_for_mode(&options, &feed, cancel)?;
         post_text = refreshed_post.post_text.trim().to_string();
         anyhow::ensure!(!post_text.is_empty(), "重新识别到的帖子正文为空，已停止");
@@ -1434,37 +1431,42 @@ fn run_visual_reply_inner(
 
     check_cancel(cancel)?;
     let pre_submit = capture(&dir, &id, "03-presubmit", &mut screenshots)?;
-    let target_unchanged =
-        target_region_unchanged(&typed, &pre_submit, &send_button, "弹窗中的‘回复’按钮")?;
-    if !target_unchanged {
-        // X 的加载动画、计数器等动态内容会导致像素差异偏高；当前截图仍会重新 OCR
-        // 正文和提交按钮，并要求坐标与旧坐标接近后才允许点击。
+    let button_region_identical =
+        target_region_pixels_identical(&typed, &pre_submit, &send_button, "弹窗中的‘回复’按钮")?;
+    if button_region_identical {
+        automation::log_event(&format!(
+            "[自动回复][03/03]：提交按钮周围像素完全一致，复用已核验坐标 ({}, {})，跳过重复 OCR。",
+            send_button.x, send_button.y
+        ));
+    } else {
         automation::log_event(
-            "[自动回复][03/03]：按钮区域像素有变化；不直接放弃本轮，改以当前截图重新核验正文和提交按钮。",
+            "[自动回复][03/03]：提交按钮周围像素发生变化；重新 OCR 正文和提交按钮并校验坐标后再决定是否点击。",
         );
+        let refreshed_button = ocr::locate_reply_submit_button(
+            &pre_submit.png,
+            &reply_text,
+            pre_submit.width,
+            pre_submit.height,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "点击前二次 OCR 未能在回复弹窗右下方重新确认提交按钮；已停止，未点击发送"
+            )
+        })?;
+        anyhow::ensure!(
+            send_button.x.abs_diff(refreshed_button.0) <= 12
+                && send_button.y.abs_diff(refreshed_button.1) <= 12,
+            "提交按钮位置发生变化：首次=({}, {})，二次=({}, {})；禁止点击过期坐标",
+            send_button.x,
+            send_button.y,
+            refreshed_button.0,
+            refreshed_button.1
+        );
+        automation::log_event(&format!(
+            "[自动回复][03/03]：重新 OCR 的坐标复核通过，按钮位置=({}, {})。",
+            refreshed_button.0, refreshed_button.1
+        ));
     }
-    let refreshed_button = ocr::locate_reply_submit_button(
-        &pre_submit.png,
-        &reply_text,
-        pre_submit.width,
-        pre_submit.height,
-    )?
-    .ok_or_else(|| {
-        anyhow::anyhow!("点击前二次 OCR 未能在回复弹窗右下方重新确认提交按钮；已停止，未点击发送")
-    })?;
-    anyhow::ensure!(
-        send_button.x.abs_diff(refreshed_button.0) <= 12
-            && send_button.y.abs_diff(refreshed_button.1) <= 12,
-        "提交按钮位置发生变化：首次=({}, {})，二次=({}, {})；禁止点击过期坐标",
-        send_button.x,
-        send_button.y,
-        refreshed_button.0,
-        refreshed_button.1
-    );
-    automation::log_event(&format!(
-        "[自动回复][03/03]：点击前二次 OCR 坐标复核通过，按钮位置=({}, {})。",
-        refreshed_button.0, refreshed_button.1
-    ));
     native::move_cursor_to_reply(send_button.x, send_button.y)?;
     *current_stage = "[自动回复][03/03]（点击发送并确认结果）".to_string();
     automation::log_event("========== [自动回复][03/03]：点击‘回复’并判断回复是否完成 ==========");
@@ -2547,9 +2549,6 @@ fn identify_post_for_mode(
         post_bottom_y: Some(local.post_bottom_y),
         refresh_posts: false,
         composer_open: false,
-        text_matches: false,
-        reply_field_matches: false,
-        poll_mode: false,
         completed: false,
         reply_post_state: None,
     })
@@ -2709,6 +2708,7 @@ pub(super) fn is_incomplete_post_error(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}");
     [
         "未识别到时间线帖子",
+        "完整时间线帖子",
         "未识别到帖子作者",
         "未识别到帖子账号",
         "未识别到帖子发布时间",
@@ -2838,6 +2838,57 @@ fn capture(
     })
 }
 
+fn target_region_pixels_identical(
+    before: &Shot,
+    after: &Shot,
+    target: &Point,
+    label: &str,
+) -> anyhow::Result<bool> {
+    if before.width != after.width || before.height != after.height {
+        automation::log_event(&format!(
+            "目标区域严格复核失败：{label}前后截图尺寸不同（{}x{} -> {}x{}）。",
+            before.width, before.height, after.width, after.height
+        ));
+        return Ok(false);
+    }
+    if target.x < 0
+        || target.y < 0
+        || target.x >= before.width as i32
+        || target.y >= before.height as i32
+    {
+        automation::log_event(&format!(
+            "目标区域严格复核失败：{label}坐标 ({}, {}) 超出截图范围 {}x{}。",
+            target.x, target.y, before.width, before.height
+        ));
+        return Ok(false);
+    }
+    let before_image = image::open(&before.png)?.to_rgb8();
+    let after_image = image::open(&after.png)?.to_rgb8();
+    let radius_x = 120i32;
+    let radius_y = 72i32;
+    let left = (target.x - radius_x).max(0) as u32;
+    let right = (target.x + radius_x).min(before.width as i32) as u32;
+    let top = (target.y - radius_y).max(0) as u32;
+    let bottom = (target.y + radius_y).min(before.height as i32) as u32;
+    anyhow::ensure!(
+        right > left && bottom > top,
+        "无法严格校验{label}附近截图区域"
+    );
+
+    let identical = (top..bottom).all(|y| {
+        (left..right).all(|x| before_image.get_pixel(x, y) == after_image.get_pixel(x, y))
+    });
+    automation::log_event(&format!(
+        "目标区域严格复核：{label}，坐标 ({}, {})，区域 {}x{}，像素{}一致。",
+        target.x,
+        target.y,
+        right - left,
+        bottom - top,
+        if identical { "完全" } else { "不完全" }
+    ));
+    Ok(identical)
+}
+
 fn target_region_unchanged(
     before: &Shot,
     after: &Shot,
@@ -2915,7 +2966,18 @@ fn click_show_new_posts(
         shot.height
     );
     let point = if options.stage2_ocr {
-        ocr::locate_new_posts_notice(&shot.png)?.map(|(x, y)| Point { x, y })
+        let started = Instant::now();
+        let result = ocr::locate_new_posts_notice(&shot.png);
+        automation::log_event(&format!(
+            "[自动回复][01/03]：顶部安全区域‘显示帖子’局部 OCR {}，耗时={} ms。",
+            if result.as_ref().is_ok_and(|point| point.is_some()) {
+                "命中"
+            } else {
+                "未命中"
+            },
+            started.elapsed().as_millis()
+        ));
+        result?.map(|(x, y)| Point { x, y })
     } else {
         let (decision, _) = ask(options, shot, &prompt, cancel)?;
         if !decision.ok || !decision.refresh_posts {
@@ -3551,10 +3613,16 @@ fn check_cancel(cancel: &AtomicBool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        identity_text_matches, parse_decision, reply_target_account_matches,
-        reply_target_identity_matches, validate_action_targets, validate_composer_input_point,
-        Point,
+        Point, identity_text_matches, is_incomplete_post_error, parse_decision,
+        reply_target_account_matches, reply_target_identity_matches, validate_action_targets,
+        validate_composer_input_point,
     };
+
+    #[test]
+    fn treats_missing_complete_timeline_post_as_incomplete() {
+        let error = anyhow::anyhow!("PP-OCR 未识别到第 1 条完整时间线帖子（当前完整帖子数：0）");
+        assert!(is_incomplete_post_error(&error));
+    }
 
     #[test]
     fn accepts_missing_underscore_only_when_display_name_matches() {
