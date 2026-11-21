@@ -368,6 +368,25 @@ pub fn submit_prepared_post(
                         published = true;
                         break;
                     }
+                    if !status.already_sent && !status.rate_limited && !status.retryable_error {
+                        match ocr::verify_posted_content_on_home(
+                            &result_page,
+                            &post.content,
+                            &status.recognized_text,
+                        ) {
+                            Ok(true) => {
+                                automation::log_post_event(&format!(
+                                    "[自动发帖] 第 {attempt}/4 次未捕获短暂成功 toast，但已确认返回 X 首页且页面正文与本帖匹配；确认发布成功"
+                                ));
+                                published = true;
+                                break;
+                            }
+                            Ok(false) => {}
+                            Err(error) => automation::log_post_event(&format!(
+                                "[自动发帖] 第 {attempt}/4 次首页正文二次核验失败：{error:#}；继续只读核验，不会再次点击发布"
+                            )),
+                        }
+                    }
                 }
                 Err(error) => {
                     automation::log_post_event(&format!(

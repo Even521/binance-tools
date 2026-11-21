@@ -4,6 +4,7 @@
 //! 未确认的提交状态会立即停止调度，等待人工核验。
 
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -29,29 +30,33 @@ fn mark_linked_cancel(cancel: &AtomicBool, source: &str) {
 }
 
 /// 发帖前同步所选类别的 RSS 新闻；所有订阅源都失败时阻止本次发帖。
+fn load_crypto_feeds() -> anyhow::Result<Vec<crypto_rss::FeedConfig>> {
+    let configured_path = PathBuf::from("crates/crypto-rss/feeds.json");
+    let source_tree_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/crypto-rss/feeds.json");
+    let path = if configured_path.is_file() {
+        configured_path
+    } else {
+        source_tree_path
+    };
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("读取加密新闻订阅配置失败：{}", path.display()))?;
+    let feeds: Vec<crypto_rss::FeedConfig> = serde_json::from_str(&contents)
+        .with_context(|| format!("解析加密新闻订阅配置失败：{}", path.display()))?;
+    anyhow::ensure!(
+        !feeds.is_empty(),
+        "加密新闻订阅配置为空：{}",
+        path.display()
+    );
+    Ok(feeds)
+}
+
 fn sync_latest_news(filter: NewsFilter) -> anyhow::Result<(usize, usize)> {
     use crypto_rss::{Collector, FeedConfig};
 
     let mut feeds = Vec::new();
     if matches!(filter, NewsFilter::Crypto | NewsFilter::All) {
-        feeds.extend([
-            FeedConfig {
-                name: "Odaily 快讯".into(),
-                url: "https://rss.odaily.news/rss/newsflash".into(),
-            },
-            FeedConfig {
-                name: "BlockBeats 快讯".into(),
-                url: "https://api.theblockbeats.news/v2/rss/newsflash".into(),
-            },
-            FeedConfig {
-                name: "ChainCatcher 快讯".into(),
-                url: "https://www.chaincatcher.com/rss/clist".into(),
-            },
-            FeedConfig {
-                name: "PANews".into(),
-                url: "https://rss.panewslab.com/zh/tvsq/rss".into(),
-            },
-        ]);
+        feeds.extend(load_crypto_feeds()?);
     }
     if matches!(filter, NewsFilter::Entertainment | NewsFilter::All) {
         feeds.extend([
@@ -439,77 +444,93 @@ fn run_loop_inner(cancel: &AtomicBool, filter: NewsFilter) -> anyhow::Result<u64
             return Ok(published_this_run);
         }
 
-        let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
-        if !settings.auto_post_enabled {
-            return Ok(published_this_run);
-        }
+        let iteration = (|| -> anyhow::Result<bool> {
+            let settings = binance_tools::db::x_posting::load_task_settings_blocking()?;
+            if !settings.auto_post_enabled {
+                return Ok(false);
+            }
 
-        let hourly_limit = u64::from(settings.posts_per_hour.clamp(1, 10));
-        let published_last_hour = binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
-        if published_last_hour >= hourly_limit {
-            crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
-            crate::ui::x_assistant::automation::log_post_event(&format!(
-                "自动发帖达到每小时上限 {hourly_limit}，等待 60 秒后重新检查。"
-            ));
-            if wait_or_cancel(cancel, Duration::from_secs(60)).is_err() {
+            let hourly_limit = u64::from(settings.posts_per_hour.clamp(1, 10));
+            let published_last_hour =
+                binance_tools::db::x_posting::count_posts_last_hour_blocking()?;
+            if published_last_hour >= hourly_limit {
+                crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
+                crate::ui::x_assistant::automation::log_post_event(&format!(
+                    "自动发帖达到每小时上限 {hourly_limit}，等待 60 秒后重新检查。"
+                ));
+                let completed_wait = wait_or_cancel(cancel, Duration::from_secs(60)).is_ok();
+                crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
+                return Ok(completed_wait);
+            }
+
+            let age = binance_tools::db::x_posting::seconds_since_last_post_blocking()?;
+            let delay = next_post_delay(settings.posts_per_hour, age);
+            if !delay.is_zero() {
+                crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
+                crate::ui::x_assistant::automation::log_post_event(&format!(
+                    "自动发帖频率控制：还需等待 {} 秒。",
+                    delay.as_secs()
+                ));
+                let completed_wait = wait_or_cancel(cancel, delay).is_ok();
+                crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
+                return Ok(completed_wait);
+            }
+
+            let next_result = match run_once(cancel, filter) {
+                Ok(result) => result,
+                Err(error) if cancel.load(Ordering::Acquire) => {
+                    crate::ui::x_assistant::automation::log_post_event(&format!(
+                        "收到停止指令，结束当前自动发帖循环：{error:#}"
+                    ));
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+            };
+
+            match next_result {
+                Some(result) if result.outcome == SubmitOutcome::Published => {
+                    published_this_run += 1;
+                    crate::ui::x_assistant::automation::log_post_event(&format!(
+                        "自动发帖成功：post_id={}，本轮已发布 {} 条。",
+                        result.post_id, published_this_run
+                    ));
+                }
+                Some(result) if result.outcome == SubmitOutcome::Unknown => {
+                    crate::ui::x_assistant::automation::log_post_event(&format!(
+                        "发帖结果不确定（post_id={}），已记为 unknown 并跳过该条，不会重发；自动发帖将在 60 秒冷却后继续处理其他待发记录。详情：{}",
+                        result.post_id, result.message
+                    ));
+                    return Ok(wait_or_cancel(cancel, Duration::from_secs(60)).is_ok());
+                }
+                Some(result) => {
+                    anyhow::bail!("未预期的发帖结果：{}", result.message);
+                }
+                None => {
+                    crate::ui::x_assistant::automation::log_post_event(
+                        "待发队列为空，后台继续预热，60 秒后重新检查。",
+                    );
+                    return Ok(wait_or_cancel(cancel, Duration::from_secs(60)).is_ok());
+                }
+            }
+            Ok(true)
+        })();
+
+        match iteration {
+            Ok(true) => {}
+            Ok(false) => {
                 return Ok(published_this_run);
             }
-            crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
-            continue;
-        }
-
-        let age = binance_tools::db::x_posting::seconds_since_last_post_blocking()?;
-        let delay = next_post_delay(settings.posts_per_hour, age);
-        if !delay.is_zero() {
-            crate::ui::x_assistant::floating_status::set_waiting_for_post(true);
-            crate::ui::x_assistant::automation::log_post_event(&format!(
-                "自动发帖频率控制：还需等待 {} 秒。",
-                delay.as_secs()
-            ));
-            if wait_or_cancel(cancel, delay).is_err() {
-                return Ok(published_this_run);
-            }
-            crate::ui::x_assistant::floating_status::set_waiting_for_post(false);
-            continue;
-        }
-
-        let next_result = match run_once(cancel, filter) {
-            Ok(result) => result,
             Err(error) if cancel.load(Ordering::Acquire) => {
                 crate::ui::x_assistant::automation::log_post_event(&format!(
                     "收到停止指令，结束当前自动发帖循环：{error:#}"
                 ));
                 return Ok(published_this_run);
             }
-            Err(error) => return Err(error),
-        };
-
-        match next_result {
-            Some(result) if result.outcome == SubmitOutcome::Published => {
-                published_this_run += 1;
+            Err(error) => {
                 crate::ui::x_assistant::automation::log_post_event(&format!(
-                    "自动发帖成功：post_id={}，本轮已发布 {} 条。",
-                    result.post_id, published_this_run
+                    "自动发帖本次机会失败，保留循环并等待 30 秒后继续；可能已提交的当前帖子不会自动重发：{error:#}"
                 ));
-                // 下一轮会根据刚写入的 published_at 重新计算间隔。
-            }
-            Some(result) if result.outcome == SubmitOutcome::Unknown => {
-                crate::ui::x_assistant::automation::log_post_event(&format!(
-                    "发帖结果不确定（post_id={}），已记为 unknown 并跳过该条，不会重发；自动发帖将在 60 秒冷却后继续处理其他待发记录。详情：{}",
-                    result.post_id, result.message
-                ));
-                if wait_or_cancel(cancel, Duration::from_secs(60)).is_err() {
-                    return Ok(published_this_run);
-                }
-            }
-            Some(result) => {
-                anyhow::bail!("未预期的发帖结果：{}", result.message);
-            }
-            None => {
-                crate::ui::x_assistant::automation::log_post_event(
-                    "待发队列为空，后台继续预热，60 秒后重新检查。",
-                );
-                if wait_or_cancel(cancel, Duration::from_secs(60)).is_err() {
+                if wait_or_cancel(cancel, Duration::from_secs(30)).is_err() {
                     return Ok(published_this_run);
                 }
             }
@@ -592,6 +613,14 @@ fn run_scheduled_post_turn(
     }
 }
 
+fn is_sqlite_lock_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("database is locked")
+        || message.contains("database is busy")
+        || message.contains("sqlite_busy")
+        || message.contains("sqlite_locked")
+}
+
 /// 启动后由自动回复线程按 10:1 比例发出发帖请求。
 /// 两个任务通过双向通道明确交接浏览器使用权，不再竞争同一把 Mutex。
 pub fn run_with_auto_reply(
@@ -624,12 +653,21 @@ pub fn run_with_auto_reply(
                         break;
                     }
                 }
+                Err(error) if is_sqlite_lock_error(&error) => {
+                    crate::ui::x_assistant::automation::log_post_event(&format!(
+                        "自动发帖调度遇到 SQLite 锁，跳过本次发帖机会并保留后续调度；不重试当前记录以避免重复发送：{error:#}"
+                    ));
+                    if post_done_sender.send(true).is_err() {
+                        break;
+                    }
+                }
                 Err(error) => {
                     crate::ui::x_assistant::automation::log_post_event(&format!(
-                        "自动发帖调度失败，已停止后续发帖；自动回复继续运行：{error:#}"
+                        "自动发帖本次调度失败，跳过当前发帖机会并保留后续调度；不自动重试当前记录：{error:#}"
                     ));
-                    let _ = post_done_sender.send(false);
-                    return Err(error);
+                    if post_done_sender.send(true).is_err() {
+                        break;
+                    }
                 }
             }
         }

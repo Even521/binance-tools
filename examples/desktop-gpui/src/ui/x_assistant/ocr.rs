@@ -259,6 +259,50 @@ pub(super) fn recognize_post_sent_toast(path: &Path) -> anyhow::Result<bool> {
     Ok(false)
 }
 
+/// Toast 可能在下一轮截图前消失；在回到 X 首页且页面上能核对刚发布正文时，
+/// 用帖子本身作为持久的成功证据。正文来自同一张整页 OCR，避免重复运行整页识别。
+pub(super) fn verify_posted_content_on_home(
+    path: &Path,
+    expected_content: &str,
+    recognized_page_text: &str,
+) -> anyhow::Result<bool> {
+    let Some(address) = recognize_current_url(path)? else {
+        super::automation::log_event(
+            "[OCR][发帖结果] 地址栏未识别，不能用时间线正文确认发布成功。",
+        );
+        return Ok(false);
+    };
+    if !is_x_home_address(&address) {
+        super::automation::log_event(&format!(
+            "[OCR][发帖结果] 当前地址不是 X 首页（{address}），不能用正文确认发布成功。"
+        ));
+        return Ok(false);
+    }
+
+    let expected = normalize_text(
+        expected_content
+            .split(" · ")
+            .next()
+            .unwrap_or(expected_content),
+    );
+    let expected = expected.chars().take(48).collect::<String>();
+    if expected.chars().count() < 16 {
+        super::automation::log_event(
+            "[OCR][发帖结果] 待核对正文过短，不使用时间线内容作为成功证据。",
+        );
+        return Ok(false);
+    }
+    let recognized = normalize_text(recognized_page_text);
+    let score = text_match_ratio(&recognized, &expected);
+    let confirmed = score >= 0.90;
+    super::automation::log_event(&format!(
+        "[OCR][发帖结果] X 首页正文核验{}，匹配度 {:.0}%（要求至少 90%）。",
+        if confirmed { "通过" } else { "未通过" },
+        score * 100.0
+    ));
+    Ok(confirmed)
+}
+
 pub(super) fn recognize_current_url(path: &Path) -> anyhow::Result<Option<String>> {
     use image::imageops::crop_imm;
 

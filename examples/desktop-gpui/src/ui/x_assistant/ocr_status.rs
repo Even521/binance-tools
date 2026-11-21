@@ -12,6 +12,7 @@ pub(super) struct SendStatus {
     pub sent: bool,
     pub rate_limited: bool,
     pub retryable_error: bool,
+    pub recognized_text: String,
 }
 
 /// 识别发送结果。
@@ -28,5 +29,6 @@ pub(super) fn recognize_send_status(path: &Path) -> Result<SendStatus> {
                 .lines
                 .iter()
                 .any(|line| contains_retryable_send_error(&line.text)),
+        recognized_text: doc.text,
     })
 }
